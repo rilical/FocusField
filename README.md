@@ -19,8 +19,8 @@ It does not guarantee perfect separation of multiple simultaneous speakers.
 ```mermaid
 flowchart LR
   subgraph Sensors
-    A[Mic Array (4ch or 8ch)] --> B[Audio Capture]
-    G[Camera(s) (1 or 3)] --> H[Video Capture]
+    A["Mic Array (4ch or 8ch)"] --> B[Audio Capture]
+    G["Camera(s) (1 or 3)"] --> H[Video Capture]
   end
 
   subgraph Audio
@@ -120,7 +120,7 @@ flowchart LR
   PIPE --> M[Metrics]
   M --> R[BenchReport.json]
   M --> PLOTS[Required Plots]
-  R --> DIFF[Regression Compare (runA vs runB)]
+  R --> DIFF["Regression Compare (runA vs runB)"]
 ```
 
 ## Required metrics (minimum reporting set)

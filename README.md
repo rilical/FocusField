@@ -19,19 +19,14 @@ It does not guarantee perfect separation of multiple simultaneous speakers.
 ```mermaid
 flowchart LR
   subgraph Sensors
-    A[Mic Array
-4ch or 8ch] --> B[Audio Capture]
-    G[Camera(s)
-1 or 3] --> H[Video Capture]
+    A[Mic Array<br/>4ch or 8ch] --> B[Audio Capture]
+    G[Camera(s)<br/>1 or 3] --> H[Video Capture]
   end
 
   subgraph Audio
-    B --> C[DOA Heatmap
-SRP-PHAT over 0..360]
-    B --> D[Beamformer
-Delay-and-Sum (MVP)]
-    D --> E[Denoise
-(optional)]
+    B --> C[DOA Heatmap<br/>SRP-PHAT over 0..360]
+    B --> D[Beamformer<br/>Delay-and-Sum (MVP)]
+    D --> E[Denoise<br/>(optional)]
   end
 
   subgraph Vision
@@ -41,18 +36,14 @@ Delay-and-Sum (MVP)]
   end
 
   subgraph Fusion
-    C --> F1[AV Association
-DOA peaks <-> faces]
+    C --> F1[AV Association<br/>DOA peaks <-> faces]
     V3 --> F1
-    F1 --> F2[Target Lock State Machine
-Acquire / Lock / Hold / Handoff]
+    F1 --> F2[Target Lock State Machine<br/>Acquire / Lock / Hold / Handoff]
     F2 --> D
   end
 
-  E --> OUT[Output Sink
-Virtual Mic / File Sink]
-  C --> UI[Web UI
-Heatmap + Tiles + Logs]
+  E --> OUT[Output Sink<br/>Virtual Mic / File Sink]
+  C --> UI[Web UI<br/>Heatmap + Tiles + Logs]
   V3 --> UI
   F2 --> UI
   F2 --> LOG[Structured Logs + FocusBench Artifacts]
@@ -129,8 +120,7 @@ flowchart LR
   PIPE --> M[Metrics]
   M --> R[BenchReport.json]
   M --> PLOTS[Required Plots]
-  R --> DIFF[Regression Compare
-runA vs runB]
+  R --> DIFF[Regression Compare<br/>runA vs runB]
 ```
 
 ## Required metrics (minimum reporting set)

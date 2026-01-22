@@ -24,29 +24,29 @@ flowchart LR
   end
 
   subgraph Audio
-    B --> C[DOA Heatmap (SRP-PHAT over 0..360)]
-    B --> D[Beamformer (Delay-and-Sum, MVP)]
-    D --> E[Denoise (optional)]
+    B --> C["DOA Heatmap (SRP-PHAT over 0..360)"]
+    B --> D["Beamformer (Delay-and-Sum, MVP)"]
+    D --> E["Denoise (optional)"]
   end
 
   subgraph Vision
     H --> V1[Face Track]
     V1 --> V2[Mouth Activity Score]
-    V2 --> V3[Face Bearing -> Global Azimuth]
+    V2 --> V3["Face Bearing -> Global Azimuth"]
   end
 
   subgraph Fusion
-    C --> F1[AV Association (DOA peaks <-> faces)]
+    C --> F1["AV Association (DOA peaks <-> faces)"]
     V3 --> F1
-    F1 --> F2[Target Lock State Machine (Acquire / Lock / Hold / Handoff)]
+    F1 --> F2["Target Lock State Machine (Acquire / Lock / Hold / Handoff)"]
     F2 --> D
   end
 
-  E --> OUT[Output Sink (Virtual Mic / File Sink)]
-  C --> UI[Web UI (Heatmap + Tiles + Logs)]
+  E --> OUT["Output Sink (Virtual Mic / File Sink)"]
+  C --> UI["Web UI (Heatmap + Tiles + Logs)"]
   V3 --> UI
   F2 --> UI
-  F2 --> LOG[Structured Logs + FocusBench Artifacts]
+  F2 --> LOG["Structured Logs + FocusBench Artifacts"]
   C --> LOG
 ```
 

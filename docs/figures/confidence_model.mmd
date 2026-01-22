@@ -1,0 +1,8 @@
+flowchart LR
+  M[Mouth Activity] --> S[SpeakerScore]
+  FC[Face Confidence] --> S
+  DOA[DOA Peak Score] --> A[AssociationScore]
+  AD[Angular Distance] --> A
+  S --> C[Combined Confidence]
+  A --> C
+  C --> L[Lock State Machine]

@@ -1,0 +1,32 @@
+# FocusField MVP configuration (1 camera, 4 microphones)
+build: mvp
+
+audio:
+  channels: 4
+  sample_rate_hz: 48000
+  block_size: 1024
+  device_profile: mic_array_4ch_default
+  doa:
+    method: srp_phat
+    bins: 360
+    update_hz: 20
+  beamformer:
+    method: delay_and_sum
+
+video:
+  cameras:
+    - id: cam0
+      hfov_deg: 90
+      yaw_offset_deg: 0
+
+fusion:
+  thresholds_preset: balanced
+
+bus:
+  max_queue_depth: 8
+
+logging:
+  level: info
+
+output:
+  sink: virtual_mic

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+.env/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+
+# Logs and artifacts
+logs/
+*.log
+
+# OS
+.DS_Store

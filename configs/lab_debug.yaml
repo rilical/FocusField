@@ -1,0 +1,14 @@
+# FocusField lab debug configuration
+build: lab_debug
+
+runtime:
+  enable_validation: true
+  deterministic_mode: true
+  record_focusbench: true
+
+logging:
+  level: debug
+  emit_telemetry: true
+
+bus:
+  max_queue_depth: 16

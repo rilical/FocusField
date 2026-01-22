@@ -1,0 +1,38 @@
+# FocusField Full configuration (3 cameras, 8 microphones)
+build: full
+
+audio:
+  channels: 8
+  sample_rate_hz: 48000
+  block_size: 1024
+  device_profile: mic_array_8ch_default
+  doa:
+    method: srp_phat
+    bins: 360
+    update_hz: 30
+  beamformer:
+    method: delay_and_sum
+
+video:
+  cameras:
+    - id: cam0
+      hfov_deg: 90
+      yaw_offset_deg: 0
+    - id: cam1
+      hfov_deg: 90
+      yaw_offset_deg: 120
+    - id: cam2
+      hfov_deg: 90
+      yaw_offset_deg: 240
+
+fusion:
+  thresholds_preset: balanced
+
+bus:
+  max_queue_depth: 12
+
+logging:
+  level: info
+
+output:
+  sink: virtual_mic

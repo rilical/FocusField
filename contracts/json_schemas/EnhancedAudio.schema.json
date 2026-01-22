@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EnhancedAudio",
+  "type": "object",
+  "description": "Schema placeholder for EnhancedAudio message.",
+  "properties": {},
+  "required": []
+}

@@ -1,0 +1,8 @@
+flowchart TB
+  A[Print yaw marks / mount cameras] --> B[Camera HFOV & yaw offsets]
+  B --> C[Pixel->Bearing calibration]
+  D[Mic array geometry + channel map] --> E[Channel order verification]
+  E --> F[DOA sanity check sweep]
+  C --> G[Save calibration.json]
+  F --> G
+  G --> H[Pipeline runs with calibrated bearings + geometry]

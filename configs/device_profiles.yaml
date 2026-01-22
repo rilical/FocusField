@@ -1,0 +1,14 @@
+# Known device profiles
+mic_arrays:
+  mic_array_4ch_default:
+    geometry: circular
+    radius_m: 0.05
+    channel_order: [0, 1, 2, 3]
+  mic_array_8ch_default:
+    geometry: circular
+    radius_m: 0.08
+    channel_order: [0, 1, 2, 3, 4, 5, 6, 7]
+
+cameras:
+  generic_usb_cam:
+    hfov_deg: 90

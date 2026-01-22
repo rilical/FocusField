@@ -1,0 +1,16 @@
+sequenceDiagram
+  participant AC as AudioCapture
+  participant VC as VideoCapture
+  participant DOA as DOAHeatmap
+  participant VT as VisionTrack
+  participant F as Fusion
+  participant BF as Beamformer
+  participant UI as UI
+
+  AC->>DOA: AudioFrame(t_ns)
+  VC->>VT: VideoFrame(t_ns)
+  DOA->>F: DoaHeatmap(t_ns, peaks)
+  VT->>F: FaceTracks(t_ns, bearing, mouth_activity)
+  F->>BF: TargetLock(t_ns, angle, confidence)
+  BF->>UI: EnhancedAudio stats + TargetLock
+  F->>UI: Heatmap + active speaker highlight

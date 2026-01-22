@@ -1,0 +1,21 @@
+# Lock thresholds presets
+aggressive:
+  acquire_threshold: 0.55
+  hold_ms: 500
+  handoff_min_ms: 400
+  speak_on_threshold: 0.45
+  speak_off_threshold: 0.35
+
+balanced:
+  acquire_threshold: 0.65
+  hold_ms: 800
+  handoff_min_ms: 700
+  speak_on_threshold: 0.50
+  speak_off_threshold: 0.40
+
+conservative:
+  acquire_threshold: 0.75
+  hold_ms: 1200
+  handoff_min_ms: 1000
+  speak_on_threshold: 0.55
+  speak_off_threshold: 0.45

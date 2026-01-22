@@ -1,0 +1,8 @@
+flowchart LR
+  S[Scene Manifest] --> P[Replay Player]
+  P --> PIPE[Pipeline]
+  PIPE --> M[Metrics]
+  M --> R[BenchReport.json]
+  M --> PLOTS[Required Plots]
+  R --> DIFF[Regression Compare
+runA vs runB]

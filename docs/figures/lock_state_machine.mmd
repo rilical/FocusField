@@ -1,0 +1,10 @@
+stateDiagram-v2
+  [*] --> NO_LOCK
+  NO_LOCK --> ACQUIRE: mouth_activity OR VAD indicates speech
+  ACQUIRE --> LOCKED: AV association confidence >= acquire_threshold
+  LOCKED --> HOLD: short silence (<= hold_ms)
+  HOLD --> LOCKED: resumes quickly
+  HOLD --> NO_LOCK: timeout / lost face and low audio confidence
+  LOCKED --> HANDOFF: new candidate dominates for handoff_min_ms
+  HANDOFF --> LOCKED: commit new target
+  LOCKED --> NO_LOCK: tracking lost / confidence collapse

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AudioVad",
+  "type": "object",
+  "description": "Schema for AudioVad message.",
+  "properties": {
+    "t_ns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "speech": {
+      "type": "boolean"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "rms": {
+      "type": "number",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": true,
+  "required": []
+}

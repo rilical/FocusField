@@ -2,10 +2,15 @@
 build: mvp
 
 audio:
-  channels: 4
+  channels: 1  # laptop mic is mono; use 4 when array is connected
   sample_rate_hz: 48000
   block_size: 1024
   device_profile: mic_array_4ch_default
+  vad:
+    enabled: true
+    mode: 1
+    frame_ms: 20
+    min_speech_ratio: 0.2
   doa:
     method: srp_phat
     bins: 360
@@ -34,10 +39,18 @@ vision:
     max_missing_frames: 10
     min_age_frames: 2
   mouth:
-    smoothing_alpha: 0.5
+    smoothing_alpha: 0.4
     min_activity: 0.015
     max_activity: 0.2
     diff_threshold: 4
+    use_facemesh: true
+    mesh_every_n: 1
+    mesh_max_faces: 5
+    mesh_min_detection_confidence: 0.5
+    mesh_min_tracking_confidence: 0.5
+    mesh_min_activity: 0.005
+    mesh_max_activity: 0.1
+    mesh_model_path: ""
   heatmap:
     bin_size_deg: 5
     sigma_deg: 12
@@ -46,6 +59,9 @@ vision:
 
 fusion:
   thresholds_preset: aggressive
+  require_vad: false
+  vad_max_age_ms: 500
+  require_speaking: true
 
 bus:
   max_queue_depth: 8

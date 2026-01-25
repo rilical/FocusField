@@ -7,6 +7,8 @@ aggressive:
   speak_off_threshold: 0.35
   min_on_frames: 1
   min_off_frames: 2
+  min_switch_interval_ms: 350
+  bearing_smoothing_alpha: 0.6
 
 balanced:
   acquire_threshold: 0.65
@@ -16,6 +18,8 @@ balanced:
   speak_off_threshold: 0.4
   min_on_frames: 2
   min_off_frames: 2
+  min_switch_interval_ms: 500
+  bearing_smoothing_alpha: 0.7
 
 conservative:
   acquire_threshold: 0.75
@@ -25,3 +29,5 @@ conservative:
   speak_off_threshold: 0.5
   min_on_frames: 2
   min_off_frames: 2
+  min_switch_interval_ms: 700
+  bearing_smoothing_alpha: 0.8

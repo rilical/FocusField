@@ -190,7 +190,7 @@ def live_page() -> str:
         return tiles[cameraId];
       }
 
-      function drawFrame(cameraId, faces) {
+      function drawFrame(cameraId, faces, targetId) {
         const tile = ensureTile(cameraId);
         const img = new Image();
         img.onload = () => {
@@ -200,14 +200,16 @@ def live_page() -> str:
           for (const face of faces) {
             const bbox = face.bbox;
             if (!bbox) continue;
-            const color = face.speaking ? "#e35d2f" : "rgba(255,255,255,0.7)";
+            const isTarget = targetId && face.track_id === targetId;
+            const color = isTarget ? "#1fbf6b" : (face.speaking ? "#e35d2f" : "rgba(255,255,255,0.7)");
             tile.ctx.strokeStyle = color;
-            tile.ctx.lineWidth = 2;
+            tile.ctx.lineWidth = isTarget ? 3 : 2;
             tile.ctx.strokeRect(bbox.x, bbox.y, bbox.w, bbox.h);
             tile.ctx.fillStyle = color;
             tile.ctx.font = "12px IBM Plex Sans";
+            const status = face.speaking ? "TALK" : "idle";
             tile.ctx.fillText(
-              `${face.track_id} ${face.mouth_activity?.toFixed(2) ?? ""}`,
+              `${face.track_id} ${status} ${face.mouth_activity?.toFixed(3) ?? ""}`,
               bbox.x,
               Math.max(12, bbox.y - 4)
             );
@@ -256,11 +258,12 @@ def live_page() -> str:
           facesByCamera[cameraId] = facesByCamera[cameraId] || [];
           facesByCamera[cameraId].push(face);
         }
+        const lock = data.lock_state || {};
+        const targetId = lock.target_id || null;
         for (const cameraId of cameras) {
-          drawFrame(cameraId, facesByCamera[cameraId] || []);
+          drawFrame(cameraId, facesByCamera[cameraId] || [], targetId);
         }
         drawHeatmap(data.heatmap_summary);
-        const lock = data.lock_state || {};
         document.getElementById("lockState").textContent = lock.state || "NO_LOCK";
         document.getElementById("lockInfo").textContent =
           lock.state === "NO_LOCK"

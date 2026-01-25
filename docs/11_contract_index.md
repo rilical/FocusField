@@ -42,6 +42,7 @@ This is the frozen wiring table. Do not diverge from it.
 | Topic | Type | Producers | Consumers | Notes |
 | --- | --- | --- | --- | --- |
 | audio.frames | AudioFrame | audio.capture | audio.doa.srp_phat, audio.beamform.delay_and_sum, bench.recorder | Raw multichannel audio frames |
+| audio.vad | AudioVad | audio.vad | fusion.lock_state_machine, bench.recorder | Voice activity detection |
 | audio.doa_heatmap | DoaHeatmap | audio.doa.srp_phat | fusion.av_association, ui.telemetry, bench.recorder | 0..360 deg likelihood over azimuth |
 | vision.frames.cam0 | VideoFrame | vision.cameras | vision.tracking.face_track | Camera 0 frames (internal) |
 | vision.frames.cam1 | VideoFrame | vision.cameras | vision.tracking.face_track | Camera 1 frames (internal) |
@@ -148,6 +149,13 @@ src/focusfield/audio/preprocess.py
 - ROLE: optional VAD/HPF/AGC conditioning.
 - INPUTS: audio.frames.
 - OUTPUTS: in-place transform or audio.frames.preprocessed (design decision must be frozen).
+
+src/focusfield/audio/vad.py
+
+- ROLE: voice activity detection on audio.frames.
+- INPUTS: audio.frames.
+- OUTPUTS: audio.vad (AudioVad).
+- CONFIG: audio.vad.enabled, audio.vad.mode, audio.vad.frame_ms, audio.vad.min_speech_ratio.
 
 src/focusfield/audio/sync/channel_order_check.py
 

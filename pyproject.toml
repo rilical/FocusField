@@ -16,6 +16,9 @@ dependencies = [
   "PyYAML>=6.0",
   "numpy>=1.23",
   "opencv-python>=4.8",
+  "sounddevice>=0.4.6",
+  "webrtcvad>=2.0.10",
+  "mediapipe>=0.10.14",
 ]
 
 [tool.setuptools]

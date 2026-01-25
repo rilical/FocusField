@@ -5,6 +5,7 @@ This table is the single source of truth for topic names and message types. Do n
 | Topic | Type | Producers | Consumers | Notes |
 | --- | --- | --- | --- | --- |
 | audio.frames | AudioFrame | audio.capture | audio.doa.srp_phat, audio.beamform.delay_and_sum, bench.recorder | Raw multichannel audio frames |
+| audio.vad | AudioVad | audio.vad | fusion.lock_state_machine, bench.recorder | Voice activity detection |
 | audio.doa_heatmap | DoaHeatmap | audio.doa.srp_phat | fusion.av_association, ui.telemetry, bench.recorder | 0..360 deg likelihood over azimuth |
 | vision.frames.cam0 | VideoFrame | vision.cameras | vision.tracking.face_track | Camera 0 frames (internal) |
 | vision.frames.cam1 | VideoFrame | vision.cameras | vision.tracking.face_track | Camera 1 frames (internal) |

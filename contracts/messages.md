@@ -47,6 +47,13 @@
 - heatmap: list of scores
 - peaks: top-K (angle_deg, score)
 
+## AudioVad
+
+- t_ns, seq
+- speech: bool
+- confidence: 0..1
+- rms: energy estimate
+
 ## TargetLock
 
 - t_ns, seq

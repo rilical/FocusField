@@ -34,6 +34,8 @@ from typing import List
 from focusfield.core.bus import Bus
 from focusfield.core.config import load_config
 from focusfield.core.logging import LogEmitter
+from focusfield.audio.capture import start_audio_capture
+from focusfield.audio.vad import start_audio_vad
 from focusfield.fusion.av_association import start_av_association
 from focusfield.fusion.lock_state_machine import start_lock_state_machine
 from focusfield.ui.server import start_ui_server
@@ -58,6 +60,13 @@ def main() -> None:
     if args.mode not in {"vision"}:
         logger.emit("error", "main.run", "invalid_mode", {"mode": args.mode})
         raise SystemExit(f"Unsupported mode: {args.mode}")
+
+    audio_thread = start_audio_capture(bus, config, logger, stop_event)
+    if audio_thread is not None:
+        threads.append(audio_thread)
+    vad_thread = start_audio_vad(bus, config, logger, stop_event)
+    if vad_thread is not None:
+        threads.append(vad_thread)
 
     threads.extend(start_cameras(bus, config, logger, stop_event))
     threads.append(start_face_tracking(bus, config, logger, stop_event))

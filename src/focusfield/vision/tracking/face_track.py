@@ -37,13 +37,13 @@ from __future__ import annotations
 
 import queue
 import threading
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 
 from focusfield.core.clock import now_ns
 from focusfield.vision.calibration.bearing import bearing_from_bbox
-from focusfield.vision.mouth.mouth_activity import MouthActivityEstimator
+from focusfield.vision.mouth.mouth_activity import FaceMeshMouthEstimator, MouthActivityEstimator
 from focusfield.vision.mouth.thresholds import SpeakingHysteresis
 from focusfield.vision.tracking.track_smoothing import TrackSmoother
 
@@ -54,7 +54,7 @@ BBox = Tuple[int, int, int, int]
 class CameraTracker:
     """Per-camera face detection, tracking, and mouth activity."""
 
-    def __init__(self, camera_id: str, config: Dict[str, Any], camera_cfg: Dict[str, Any]) -> None:
+    def __init__(self, camera_id: str, config: Dict[str, Any], camera_cfg: Dict[str, Any], logger: Any) -> None:
         self._camera_id = camera_id
         vision_cfg = config.get("vision", {})
         face_cfg = vision_cfg.get("face", {})
@@ -78,6 +78,23 @@ class CameraTracker:
             max_activity=float(mouth_cfg.get("max_activity", 0.4)),
             diff_threshold=float(mouth_cfg.get("diff_threshold", 12.0)),
         )
+        self._logger = logger
+        self._mesh = None
+        self._mesh_step = max(1, int(mouth_cfg.get("mesh_every_n", 1)))
+        if mouth_cfg.get("use_facemesh", True):
+            try:
+                self._mesh = FaceMeshMouthEstimator(
+                    max_faces=int(mouth_cfg.get("mesh_max_faces", 5)),
+                    min_detection_confidence=float(mouth_cfg.get("mesh_min_detection_confidence", 0.5)),
+                    min_tracking_confidence=float(mouth_cfg.get("mesh_min_tracking_confidence", 0.5)),
+                    min_activity=float(mouth_cfg.get("mesh_min_activity", 0.005)),
+                    max_activity=float(mouth_cfg.get("mesh_max_activity", 0.1)),
+                    model_path=mouth_cfg.get("mesh_model_path"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._mesh = None
+                self._logger.emit("warning", "vision.mouth_activity", "facemesh_unavailable", {"error": str(exc)})
+        self._mesh_frame_count = 0
         speak_on = float(thresholds.get("speak_on_threshold", 0.5))
         speak_off = float(thresholds.get("speak_off_threshold", 0.4))
         self._speak_on = speak_on
@@ -103,6 +120,13 @@ class CameraTracker:
         else:
             detections = self._last_detections
         tracks = self._smoother.update(detections)
+        mesh_faces = []
+        if self._mesh is not None:
+            self._mesh_frame_count += 1
+            if self._mesh_frame_count % self._mesh_step == 0:
+                mesh_faces = self._mesh.estimate(frame)
+        if self._mesh is not None and not mesh_faces:
+            self._logger.emit("debug", "vision.mouth_activity", "facemesh_no_faces", {"camera_id": self._camera_id})
         active_ids = {track.track_id for track in tracks}
         for track_id in list(self._speaking.keys()):
             if track_id not in active_ids:
@@ -119,7 +143,11 @@ class CameraTracker:
             if _bbox_area(bbox) < self._min_area:
                 continue
             track_key = f"{self._camera_id}-{track.track_id}"
-            activity = self._mouth.compute(track_key, frame, bbox)
+            mesh_match = _match_mesh_face(bbox, mesh_faces)
+            if mesh_match is not None:
+                activity = self._mouth.smooth(track_key, float(mesh_match.get("activity", 0.0)))
+            else:
+                activity = self._mouth.compute(track_key, frame, bbox)
             speaking_tracker = self._speaking.get(track.track_id)
             if speaking_tracker is None:
                 speaking_tracker = SpeakingHysteresis(
@@ -194,7 +222,7 @@ def start_face_tracking(
         camera_id = cam_cfg.get("id", f"cam{index}")
         topic = f"vision.frames.{camera_id}"
         queues[camera_id] = bus.subscribe(topic)
-        trackers[camera_id] = CameraTracker(camera_id, config, cam_cfg)
+        trackers[camera_id] = CameraTracker(camera_id, config, cam_cfg, logger)
         latest_tracks[camera_id] = []
 
     def _run() -> None:
@@ -229,3 +257,49 @@ def _bbox_area(bbox: BBox) -> int:
 def _bbox_from_float(bbox: Tuple[float, float, float, float]) -> BBox:
     x, y, w, h = bbox
     return int(round(x)), int(round(y)), int(round(w)), int(round(h))
+
+
+def _match_mesh_face(bbox: BBox, mesh_faces: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not mesh_faces:
+        return None
+    bx, by, bw, bh = bbox
+    bcx, bcy = bx + bw / 2.0, by + bh / 2.0
+    best = None
+    best_dist = float("inf")
+    for face in mesh_faces:
+        face_bbox = face.get("bbox")
+        if not face_bbox:
+            continue
+        fx, fy, fw, fh = face_bbox
+        fcx, fcy = fx + fw / 2.0, fy + fh / 2.0
+        dist = ((fcx - bcx) ** 2 + (fcy - bcy) ** 2) ** 0.5
+        if dist < best_dist:
+            best_dist = dist
+            best = face
+    max_dim = max(bw, bh)
+    if best is None or best_dist > max_dim * 0.75:
+        return None
+    return best
+
+
+def _iou(box_a: BBox, box_b: BBox) -> float:
+    ax, ay, aw, ah = box_a
+    bx, by, bw, bh = box_b
+    a_x2 = ax + aw
+    a_y2 = ay + ah
+    b_x2 = bx + bw
+    b_y2 = by + bh
+
+    inter_x1 = max(ax, bx)
+    inter_y1 = max(ay, by)
+    inter_x2 = min(a_x2, b_x2)
+    inter_y2 = min(a_y2, b_y2)
+    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+        return 0.0
+    inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+    area_a = aw * ah
+    area_b = bw * bh
+    union = area_a + area_b - inter_area
+    if union <= 0:
+        return 0.0
+    return inter_area / union

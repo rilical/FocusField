@@ -88,6 +88,14 @@ def _default_config() -> Dict[str, Any]:
                 "min_activity": 0.02,
                 "max_activity": 0.2,
                 "diff_threshold": 6.0,
+                "use_facemesh": True,
+                "mesh_every_n": 1,
+                "mesh_max_faces": 5,
+                "mesh_min_detection_confidence": 0.5,
+                "mesh_min_tracking_confidence": 0.5,
+                "mesh_min_activity": 0.005,
+                "mesh_max_activity": 0.1,
+                "mesh_model_path": "",
             },
             "heatmap": {
                 "bin_size_deg": 5.0,
@@ -104,12 +112,23 @@ def _default_config() -> Dict[str, Any]:
                 "doa": 0.0,
                 "angle": 0.0,
             },
+            "require_vad": False,
+            "vad_max_age_ms": 500,
+            "require_speaking": True,
         },
         "bus": {
             "max_queue_depth": 8,
         },
         "logging": {
             "level": "info",
+        },
+        "audio": {
+            "vad": {
+                "enabled": True,
+                "mode": 2,
+                "frame_ms": 20,
+                "min_speech_ratio": 0.3,
+            }
         },
     }
 

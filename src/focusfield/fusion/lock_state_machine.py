@@ -68,24 +68,83 @@ class LockStateMachine:
         self._hold_ms = float(thresholds.get("hold_ms", 800))
         self._handoff_min_ms = float(thresholds.get("handoff_min_ms", 700))
         self._drop = float(thresholds.get("drop_threshold", self._acquire * 0.6))
+        self._speak_on = float(thresholds.get("speak_on_threshold", 0.5))
+        self._min_switch_interval_ms = float(thresholds.get("min_switch_interval_ms", 500))
+        self._bearing_alpha = float(thresholds.get("bearing_smoothing_alpha", 0.7))
+        self._require_vad = bool(config.get("fusion", {}).get("require_vad", False))
+        self._vad_max_age_ms = float(config.get("fusion", {}).get("vad_max_age_ms", 500))
+        self._require_speaking = bool(config.get("fusion", {}).get("require_speaking", True))
         self._state = "NO_LOCK"
         self._target_id: Optional[str] = None
         self._target_bearing: Optional[float] = None
         self._last_score = 0.0
         self._last_seen_ns = 0
+        self._last_speaking_ns = 0
         self._handoff_id: Optional[str] = None
         self._handoff_start_ns = 0
+        self._last_switch_ns = 0
         self._seq = 0
 
-    def update(self, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def update(self, candidates: List[Dict[str, Any]], vad_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         t_ns = now_ns()
-        best = _best_candidate(candidates)
+        has_speaking = _has_speaking_candidate(candidates, self._speak_on)
+        if has_speaking:
+            self._last_speaking_ns = t_ns
+        if self._require_vad and _vad_is_fresh(vad_state, t_ns, self._vad_max_age_ms):
+            if not bool(vad_state.get("speech")) and not has_speaking:
+                if self._state != "NO_LOCK" and self._within_hold(t_ns):
+                    self._state = "HOLD"
+                    reason = "vad_hold"
+                else:
+                    self._clear()
+                    reason = "vad_silence"
+                self._seq += 1
+                return {
+                    "t_ns": t_ns,
+                    "seq": self._seq,
+                    "state": self._state,
+                    "mode": "VISION_ONLY" if self._state != "NO_LOCK" else "NO_LOCK",
+                    "target_id": self._target_id,
+                    "target_bearing_deg": self._target_bearing,
+                    "confidence": float(self._last_score) if self._state != "NO_LOCK" else 0.0,
+                    "reason": reason,
+                    "stability": {
+                        "hold_ms": self._hold_ms,
+                        "handoff_ms": self._handoff_min_ms,
+                    },
+                }
+        if self._require_speaking and not has_speaking:
+            if self._state != "NO_LOCK" and self._within_speech_hold(t_ns):
+                reason = "silence_hold"
+                self._state = "HOLD"
+            else:
+                reason = "silence_drop"
+                self._clear()
+            self._seq += 1
+            return {
+                "t_ns": t_ns,
+                "seq": self._seq,
+                "state": self._state,
+                "mode": "VISION_ONLY" if self._state != "NO_LOCK" else "NO_LOCK",
+                "target_id": self._target_id,
+                "target_bearing_deg": self._target_bearing,
+                "confidence": float(self._last_score) if self._state != "NO_LOCK" else 0.0,
+                "reason": reason,
+                "stability": {
+                    "hold_ms": self._hold_ms,
+                    "handoff_ms": self._handoff_min_ms,
+                },
+            }
+
+        best = _best_candidate(candidates, self._speak_on, self._require_speaking)
         reason = "no_candidates"
 
         if self._state == "NO_LOCK":
             if best and best["combined_score"] >= self._acquire:
-                self._lock_to(best, t_ns)
-                reason = "acquired"
+                if self._lock_to(best, t_ns):
+                    reason = "acquired"
+                else:
+                    reason = "switch_throttled"
             else:
                 self._clear()
         else:
@@ -100,7 +159,7 @@ class LockStateMachine:
                 self._state = "LOCKED"
                 self._last_seen_ns = t_ns
                 self._last_score = float(best["combined_score"])
-                self._target_bearing = float(best.get("bearing_deg", 0.0))
+                self._target_bearing = _smooth_angle(self._target_bearing, float(best.get("bearing_deg", 0.0)), self._bearing_alpha)
                 reason = "maintain"
             else:
                 reason = self._maybe_handoff(best, t_ns)
@@ -121,14 +180,19 @@ class LockStateMachine:
             },
         }
 
-    def _lock_to(self, candidate: Dict[str, Any], t_ns: int) -> None:
+    def _lock_to(self, candidate: Dict[str, Any], t_ns: int) -> bool:
+        if self._target_id is not None and candidate["track_id"] != self._target_id:
+            if self._last_switch_ns and (t_ns - self._last_switch_ns) < int(self._min_switch_interval_ms * 1_000_000):
+                return False
         self._state = "LOCKED"
         self._target_id = candidate["track_id"]
-        self._target_bearing = float(candidate.get("bearing_deg", 0.0))
+        self._target_bearing = _smooth_angle(self._target_bearing, float(candidate.get("bearing_deg", 0.0)), self._bearing_alpha)
         self._last_score = float(candidate["combined_score"])
         self._last_seen_ns = t_ns
         self._handoff_id = None
         self._handoff_start_ns = 0
+        self._last_switch_ns = t_ns
+        return True
 
     def _clear(self) -> None:
         self._state = "NO_LOCK"
@@ -136,11 +200,15 @@ class LockStateMachine:
         self._target_bearing = None
         self._last_score = 0.0
         self._last_seen_ns = 0
+        self._last_speaking_ns = 0
         self._handoff_id = None
         self._handoff_start_ns = 0
 
     def _within_hold(self, t_ns: int) -> bool:
         return self._last_seen_ns and (t_ns - self._last_seen_ns) <= int(self._hold_ms * 1_000_000)
+
+    def _within_speech_hold(self, t_ns: int) -> bool:
+        return self._last_speaking_ns and (t_ns - self._last_speaking_ns) <= int(self._hold_ms * 1_000_000)
 
     def _maybe_handoff(self, best: Dict[str, Any], t_ns: int) -> str:
         score = float(best["combined_score"])
@@ -153,8 +221,10 @@ class LockStateMachine:
             self._state = "HANDOFF"
             return "handoff_start"
         if (t_ns - self._handoff_start_ns) >= int(self._handoff_min_ms * 1_000_000) and score >= self._acquire:
-            self._lock_to(best, t_ns)
-            return "handoff_commit"
+            if self._lock_to(best, t_ns):
+                return "handoff_commit"
+            self._state = "LOCKED"
+            return "switch_throttled"
         self._state = "HANDOFF"
         return "handoff_wait"
 
@@ -166,15 +236,25 @@ def start_lock_state_machine(
     stop_event: threading.Event,
 ) -> threading.Thread:
     q = bus.subscribe("fusion.candidates")
+    q_vad = bus.subscribe("audio.vad")
     machine = LockStateMachine(config)
+    last_vad: Optional[Dict[str, Any]] = None
 
     def _run() -> None:
+        nonlocal last_vad
         while not stop_event.is_set():
             try:
                 candidates = q.get(timeout=0.1)
             except queue.Empty:
+                candidates = None
+            try:
+                while True:
+                    last_vad = q_vad.get_nowait()
+            except queue.Empty:
+                pass
+            if candidates is None:
                 continue
-            msg = machine.update(candidates)
+            msg = machine.update(candidates, last_vad)
             bus.publish("fusion.target_lock", msg)
 
     thread = threading.Thread(target=_run, name="lock-state", daemon=True)
@@ -182,7 +262,50 @@ def start_lock_state_machine(
     return thread
 
 
-def _best_candidate(candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _best_candidate(
+    candidates: List[Dict[str, Any]],
+    speak_on_threshold: float,
+    require_speaking: bool,
+) -> Optional[Dict[str, Any]]:
     if not candidates:
         return None
-    return max(candidates, key=lambda cand: float(cand.get("combined_score", 0.0)))
+    speaking = [
+        cand
+        for cand in candidates
+        if cand.get("speaking") or float(cand.get("score_components", {}).get("mouth_activity", 0.0)) >= speak_on_threshold
+    ]
+    if require_speaking and not speaking:
+        return None
+    pool = speaking or candidates
+    # TODO: replace with priority queue when multi-speaker arbitration rules are defined.
+    return max(pool, key=lambda cand: (float(cand.get("combined_score", 0.0)), _priority_score(cand)))
+
+
+def _priority_score(candidate: Dict[str, Any]) -> float:
+    """Placeholder for priority arbitration (e.g., recency, role, explicit selection)."""
+    return 0.0
+
+
+def _has_speaking_candidate(candidates: List[Dict[str, Any]], speak_on_threshold: float) -> bool:
+    for cand in candidates:
+        if cand.get("speaking"):
+            return True
+        if float(cand.get("score_components", {}).get("mouth_activity", 0.0)) >= speak_on_threshold:
+            return True
+    return False
+
+
+def _smooth_angle(previous: Optional[float], new: float, alpha: float) -> float:
+    if previous is None:
+        return new % 360.0
+    delta = (new - previous + 180.0) % 360.0 - 180.0
+    return (previous + alpha * delta) % 360.0
+
+
+def _vad_is_fresh(vad_state: Optional[Dict[str, Any]], t_ns: int, max_age_ms: float) -> bool:
+    if vad_state is None:
+        return False
+    vad_t = vad_state.get("t_ns")
+    if vad_t is None:
+        return False
+    return (t_ns - int(vad_t)) <= int(max_age_ms * 1_000_000)

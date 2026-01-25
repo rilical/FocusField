@@ -32,6 +32,33 @@ CONTRACT DETAILS (inline from src/focusfield/vision/calibration/bearing.md):
 - Store calibration artifacts for reuse.
 """
 
-def not_implemented() -> None:
-    """Placeholder to be replaced by implementation."""
-    raise NotImplementedError("FocusField module stub.")
+from __future__ import annotations
+
+from typing import Tuple
+
+
+BBox = Tuple[int, int, int, int]
+
+
+def bearing_from_bbox(
+    bbox: BBox,
+    frame_width: int,
+    hfov_deg: float,
+    yaw_offset_deg: float,
+    bearing_offset_deg: float = 0.0,
+) -> float:
+    """Convert bbox center x into global bearing degrees."""
+    x, _, w, _ = bbox
+    center_x = x + 0.5 * w
+    if frame_width <= 0:
+        return _wrap_deg(yaw_offset_deg + bearing_offset_deg)
+    normalized = (center_x - (frame_width / 2.0)) / frame_width
+    bearing = normalized * hfov_deg + yaw_offset_deg + bearing_offset_deg
+    return _wrap_deg(bearing)
+
+
+def _wrap_deg(angle_deg: float) -> float:
+    wrapped = angle_deg % 360.0
+    if wrapped < 0:
+        wrapped += 360.0
+    return wrapped

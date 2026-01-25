@@ -32,6 +32,39 @@ CONTRACT DETAILS (inline from src/focusfield/vision/mouth/thresholds.md):
 - Thresholds are defined per preset in configs.
 """
 
-def not_implemented() -> None:
-    """Placeholder to be replaced by implementation."""
-    raise NotImplementedError("FocusField module stub.")
+from __future__ import annotations
+
+
+class SpeakingHysteresis:
+    """Per-track hysteresis for speaking detection."""
+
+    def __init__(
+        self,
+        speak_on_threshold: float,
+        speak_off_threshold: float,
+        min_on_frames: int = 3,
+        min_off_frames: int = 3,
+    ) -> None:
+        self._on = speak_on_threshold
+        self._off = speak_off_threshold
+        self._min_on = max(1, min_on_frames)
+        self._min_off = max(1, min_off_frames)
+        self._on_count = 0
+        self._off_count = 0
+        self._speaking = False
+
+    def update(self, activity: float) -> bool:
+        if activity >= self._on:
+            self._on_count += 1
+            self._off_count = 0
+            if self._on_count >= self._min_on:
+                self._speaking = True
+        elif activity <= self._off:
+            self._off_count += 1
+            self._on_count = 0
+            if self._off_count >= self._min_off:
+                self._speaking = False
+        else:
+            self._on_count = 0
+            self._off_count = 0
+        return self._speaking

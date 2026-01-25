@@ -12,7 +12,11 @@ authors = [
   { name = "FocusField" }
 ]
 dynamic = ["version"]
-dependencies = []
+dependencies = [
+  "PyYAML>=6.0",
+  "numpy>=1.23",
+  "opencv-python>=4.8",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -30,6 +30,16 @@ CONTRACT DETAILS (inline from src/focusfield/core/clock.md):
 - Convert wall time to t_ns only for logging.
 """
 
-def not_implemented() -> None:
-    """Placeholder to be replaced by implementation."""
-    raise NotImplementedError("FocusField module stub.")
+from __future__ import annotations
+
+import time
+
+
+def now_ns() -> int:
+    """Return a monotonic timestamp in nanoseconds."""
+    return time.monotonic_ns()
+
+
+def now_s() -> float:
+    """Return a monotonic timestamp in seconds."""
+    return now_ns() / 1_000_000_000.0

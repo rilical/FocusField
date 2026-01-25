@@ -51,9 +51,11 @@
 
 - t_ns, seq
 - state: NO_LOCK, ACQUIRE, LOCKED, HOLD, HANDOFF
-- target_id or target_bearing
+- mode: NO_LOCK, VISION_ONLY, AUDIO_ONLY, AV_LOCK
+- target_id or target_bearing_deg
 - confidence
 - reason: human-readable reason string
+- stability: optional jitter/hold stats
 
 ## EnhancedAudio
 
@@ -72,7 +74,7 @@
 
 - t_ns, seq
 - heatmap_summary (bins, peaks, confidence)
-- lock_state (state, angle, confidence, reason)
+- lock_state (state, mode, target_bearing_deg, confidence, reason)
 - face_summaries (track_id, bearing_deg, mouth_activity, speaking)
 - health_summary (module status, degraded flags)
 

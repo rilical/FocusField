@@ -47,6 +47,7 @@ This is the frozen wiring table. Do not diverge from it.
 | vision.frames.cam1 | VideoFrame | vision.cameras | vision.tracking.face_track | Camera 1 frames (internal) |
 | vision.frames.cam2 | VideoFrame | vision.cameras | vision.tracking.face_track | Camera 2 frames (internal) |
 | vision.face_tracks | FaceTrack[] | vision.tracking.face_track | fusion.av_association, ui.telemetry, bench.recorder | Merged tracks from all cameras |
+| vision.speaker_heatmap | DoaHeatmap | vision.speaker_heatmap | ui.telemetry, bench.recorder | 0..360 deg visual activity heatmap |
 | fusion.candidates | AssociationCandidate[] | fusion.av_association | fusion.lock_state_machine, fusion.target_output | Internal association candidates |
 | fusion.target_lock | TargetLock | fusion.lock_state_machine | audio.beamform.delay_and_sum, ui.telemetry, bench.recorder | Target lock state machine output |
 | audio.enhanced.beamformed | EnhancedAudio | audio.beamform.delay_and_sum | audio.enhance.denoise, audio.output.sink, bench.recorder | Beamformed stream |
@@ -266,6 +267,13 @@ src/focusfield/vision/mouth/thresholds.py
 - OUTPUTS: speaking flag embedded or separate.
 - CONFIG: on/off thresholds + min frames.
 
+src/focusfield/vision/speaker_heatmap.py
+
+- ROLE: visual activity heatmap from face tracks.
+- INPUTS: vision.face_tracks.
+- OUTPUTS: vision.speaker_heatmap (DoaHeatmap).
+- CONFIG: vision.heatmap.bin_size_deg, vision.heatmap.sigma_deg, vision.heatmap.top_k_peaks, vision.heatmap.smoothing_alpha.
+
 src/focusfield/vision/calibration/bearing.py
 
 - ROLE: pixel x -> camera bearing -> global azimuth.
@@ -313,7 +321,7 @@ src/focusfield/fusion/target_output.py
 src/focusfield/ui/telemetry.py
 
 - ROLE: define UI telemetry messages (compact, not raw audio).
-- INPUTS: DoaHeatmap, TargetLock, FaceTrack summaries.
+- INPUTS: audio.doa_heatmap, vision.speaker_heatmap, TargetLock, FaceTrack summaries.
 - OUTPUTS: ui.telemetry topic and websocket payloads.
 
 src/focusfield/ui/server.py
@@ -348,7 +356,7 @@ src/focusfield/bench/focusbench.py
 src/focusfield/bench/replay/recorder.py
 
 - ROLE: tap live pipeline topics and record a session.
-- INPUTS: audio.frames, vision.face_tracks, audio.doa_heatmap, fusion.target_lock, audio.enhanced.final.
+- INPUTS: audio.frames, vision.face_tracks, audio.doa_heatmap, vision.speaker_heatmap, fusion.target_lock, audio.enhanced.final.
 - OUTPUTS: bench scene folder (audio_raw.wav, enhanced.wav, tracks.jsonl, doa.jsonl, lock.jsonl, scene.json).
 
 src/focusfield/bench/replay/player.py

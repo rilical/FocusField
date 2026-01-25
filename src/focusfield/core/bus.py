@@ -30,6 +30,55 @@ CONTRACT DETAILS (inline from src/focusfield/core/bus.md):
 - Publish/subscribe is non-blocking where possible.
 """
 
-def not_implemented() -> None:
-    """Placeholder to be replaced by implementation."""
-    raise NotImplementedError("FocusField module stub.")
+from __future__ import annotations
+
+import queue
+import threading
+from collections import defaultdict
+from typing import Any, Callable, Dict, List, Optional
+
+
+DropHandler = Callable[[str, int], None]
+
+
+class Bus:
+    """Simple in-process pub/sub bus with bounded queues."""
+
+    def __init__(self, max_queue_depth: int = 8, on_drop: Optional[DropHandler] = None) -> None:
+        self._max_queue_depth = max_queue_depth
+        self._on_drop = on_drop
+        self._lock = threading.Lock()
+        self._subscribers: Dict[str, List[queue.Queue[Any]]] = defaultdict(list)
+
+    def subscribe(self, topic: str) -> queue.Queue[Any]:
+        """Subscribe to a topic and return a queue of messages."""
+        q: queue.Queue[Any] = queue.Queue(maxsize=self._max_queue_depth)
+        with self._lock:
+            self._subscribers[topic].append(q)
+        return q
+
+    def publish(self, topic: str, msg: Any) -> None:
+        """Publish a message to all subscribers without blocking."""
+        with self._lock:
+            subscribers = list(self._subscribers.get(topic, []))
+        for q in subscribers:
+            if not self._try_put(q, msg):
+                if self._on_drop:
+                    self._on_drop(topic, q.maxsize)
+
+    @staticmethod
+    def _try_put(q: queue.Queue[Any], msg: Any) -> bool:
+        """Try to enqueue, dropping the oldest item on overflow."""
+        try:
+            q.put_nowait(msg)
+            return True
+        except queue.Full:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(msg)
+                return True
+            except queue.Full:
+                return False

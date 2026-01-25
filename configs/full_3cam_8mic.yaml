@@ -25,8 +25,33 @@ video:
       hfov_deg: 90
       yaw_offset_deg: 240
 
+vision:
+  face:
+    min_confidence: 0.6
+    iou_threshold: 0.3
+    max_missing_frames: 10
+    min_area: 900
+    min_neighbors: 4
+    scale_factor: 1.1
+    detect_width: 360
+    detect_every_n: 1
+  track:
+    smoothing_alpha: 0.6
+    max_missing_frames: 10
+    min_age_frames: 2
+  mouth:
+    smoothing_alpha: 0.5
+    min_activity: 0.015
+    max_activity: 0.2
+    diff_threshold: 4
+  heatmap:
+    bin_size_deg: 5
+    sigma_deg: 12
+    top_k_peaks: 3
+    smoothing_alpha: 0.3
+
 fusion:
-  thresholds_preset: balanced
+  thresholds_preset: aggressive
 
 bus:
   max_queue_depth: 12
@@ -36,3 +61,8 @@ logging:
 
 output:
   sink: virtual_mic
+
+ui:
+  host: 127.0.0.1
+  port: 8080
+  telemetry_hz: 15

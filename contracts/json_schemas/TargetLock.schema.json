@@ -2,7 +2,62 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "TargetLock",
   "type": "object",
-  "description": "Schema placeholder for TargetLock message.",
-  "properties": {},
+  "description": "Schema for TargetLock message.",
+  "properties": {
+    "t_ns": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic timestamp in nanoseconds."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic sequence number."
+    },
+    "state": {
+      "type": "string",
+      "enum": ["NO_LOCK", "ACQUIRE", "LOCKED", "HOLD", "HANDOFF"],
+      "description": "Lock state machine state."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["NO_LOCK", "VISION_ONLY", "AUDIO_ONLY", "AV_LOCK"],
+      "description": "Source of evidence for target selection."
+    },
+    "target_id": {
+      "type": ["string", "integer", "null"],
+      "description": "Selected track identifier, if any."
+    },
+    "target_bearing_deg": {
+      "type": ["number", "null"],
+      "description": "Selected target bearing in degrees."
+    },
+    "angle_deg": {
+      "type": ["number", "null"],
+      "description": "Deprecated alias for target_bearing_deg."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Lock confidence 0..1."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Human-readable reason string."
+    },
+    "stability": {
+      "type": "object",
+      "description": "Optional stability stats.",
+      "properties": {
+        "hold_ms": { "type": "number", "minimum": 0 },
+        "handoff_ms": { "type": "number", "minimum": 0 },
+        "jitter_deg_rms": { "type": "number", "minimum": 0 },
+        "switches_last_sec": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
   "required": []
 }

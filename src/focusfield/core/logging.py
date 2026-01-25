@@ -32,6 +32,36 @@ CONTRACT DETAILS (inline from src/focusfield/core/logging.md):
 - Logs are written to disk in FocusBench runs.
 """
 
-def not_implemented() -> None:
-    """Placeholder to be replaced by implementation."""
-    raise NotImplementedError("FocusField module stub.")
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, Optional
+
+from focusfield.core.clock import now_ns
+
+
+LEVELS = {"debug": 10, "info": 20, "warning": 30, "error": 40}
+
+
+class LogEmitter:
+    """Emit structured LogEvents to the bus and stdout."""
+
+    def __init__(self, bus: Optional[Any], min_level: str = "info") -> None:
+        self._bus = bus
+        self._min_level = LEVELS.get(min_level, 20)
+
+    def emit(self, level: str, module: str, event: str, payload: Optional[Dict[str, Any]] = None) -> None:
+        record = {
+            "t_ns": now_ns(),
+            "level": level,
+            "message": event,
+            "context": {
+                "module": module,
+                "event": event,
+                "details": payload or {},
+            },
+        }
+        if self._bus is not None:
+            self._bus.publish("log.events", record)
+        if LEVELS.get(level, 0) >= self._min_level:
+            print(json.dumps(record, sort_keys=True))

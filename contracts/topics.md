@@ -10,6 +10,7 @@ This table is the single source of truth for topic names and message types. Do n
 | vision.frames.cam1 | VideoFrame | vision.cameras | vision.tracking.face_track | Camera 1 frames (internal) |
 | vision.frames.cam2 | VideoFrame | vision.cameras | vision.tracking.face_track | Camera 2 frames (internal) |
 | vision.face_tracks | FaceTrack[] | vision.tracking.face_track | fusion.av_association, ui.telemetry, bench.recorder | Merged tracks from all cameras |
+| vision.speaker_heatmap | DoaHeatmap | vision.speaker_heatmap | ui.telemetry, bench.recorder | 0..360 deg visual activity heatmap |
 | fusion.candidates | AssociationCandidate[] | fusion.av_association | fusion.lock_state_machine, fusion.target_output | Internal association candidates |
 | fusion.target_lock | TargetLock | fusion.lock_state_machine | audio.beamform.delay_and_sum, ui.telemetry, bench.recorder | Target lock state machine output |
 | audio.enhanced.beamformed | EnhancedAudio | audio.beamform.delay_and_sum | audio.enhance.denoise, audio.output.sink, bench.recorder | Beamformed stream |

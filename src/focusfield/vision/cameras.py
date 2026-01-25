@@ -37,6 +37,80 @@ CONTRACT DETAILS (inline from src/focusfield/vision/cameras.md):
 - Detect and log frame drops.
 """
 
-def not_implemented() -> None:
-    """Placeholder to be replaced by implementation."""
-    raise NotImplementedError("FocusField module stub.")
+from __future__ import annotations
+
+import threading
+import time
+from typing import Any, Dict, List
+
+import cv2
+
+from focusfield.core.clock import now_ns
+
+
+def start_cameras(
+    bus: Any,
+    config: Dict[str, Any],
+    logger: Any,
+    stop_event: threading.Event,
+) -> List[threading.Thread]:
+    cameras = config.get("video", {}).get("cameras", [])
+    threads: List[threading.Thread] = []
+    for index, cam_cfg in enumerate(cameras):
+        camera_id = cam_cfg.get("id", f"cam{index}")
+        device_index = cam_cfg.get("device_index", index)
+        width = cam_cfg.get("width", 640)
+        height = cam_cfg.get("height", 480)
+        fps = cam_cfg.get("fps", 30)
+        topic = f"vision.frames.{camera_id}"
+        thread = threading.Thread(
+            target=_camera_loop,
+            name=f"camera-{camera_id}",
+            args=(bus, logger, stop_event, camera_id, device_index, width, height, fps, topic),
+            daemon=True,
+        )
+        thread.start()
+        threads.append(thread)
+    return threads
+
+
+def _camera_loop(
+    bus: Any,
+    logger: Any,
+    stop_event: threading.Event,
+    camera_id: str,
+    device_index: int,
+    width: int,
+    height: int,
+    fps: int,
+    topic: str,
+) -> None:
+    cap = cv2.VideoCapture(device_index)
+    if not cap.isOpened():
+        logger.emit("error", "vision.cameras", "camera_missing", {"camera_id": camera_id})
+        return
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FPS, fps)
+    seq = 0
+    while not stop_event.is_set():
+        ok, frame = cap.read()
+        if not ok:
+            logger.emit("warning", "vision.cameras", "frame_drop", {"camera_id": camera_id})
+            time.sleep(0.05)
+            continue
+        t_ns = now_ns()
+        seq += 1
+        height_out, width_out = frame.shape[:2]
+        msg = {
+            "t_ns": t_ns,
+            "seq": seq,
+            "width": int(width_out),
+            "height": int(height_out),
+            "pixel_format": "bgr24",
+            "data": frame,
+            "camera_id": camera_id,
+            "device_index": device_index,
+        }
+        bus.publish(topic, msg)
+    cap.release()

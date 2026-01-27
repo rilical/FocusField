@@ -39,6 +39,8 @@ import queue
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+import json
+
 import cv2
 
 from focusfield.core.clock import now_ns
@@ -81,6 +83,7 @@ class CameraTracker:
         self._logger = logger
         self._mesh = None
         self._mesh_step = max(1, int(mouth_cfg.get("mesh_every_n", 1)))
+        self._mesh_edge_margin = float(mouth_cfg.get("mesh_edge_margin", 0.08))
         if mouth_cfg.get("use_facemesh", True):
             try:
                 self._mesh = FaceMeshMouthEstimator(
@@ -108,6 +111,8 @@ class CameraTracker:
         )
         self._frame_count = 0
         self._last_detections: List[Tuple[BBox, float]] = []
+        self._bearing_model = str(camera_cfg.get("bearing_model", "linear")).lower()
+        self._bearing_lut = _load_bearing_lut(camera_cfg.get("bearing_lut_path"), camera_id, logger)
 
     def process_frame(self, frame_msg: Dict[str, Any]) -> List[Dict[str, Any]]:
         frame = frame_msg["data"]
@@ -144,7 +149,7 @@ class CameraTracker:
                 continue
             track_key = f"{self._camera_id}-{track.track_id}"
             mesh_match = _match_mesh_face(bbox, mesh_faces)
-            if mesh_match is not None:
+            if mesh_match is not None and not _near_frame_edge(bbox, width, height, self._mesh_edge_margin):
                 activity = self._mouth.smooth(track_key, float(mesh_match.get("activity", 0.0)))
             else:
                 activity = self._mouth.compute(track_key, frame, bbox)
@@ -164,6 +169,8 @@ class CameraTracker:
                 hfov_deg=float(self._camera_cfg.get("hfov_deg", 90.0)),
                 yaw_offset_deg=float(self._camera_cfg.get("yaw_offset_deg", 0.0)),
                 bearing_offset_deg=float(self._camera_cfg.get("bearing_offset_deg", 0.0)),
+                bearing_model=self._bearing_model,
+                bearing_lut=self._bearing_lut,
             )
             output_tracks.append(
                 {
@@ -280,6 +287,32 @@ def _match_mesh_face(bbox: BBox, mesh_faces: List[Dict[str, Any]]) -> Optional[D
     if best is None or best_dist > max_dim * 0.75:
         return None
     return best
+
+
+def _near_frame_edge(bbox: BBox, frame_width: int, frame_height: int, margin_ratio: float) -> bool:
+    if frame_width <= 0 or frame_height <= 0:
+        return True
+    margin_x = int(frame_width * margin_ratio)
+    margin_y = int(frame_height * margin_ratio)
+    x, y, w, h = bbox
+    if x <= margin_x or (x + w) >= (frame_width - margin_x):
+        return True
+    if y <= margin_y or (y + h) >= (frame_height - margin_y):
+        return True
+    return False
+
+
+def _load_bearing_lut(path: Optional[str], camera_id: str, logger: Any) -> Optional[List[float]]:
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, list) and data:
+            return [float(x) for x in data]
+    except Exception as exc:  # noqa: BLE001
+        logger.emit("warning", "vision.calibration.bearing", "calibration_missing", {"camera_id": camera_id, "error": str(exc)})
+    return None
 
 
 def _iou(box_a: BBox, box_b: BBox) -> float:

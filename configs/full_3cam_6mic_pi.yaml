@@ -30,6 +30,8 @@ video:
       fps: 15
       hfov_deg: 160
       yaw_offset_deg: 0
+      bearing_model: linear
+      bearing_lut_path: ""
     - id: cam1
       device_index: 1
       width: 640
@@ -37,6 +39,8 @@ video:
       fps: 15
       hfov_deg: 160
       yaw_offset_deg: 120
+      bearing_model: linear
+      bearing_lut_path: ""
     - id: cam2
       device_index: 2
       width: 640
@@ -44,6 +48,8 @@ video:
       fps: 15
       hfov_deg: 160
       yaw_offset_deg: 240
+      bearing_model: linear
+      bearing_lut_path: ""
 
 vision:
   face:

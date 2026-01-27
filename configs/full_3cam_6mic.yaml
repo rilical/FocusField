@@ -23,12 +23,18 @@ video:
     - id: cam0
       hfov_deg: 90
       yaw_offset_deg: 0
+      bearing_model: linear
+      bearing_lut_path: ""
     - id: cam1
       hfov_deg: 90
       yaw_offset_deg: 120
+      bearing_model: linear
+      bearing_lut_path: ""
     - id: cam2
       hfov_deg: 90
       yaw_offset_deg: 240
+      bearing_model: linear
+      bearing_lut_path: ""
 
 vision:
   face:

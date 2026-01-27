@@ -25,20 +25,22 @@ flowchart LR
 
   subgraph Audio
     B --> C["DOA Heatmap (SRP-PHAT over 0..360)"]
+    B --> VAD["VAD (WebRTC)"]
     B --> D["Beamformer (Delay-and-Sum, MVP)"]
     D --> E["Denoise (optional)"]
   end
 
   subgraph Vision
     H --> V1[Face Track]
-    V1 --> V2[Mouth Activity Score]
+    V1 --> V2["Mouth Activity Score (FaceLandmarker)"]
     V2 --> V3["Face Bearing -> Global Azimuth"]
   end
 
   subgraph Fusion
     C --> F1["AV Association (DOA peaks <-> faces)"]
     V3 --> F1
-    F1 --> F2["Target Lock State Machine (Acquire / Lock / Hold / Handoff)"]
+  VAD --> F2
+  F1 --> F2["Target Lock State Machine (Acquire / Lock / Hold / Handoff)"]
     F2 --> D
   end
 
@@ -56,7 +58,7 @@ The 360 deg heatmap is computed from multichannel audio using SRP-PHAT (scores o
 
 ## Data contracts
 
-All modules communicate using standardized message types: AudioFrame, VideoFrame, FaceTrack, DoaHeatmap, TargetLock, EnhancedAudio, LogEvent. These contracts are the single source of truth:
+All modules communicate using standardized message types: AudioFrame, AudioVad, VideoFrame, FaceTrack, DoaHeatmap, TargetLock, EnhancedAudio, LogEvent. These contracts are the single source of truth:
 
 - contracts/messages.md
 - contracts/json_schemas/...
@@ -136,5 +138,5 @@ Definitions and module contracts are embedded in `src/focusfield/**.py` docstrin
 ## Deliverables
 
 - A portable sensor pod + pipeline producing a focused "clean mic" stream for calls
-- UI showing camera tiles, 360 deg acoustic heatmap, and lock status
+- UI showing camera tiles, 360 deg heatmap, and lock status (with active-speaker highlight)
 - FocusBench reports enabling regression testing and quantitative claims

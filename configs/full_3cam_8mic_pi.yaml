@@ -1,0 +1,99 @@
+# FocusField Full configuration (3 cameras, 8 microphones) - Pi-optimized
+# Use this on Raspberry Pi 5 / Pi-class devices.
+
+build: full
+
+audio:
+  channels: 8
+  sample_rate_hz: 48000
+  block_size: 1024
+  # device_index: 0  # set when multiple audio devices are present
+  device_profile: mic_array_8ch_default
+  vad:
+    enabled: true
+    mode: 1
+    frame_ms: 30
+    min_speech_ratio: 0.3
+  doa:
+    method: srp_phat
+    bins: 72
+    update_hz: 10
+  beamformer:
+    method: delay_and_sum
+
+video:
+  cameras:
+    - id: cam0
+      device_index: 0
+      width: 640
+      height: 360
+      fps: 15
+      hfov_deg: 160
+      yaw_offset_deg: 0
+    - id: cam1
+      device_index: 1
+      width: 640
+      height: 360
+      fps: 15
+      hfov_deg: 160
+      yaw_offset_deg: 120
+    - id: cam2
+      device_index: 2
+      width: 640
+      height: 360
+      fps: 15
+      hfov_deg: 160
+      yaw_offset_deg: 240
+
+vision:
+  face:
+    min_confidence: 0.6
+    iou_threshold: 0.3
+    max_missing_frames: 10
+    min_area: 800
+    min_neighbors: 4
+    scale_factor: 1.1
+    detect_width: 320
+    detect_every_n: 2
+  track:
+    smoothing_alpha: 0.6
+    max_missing_frames: 10
+    min_age_frames: 2
+  mouth:
+    smoothing_alpha: 0.5
+    min_activity: 0.02
+    max_activity: 0.2
+    diff_threshold: 4
+    use_facemesh: true
+    mesh_every_n: 2
+    mesh_max_faces: 3
+    mesh_min_detection_confidence: 0.5
+    mesh_min_tracking_confidence: 0.5
+    mesh_min_activity: 0.005
+    mesh_max_activity: 0.1
+    mesh_model_path: ""
+  heatmap:
+    bin_size_deg: 10
+    sigma_deg: 18
+    top_k_peaks: 2
+    smoothing_alpha: 0.25
+
+fusion:
+  thresholds_preset: balanced
+  require_vad: true
+  vad_max_age_ms: 500
+  require_speaking: true
+
+bus:
+  max_queue_depth: 8
+
+logging:
+  level: info
+
+output:
+  sink: virtual_mic
+
+ui:
+  host: 127.0.0.1
+  port: 8080
+  telemetry_hz: 10

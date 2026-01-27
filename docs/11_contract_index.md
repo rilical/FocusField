@@ -364,8 +364,8 @@ src/focusfield/bench/focusbench.py
 src/focusfield/bench/replay/recorder.py
 
 - ROLE: tap live pipeline topics and record a session.
-- INPUTS: audio.frames, vision.face_tracks, audio.doa_heatmap, vision.speaker_heatmap, fusion.target_lock, audio.enhanced.final.
-- OUTPUTS: bench scene folder (audio_raw.wav, enhanced.wav, tracks.jsonl, doa.jsonl, lock.jsonl, scene.json).
+- INPUTS: audio.frames, audio.vad, vision.face_tracks, audio.doa_heatmap, vision.speaker_heatmap, fusion.target_lock, audio.enhanced.final.
+- OUTPUTS: bench scene folder (audio_raw.wav, enhanced.wav, tracks.jsonl, doa.jsonl, visual_heatmap.jsonl, vad.jsonl, lock.jsonl, scene.json).
 
 src/focusfield/bench/replay/player.py
 

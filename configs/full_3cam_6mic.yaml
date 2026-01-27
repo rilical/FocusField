@@ -1,0 +1,84 @@
+# FocusField Full configuration (3 cameras, 6 microphones)
+build: full
+
+audio:
+  channels: 6
+  sample_rate_hz: 48000
+  block_size: 1024
+  device_profile: mic_array_6ch_default
+  vad:
+    enabled: true
+    mode: 1
+    frame_ms: 20
+    min_speech_ratio: 0.2
+  doa:
+    method: srp_phat
+    bins: 360
+    update_hz: 30
+  beamformer:
+    method: delay_and_sum
+
+video:
+  cameras:
+    - id: cam0
+      hfov_deg: 90
+      yaw_offset_deg: 0
+    - id: cam1
+      hfov_deg: 90
+      yaw_offset_deg: 120
+    - id: cam2
+      hfov_deg: 90
+      yaw_offset_deg: 240
+
+vision:
+  face:
+    min_confidence: 0.6
+    iou_threshold: 0.3
+    max_missing_frames: 10
+    min_area: 900
+    min_neighbors: 4
+    scale_factor: 1.1
+    detect_width: 360
+    detect_every_n: 1
+  track:
+    smoothing_alpha: 0.6
+    max_missing_frames: 10
+    min_age_frames: 2
+  mouth:
+    smoothing_alpha: 0.4
+    min_activity: 0.015
+    max_activity: 0.2
+    diff_threshold: 4
+    use_facemesh: true
+    mesh_every_n: 1
+    mesh_max_faces: 5
+    mesh_min_detection_confidence: 0.5
+    mesh_min_tracking_confidence: 0.5
+    mesh_min_activity: 0.005
+    mesh_max_activity: 0.1
+    mesh_model_path: ""
+  heatmap:
+    bin_size_deg: 5
+    sigma_deg: 12
+    top_k_peaks: 3
+    smoothing_alpha: 0.3
+
+fusion:
+  thresholds_preset: aggressive
+  require_vad: true
+  vad_max_age_ms: 500
+  require_speaking: true
+
+bus:
+  max_queue_depth: 12
+
+logging:
+  level: info
+
+output:
+  sink: virtual_mic
+
+ui:
+  host: 127.0.0.1
+  port: 8080
+  telemetry_hz: 15

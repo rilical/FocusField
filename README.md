@@ -14,6 +14,23 @@ It does not perform open-air room noise cancellation.
 
 It does not guarantee perfect separation of multiple simultaneous speakers.
 
+## Quick glossary (plain English)
+
+If you're new to audio and signal processing, this is the minimum you need to know:
+
+- WAV: a simple, uncompressed audio file format. We use it for debugging because it's "raw" and faithful.
+- DOA (Direction of Arrival): the direction the sound is coming from (0-360 degrees around the device).
+- DOA peak: the strongest direction in the heatmap. This is where we point the beam.
+- SRP-PHAT: a robust method to estimate DOA using multiple microphones (compares time delays).
+- GCC-PHAT: a simpler baseline DOA method (also uses time delay between mics).
+- VAD (Voice Activity Detection): a yes/no signal that says "someone is speaking right now."
+
+Why it matters:
+
+- DOA + peak tells us where to aim the audio focus.
+- Beamforming uses that direction to amplify the target voice.
+- VAD prevents the system from locking or steering when the room is silent.
+
 ## System overview
 
 ```mermaid

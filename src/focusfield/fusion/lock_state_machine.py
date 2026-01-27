@@ -12,6 +12,9 @@ CONFIG KEYS:
   - fusion.hold_ms: hold duration
   - fusion.handoff_min_ms: handoff minimum
   - fusion.drop_threshold: drop threshold
+  - fusion.priority_policy: confidence_only | confidence_then_recency | recency
+  - fusion.preferred_track_id: optional explicit target selection
+  - fusion.recency_decay_ms: recency bonus decay window for policy
 
 PERF / TIMING:
   - per update; deterministic transitions
@@ -48,6 +51,13 @@ CONTRACT DETAILS (inline from src/focusfield/fusion/lock_state_machine.md):
 ## Output
 
 - TargetLock includes reason strings for debugging and demos.
+
+## Priority policy
+
+- confidence_only: pick highest combined_score.
+- confidence_then_recency: break ties with recent speakers.
+- recency: prefer most recent speaker, break ties with confidence.
+- preferred_track_id overrides any policy when present in the candidate pool.
 """
 
 from __future__ import annotations
@@ -74,12 +84,16 @@ class LockStateMachine:
         self._require_vad = bool(config.get("fusion", {}).get("require_vad", False))
         self._vad_max_age_ms = float(config.get("fusion", {}).get("vad_max_age_ms", 500))
         self._require_speaking = bool(config.get("fusion", {}).get("require_speaking", True))
+        self._priority_policy = str(config.get("fusion", {}).get("priority_policy", "confidence_then_recency"))
+        self._preferred_track_id = config.get("fusion", {}).get("preferred_track_id")
+        self._recency_decay_ms = float(config.get("fusion", {}).get("recency_decay_ms", 1200))
         self._state = "NO_LOCK"
         self._target_id: Optional[str] = None
         self._target_bearing: Optional[float] = None
         self._last_score = 0.0
         self._last_seen_ns = 0
         self._last_speaking_ns = 0
+        self._last_speaking_by_track: Dict[str, int] = {}
         self._handoff_id: Optional[str] = None
         self._handoff_start_ns = 0
         self._last_switch_ns = 0
@@ -87,6 +101,7 @@ class LockStateMachine:
 
     def update(self, candidates: List[Dict[str, Any]], vad_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         t_ns = now_ns()
+        self._update_speaking_history(candidates, t_ns)
         has_speaking = _has_speaking_candidate(candidates, self._speak_on)
         if has_speaking:
             self._last_speaking_ns = t_ns
@@ -136,7 +151,15 @@ class LockStateMachine:
                 },
             }
 
-        best = _best_candidate(candidates, self._speak_on, self._require_speaking)
+        best = _best_candidate(
+            candidates,
+            self._speak_on,
+            self._require_speaking,
+            self._priority_policy,
+            self._preferred_track_id,
+            self._last_speaking_by_track,
+            self._recency_decay_ms,
+        )
         reason = "no_candidates"
 
         if self._state == "NO_LOCK":
@@ -210,6 +233,14 @@ class LockStateMachine:
     def _within_speech_hold(self, t_ns: int) -> bool:
         return self._last_speaking_ns and (t_ns - self._last_speaking_ns) <= int(self._hold_ms * 1_000_000)
 
+    def _update_speaking_history(self, candidates: List[Dict[str, Any]], t_ns: int) -> None:
+        for cand in candidates:
+            track_id = cand.get("track_id")
+            if track_id is None:
+                continue
+            if cand.get("speaking") or float(cand.get("score_components", {}).get("mouth_activity", 0.0)) >= self._speak_on:
+                self._last_speaking_by_track[str(track_id)] = t_ns
+
     def _maybe_handoff(self, best: Dict[str, Any], t_ns: int) -> str:
         score = float(best["combined_score"])
         if score < self._drop and not self._within_hold(t_ns):
@@ -266,6 +297,10 @@ def _best_candidate(
     candidates: List[Dict[str, Any]],
     speak_on_threshold: float,
     require_speaking: bool,
+    priority_policy: str,
+    preferred_track_id: Optional[str],
+    last_speaking_by_track: Dict[str, int],
+    recency_decay_ms: float,
 ) -> Optional[Dict[str, Any]]:
     if not candidates:
         return None
@@ -277,13 +312,52 @@ def _best_candidate(
     if require_speaking and not speaking:
         return None
     pool = speaking or candidates
-    # TODO: replace with priority queue when multi-speaker arbitration rules are defined.
-    return max(pool, key=lambda cand: (float(cand.get("combined_score", 0.0)), _priority_score(cand)))
+    if preferred_track_id is not None:
+        preferred_id = str(preferred_track_id)
+        for cand in pool:
+            if str(cand.get("track_id")) == preferred_id:
+                return cand
+    policy = str(priority_policy or "").lower()
+    if policy == "recency":
+        return max(
+            pool,
+            key=lambda cand: (
+                _priority_score(cand, policy, preferred_track_id, last_speaking_by_track, recency_decay_ms),
+                float(cand.get("combined_score", 0.0)),
+            ),
+        )
+    if policy == "confidence_only":
+        return max(pool, key=lambda cand: float(cand.get("combined_score", 0.0)))
+    return max(
+        pool,
+        key=lambda cand: (
+            float(cand.get("combined_score", 0.0)),
+            _priority_score(cand, policy, preferred_track_id, last_speaking_by_track, recency_decay_ms),
+        ),
+    )
 
 
-def _priority_score(candidate: Dict[str, Any]) -> float:
-    """Placeholder for priority arbitration (e.g., recency, role, explicit selection)."""
-    return 0.0
+def _priority_score(
+    candidate: Dict[str, Any],
+    priority_policy: str,
+    preferred_track_id: Optional[str],
+    last_speaking_by_track: Dict[str, int],
+    recency_decay_ms: float,
+) -> float:
+    """Priority arbitration for multi-speaker cases."""
+    track_id = str(candidate.get("track_id", ""))
+    base = 0.0
+    if preferred_track_id and track_id == str(preferred_track_id):
+        base += 10.0
+    if priority_policy == "confidence_only":
+        return base
+    if priority_policy in {"confidence_then_recency", "recency"}:
+        last_ns = last_speaking_by_track.get(track_id)
+        if last_ns:
+            age_ms = max(0.0, (now_ns() - last_ns) / 1_000_000.0)
+            if recency_decay_ms > 0:
+                base += max(0.0, 1.0 - (age_ms / recency_decay_ms))
+    return base
 
 
 def _has_speaking_candidate(candidates: List[Dict[str, Any]], speak_on_threshold: float) -> bool:

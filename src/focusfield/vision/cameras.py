@@ -58,6 +58,7 @@ def start_cameras(
     threads: List[threading.Thread] = []
     for index, cam_cfg in enumerate(cameras):
         camera_id = cam_cfg.get("id", f"cam{index}")
+        device_path = cam_cfg.get("device_path")
         device_index = cam_cfg.get("device_index", index)
         width = cam_cfg.get("width", 640)
         height = cam_cfg.get("height", 480)
@@ -66,7 +67,7 @@ def start_cameras(
         thread = threading.Thread(
             target=_camera_loop,
             name=f"camera-{camera_id}",
-            args=(bus, logger, stop_event, camera_id, device_index, width, height, fps, topic),
+            args=(bus, logger, stop_event, camera_id, device_path, device_index, width, height, fps, topic),
             daemon=True,
         )
         thread.start()
@@ -79,16 +80,21 @@ def _camera_loop(
     logger: Any,
     stop_event: threading.Event,
     camera_id: str,
+    device_path: object,
     device_index: int,
     width: int,
     height: int,
     fps: int,
     topic: str,
 ) -> None:
-    cap = cv2.VideoCapture(device_index)
+    cap = cv2.VideoCapture(str(device_path)) if device_path else cv2.VideoCapture(device_index)
     if not cap.isOpened():
         logger.emit("error", "vision.cameras", "camera_missing", {"camera_id": camera_id})
         return
+    try:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    except Exception:  # noqa: BLE001
+        pass
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     cap.set(cv2.CAP_PROP_FPS, fps)
@@ -111,6 +117,7 @@ def _camera_loop(
             "data": frame,
             "camera_id": camera_id,
             "device_index": device_index,
+            "device_path": str(device_path) if device_path else None,
         }
         bus.publish(topic, msg)
     cap.release()

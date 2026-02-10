@@ -1,11 +1,43 @@
 # FocusField Full configuration (3 cameras, 8 microphones)
 build: full
 
+runtime:
+  run_id: ""
+  fail_fast: true
+  artifacts:
+    dir: "artifacts"
+    retention:
+      max_runs: 10
+
+trace:
+  enabled: true
+  level: medium
+  thumbnails:
+    enabled: true
+    fps: 1
+  record_raw_audio: true
+  record_heatmap_full: false
+
+health:
+  enabled: true
+  thresholds_ms:
+    audio_frames: 200
+    enhanced_final: 300
+    face_tracks: 1000
+    camera_frame: 1000
+
+perf:
+  enabled: true
+  emit_hz: 1
+
 audio:
   channels: 8
   sample_rate_hz: 48000
   block_size: 1024
-  device_profile: mic_array_8ch_default
+  device_profile: minidsp_uma8_raw_7p1
+  device_selector:
+    match_substring: "miniDSP"
+    require_input_channels: 8
   vad:
     enabled: true
     mode: 1
@@ -13,10 +45,43 @@ audio:
     min_speech_ratio: 0.2
   doa:
     method: srp_phat
-    bins: 360
-    update_hz: 30
+    bins: 120
+    update_hz: 20
   beamformer:
-    method: delay_and_sum
+    method: mvdr
+    no_lock_behavior: omni
+    use_last_lock_ms: 800
+    steering_smoothing_alpha: 0.85
+    channel_weights:
+      enabled: true
+      spatial_exponent: 2.0
+      dead_rms_threshold: 1.0e-5
+      min_snr_db: 3.0
+      max_snr_db: 18.0
+      max_clip_fraction: 0.01
+    noise_reference:
+      ref_threshold: 0.2
+      update_when_speaking: true
+    mvdr:
+      nfft: 1024
+      refresh_ms: 250
+      noise_ema_alpha: 0.95
+      diagonal_loading: 1.0e-3
+      steering_update_deg: 5.0
+      max_condition_number: 1.0e6
+
+  denoise:
+    enabled: true
+    backend: wiener
+    wiener:
+      g_min: 0.05
+      noise_ema_alpha: 0.98
+
+  sync:
+    enabled: true
+    drift_check:
+      max_offset_samples: 6
+      check_every_s: 2.0
 
 video:
   cameras:
@@ -80,9 +145,16 @@ bus:
 
 logging:
   level: info
+  file:
+    enabled: true
+    flush_interval_ms: 200
+    rotate_mb: 50
 
 output:
-  sink: virtual_mic
+  sink: file
+  file_sink:
+    dir: "artifacts"
+    write_raw_multich: true
 
 ui:
   host: 127.0.0.1

@@ -16,6 +16,19 @@
 - All modules publish to a typed bus with schema validation.
 - UI consumes telemetry and renders tiles + heatmap.
 
+## Runtime observability (A→Z debugability)
+
+The pipeline is designed to be diagnosable on constrained hardware (Pi) without attaching a debugger.
+
+- **Artifacts per run**: the runner creates `artifacts/<run_id>/` and writes `run_meta.json` + `config_effective.yaml`.
+- **Structured logs**: all modules emit to `log.events`; `core.log_sink` persists to `logs/events.jsonl`.
+- **Perf snapshots**: `core.perf_monitor` writes `logs/perf.jsonl` and publishes `runtime.perf`.
+- **Health snapshot**: `core.health` publishes `runtime.health` (includes staleness + bus drop counts).
+- **Crash reports**: thread + main excepthooks write `crash/crash.json` (traceback + last-known state).
+- **Trace recorder**: `bench.replay.recorder` records JSONL traces + WAV + 1fps camera thumbnails.
+
+This artifact folder is the intended unit of debugging and sharing: zip it and hand it off.
+
 ## Pipeline wiring (topics)
 
 - AudioCapture publishes audio.frames.

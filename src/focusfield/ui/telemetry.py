@@ -56,6 +56,9 @@ def start_telemetry(
     q_faces = bus.subscribe("vision.face_tracks")
     q_lock = bus.subscribe("fusion.target_lock")
     q_logs = bus.subscribe("log.events")
+    q_beam = bus.subscribe("audio.beamformer.debug")
+    q_health = bus.subscribe("runtime.health")
+    q_perf = bus.subscribe("runtime.perf")
 
     state: Dict[str, Any] = {
         "heatmap": None,
@@ -63,6 +66,9 @@ def start_telemetry(
         "faces": [],
         "lock": None,
         "logs": [],
+        "beam": None,
+        "health": None,
+        "perf": None,
     }
     seq = 0
 
@@ -92,6 +98,15 @@ def start_telemetry(
             lock_msg = _drain(q_lock)
             if lock_msg is not None:
                 state["lock"] = lock_msg
+            beam_msg = _drain(q_beam)
+            if beam_msg is not None:
+                state["beam"] = beam_msg
+            health_msg = _drain(q_health)
+            if health_msg is not None:
+                state["health"] = health_msg
+            perf_msg = _drain(q_perf)
+            if perf_msg is not None:
+                state["perf"] = perf_msg
             log_event = _drain(q_logs)
             if log_event is not None:
                 logs: List[Dict[str, Any]] = state["logs"]
@@ -147,7 +162,9 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             }
             for face in faces
         ],
-        "health_summary": {},
+        "beamformer": state.get("beam"),
+        "health_summary": state.get("health") or {},
+        "perf_summary": state.get("perf") or {},
         "logs": state.get("logs", []),
         "meta": {
             "cameras": cameras,

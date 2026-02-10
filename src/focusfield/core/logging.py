@@ -46,9 +46,10 @@ LEVELS = {"debug": 10, "info": 20, "warning": 30, "error": 40}
 class LogEmitter:
     """Emit structured LogEvents to the bus and stdout."""
 
-    def __init__(self, bus: Optional[Any], min_level: str = "info") -> None:
+    def __init__(self, bus: Optional[Any], min_level: str = "info", run_id: Optional[str] = None) -> None:
         self._bus = bus
         self._min_level = LEVELS.get(min_level, 20)
+        self._run_id = run_id
 
     def emit(self, level: str, module: str, event: str, payload: Optional[Dict[str, Any]] = None) -> None:
         record = {
@@ -56,6 +57,7 @@ class LogEmitter:
             "level": level,
             "message": event,
             "context": {
+                "run_id": self._run_id,
                 "module": module,
                 "event": event,
                 "details": payload or {},

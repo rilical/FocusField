@@ -48,7 +48,16 @@ class Bus:
         self._max_queue_depth = max_queue_depth
         self._on_drop = on_drop
         self._lock = threading.Lock()
+        self._stats_lock = threading.Lock()
         self._subscribers: Dict[str, List[queue.Queue[Any]]] = defaultdict(list)
+        self._drop_counts: Dict[str, int] = defaultdict(int)
+
+    def set_drop_handler(self, on_drop: Optional[DropHandler]) -> None:
+        self._on_drop = on_drop
+
+    def get_drop_counts(self) -> Dict[str, int]:
+        with self._stats_lock:
+            return dict(self._drop_counts)
 
     def subscribe(self, topic: str) -> queue.Queue[Any]:
         """Subscribe to a topic and return a queue of messages."""
@@ -62,16 +71,22 @@ class Bus:
         with self._lock:
             subscribers = list(self._subscribers.get(topic, []))
         for q in subscribers:
-            if not self._try_put(q, msg):
+            dropped = self._put_with_drop_oldest(q, msg)
+            if dropped:
+                with self._stats_lock:
+                    self._drop_counts[topic] += 1
                 if self._on_drop:
                     self._on_drop(topic, q.maxsize)
 
     @staticmethod
-    def _try_put(q: queue.Queue[Any], msg: Any) -> bool:
-        """Try to enqueue, dropping the oldest item on overflow."""
+    def _put_with_drop_oldest(q: queue.Queue[Any], msg: Any) -> bool:
+        """Enqueue, dropping the oldest item on overflow.
+
+        Returns True when a drop occurred (even if enqueue succeeds).
+        """
         try:
             q.put_nowait(msg)
-            return True
+            return False
         except queue.Full:
             try:
                 q.get_nowait()
@@ -81,4 +96,4 @@ class Bus:
                 q.put_nowait(msg)
                 return True
             except queue.Full:
-                return False
+                return True

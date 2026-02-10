@@ -53,8 +53,11 @@ This is the frozen wiring table. Do not diverge from it.
 | fusion.target_lock | TargetLock | fusion.lock_state_machine | audio.beamform.delay_and_sum, ui.telemetry, bench.recorder | Target lock state machine output |
 | audio.enhanced.beamformed | EnhancedAudio | audio.beamform.delay_and_sum | audio.enhance.denoise, audio.output.sink, bench.recorder | Beamformed stream |
 | audio.enhanced.final | EnhancedAudio | audio.enhance.denoise, audio.enhance.agc_post | audio.output.sink, bench.recorder | Final enhanced stream |
+| audio.beamformer.debug | dict | audio.beamform.mvdr, audio.beamform.delay_and_sum | ui.telemetry, bench.recorder | Debug surface: gains, refs, condition #, fallback |
 | ui.telemetry | TelemetrySnapshot | ui.telemetry | ui.server, ui.views.live | UI-only aggregated snapshot |
 | log.events | LogEvent | all modules | core.logging, ui.telemetry | Structured log events |
+| runtime.health | dict | core.health | ui.telemetry | Health snapshot: topic staleness + drop counts |
+| runtime.perf | dict | core.perf_monitor | ui.telemetry | Latency + throughput summary |
 | bench.record | Tap | bench.recorder | n/a | Recorder subscribes to key topics |
 | bench.report | BenchReport | bench.focusbench | ui.views.bench, user | FocusBench report bundle |
 
@@ -100,6 +103,19 @@ src/focusfield/core/health.py
 - ROLE: module heartbeat aggregation.
 - INPUTS: heartbeats or log events.
 - OUTPUTS: UI health snapshot with red/yellow/green state.
+
+src/focusfield/core/artifacts.py
+
+- ROLE: create per-run artifact folder and write run metadata.
+- OUTPUTS: artifacts/<run_id>/run_meta.json, config_effective.yaml.
+
+src/focusfield/core/log_sink.py
+
+- ROLE: persist structured log.events to artifacts/<run_id>/logs/events.jsonl.
+
+src/focusfield/core/perf_monitor.py
+
+- ROLE: emit runtime.perf + persist logs/perf.jsonl.
 
 src/focusfield/core/logging.py
 

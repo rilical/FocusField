@@ -128,6 +128,33 @@ FocusField includes explicit calibration artifacts so results are reproducible:
 - Mic array geometry + channel-order verification
 - Time sync sanity checks (audio/video skew bounds)
 
+## Run artifacts, tracing, and debugging (first-class)
+
+Every run produces a **self-contained debug bundle** under:
+
+`artifacts/<run_id>/`
+
+This is the fastest way to debug on-device (Pi) without guesswork. If something is wrong, you can zip that folder and hand it to another engineer.
+
+Key files:
+
+- `run_meta.json`: device selection + versions + config snapshot
+- `config_effective.yaml`: merged config actually used
+- `logs/events.jsonl`: structured logs (one JSON per line)
+- `logs/perf.jsonl`: lightweight perf/latency snapshots
+- `traces/*.jsonl`: topic traces (VAD/DOA/faces/lock/beamformer debug)
+- `audio/enhanced.wav`: mono enhanced output
+- `audio/raw.wav`: raw multichannel capture (optional)
+- `thumbs/*.jpg`: 1fps thumbnails per camera (optional)
+- `crash/crash.json`: written only on crash (traceback + last known state)
+
+Important behavior:
+
+- When `trace.enabled: true`, the trace recorder is the **canonical WAV writer**. The legacy file sink is skipped to avoid double-writing.
+- To disable all tracing/artifacts (and use the file sink only), set `trace.enabled: false`.
+
+Pi setup + bring-up instructions live in `docs/30_pi_runbook.md`.
+
 ## FocusBench (quantitative evaluation and regression)
 
 FocusBench replays recorded scenes (audio and optional video), runs the identical pipeline deterministically, and produces a report bundle with plots and metrics (MAE, delta SIR, WER, latency histograms). This prevents "it sounded better bro."

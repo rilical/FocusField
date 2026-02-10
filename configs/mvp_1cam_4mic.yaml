@@ -1,6 +1,35 @@
 # FocusField MVP configuration (1 camera, 4 microphones)
 build: mvp
 
+runtime:
+  run_id: ""
+  fail_fast: true
+  artifacts:
+    dir: "artifacts"
+    retention:
+      max_runs: 10
+
+trace:
+  enabled: true
+  level: medium
+  thumbnails:
+    enabled: true
+    fps: 1
+  record_raw_audio: false
+  record_heatmap_full: false
+
+health:
+  enabled: true
+  thresholds_ms:
+    audio_frames: 200
+    enhanced_final: 300
+    face_tracks: 1000
+    camera_frame: 1000
+
+perf:
+  enabled: true
+  emit_hz: 1
+
 audio:
   channels: 1  # laptop mic is mono; use 4 when array is connected
   sample_rate_hz: 48000
@@ -68,6 +97,10 @@ bus:
 
 logging:
   level: info
+  file:
+    enabled: true
+    flush_interval_ms: 200
+    rotate_mb: 50
 
 output:
   sink: virtual_mic

@@ -49,6 +49,7 @@ except ImportError:  # pragma: no cover
 import numpy as np
 
 from focusfield.core.clock import now_ns
+from focusfield.audio.devices import resolve_input_device_index
 
 
 def start_audio_capture(
@@ -65,7 +66,7 @@ def start_audio_capture(
     channels = int(audio_cfg.get("channels", 1))
     sample_rate = int(audio_cfg.get("sample_rate_hz", 48000))
     block_size = int(audio_cfg.get("block_size", 960))
-    device_index = audio_cfg.get("device_index", None)
+    device_index = resolve_input_device_index(config, logger)
 
     def _run() -> None:
         stream = _open_stream(logger, channels, sample_rate, block_size, device_index)

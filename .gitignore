@@ -24,6 +24,7 @@ htmlcov/
 # Logs and artifacts
 logs/
 *.log
+artifacts/
 
 # OS
 .DS_Store

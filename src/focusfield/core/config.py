@@ -62,10 +62,39 @@ def get_path(config: Dict[str, Any], dotted_path: str, default: Any = None) -> A
 
 def _default_config() -> Dict[str, Any]:
     return {
+        "runtime": {
+            "run_id": "",
+            "fail_fast": True,
+            "artifacts": {
+                "dir": "artifacts",
+                "retention": {
+                    "max_runs": 10,
+                },
+            },
+        },
         "ui": {
             "host": "127.0.0.1",
             "port": 8080,
             "telemetry_hz": 15,
+        },
+        "trace": {
+            "enabled": True,
+            "level": "medium",
+            "thumbnails": {
+                "enabled": True,
+                "fps": 1,
+            },
+            "record_raw_audio": True,
+            "record_heatmap_full": False,
+        },
+        "health": {
+            "enabled": True,
+            "thresholds_ms": {
+                "audio_frames": 200,
+                "enhanced_final": 300,
+                "face_tracks": 1000,
+                "camera_frame": 1000,
+            },
         },
         "vision": {
             "face": {
@@ -121,6 +150,11 @@ def _default_config() -> Dict[str, Any]:
         },
         "logging": {
             "level": "info",
+            "file": {
+                "enabled": True,
+                "flush_interval_ms": 200,
+                "rotate_mb": 50,
+            },
         },
         "audio": {
             "vad": {
@@ -129,6 +163,10 @@ def _default_config() -> Dict[str, Any]:
                 "frame_ms": 20,
                 "min_speech_ratio": 0.3,
             }
+        },
+        "perf": {
+            "enabled": True,
+            "emit_hz": 1.0,
         },
     }
 

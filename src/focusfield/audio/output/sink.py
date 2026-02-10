@@ -1,4 +1,5 @@
-"""
+"""focusfield.audio.output.sink
+
 CONTRACT: inline (source: src/focusfield/audio/output/sink.md)
 ROLE: Output sink abstraction.
 
@@ -8,29 +9,40 @@ OUTPUTS:
   - Topic: n/a  Type: n/a
 
 CONFIG KEYS:
-  - output.sink: virtual_mic|file|system
-  - output.device: optional device name
+  - output.sink: file|virtual_mic
 
 PERF / TIMING:
   - real-time output
-
-FAILURE MODES:
-  - sink error -> log sink_error
-
-LOG EVENTS:
-  - module=audio.output.sink, event=sink_error, payload keys=sink, error
-
-TESTS:
-  - n/a
-
-CONTRACT DETAILS (inline from src/focusfield/audio/output/sink.md):
-# Output sink contract
-
-- Output EnhancedAudio to a sink.
-- Sinks include virtual mic and file sink.
-- Emit stats and dropout counts.
 """
 
-def not_implemented() -> None:
-    """Placeholder to be replaced by implementation."""
-    raise NotImplementedError("FocusField module stub.")
+from __future__ import annotations
+
+import threading
+from typing import Any, Dict, Optional
+
+from focusfield.audio.output.file_sink import start_file_sink
+
+
+def start_output_sink(
+    bus: Any,
+    config: Dict[str, Any],
+    logger: Any,
+    stop_event: threading.Event,
+) -> Optional[threading.Thread]:
+    sink = str(config.get("output", {}).get("sink", ""))
+
+    trace_cfg = config.get("trace", {})
+    if not isinstance(trace_cfg, dict):
+        trace_cfg = {}
+    trace_enabled = bool(trace_cfg.get("enabled", True))
+    run_dir = config.get("runtime", {}).get("artifacts", {}).get("dir_run")
+    if sink.lower() in {"file", "file_sink"}:
+        # Avoid double-writing WAV files when trace recorder is active.
+        if trace_enabled and run_dir:
+            logger.emit("info", "audio.output.sink", "sink_skipped", {"sink": sink, "reason": "trace_recorder_active"})
+            return None
+        return start_file_sink(bus, config, logger, stop_event)
+    if sink.lower() in {"virtual_mic", "virtual"}:
+        logger.emit("warning", "audio.output.sink", "sink_error", {"sink": sink, "error": "virtual_mic_not_implemented"})
+        return None
+    return None

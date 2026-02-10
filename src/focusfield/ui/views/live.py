@@ -134,6 +134,57 @@ def live_page() -> str:
         margin: 4px 0;
         font-size: 14px;
       }
+      .beam {
+        display: grid;
+        gap: 10px;
+      }
+      .beam h2 {
+        margin: 0 0 6px;
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 18px;
+      }
+      .beam .row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+      }
+      .health {
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .health .row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+      }
+      .gain-bars {
+        display: grid;
+        grid-template-columns: repeat(8, 1fr);
+        gap: 6px;
+        align-items: end;
+        height: 72px;
+      }
+      .gain {
+        background: rgba(47,126,126,0.18);
+        border-radius: 6px;
+        position: relative;
+        overflow: hidden;
+        height: 100%;
+      }
+      .gain > div {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: var(--accent-2);
+      }
+      .gain span {
+        position: absolute;
+        top: 4px;
+        left: 4px;
+        font-size: 10px;
+        opacity: 0.75;
+      }
       .pill {
         display: inline-block;
         padding: 2px 10px;
@@ -166,6 +217,19 @@ def live_page() -> str:
           <h2>Target Lock</h2>
           <p><span class="pill" id="lockState">NO_LOCK</span></p>
           <p id="lockInfo">Waiting for speaking face...</p>
+        </section>
+        <section class="panel beam">
+          <h2>Beamformer</h2>
+          <div class="row"><div>Method</div><div id="beamMethod">n/a</div></div>
+          <div class="row"><div>Target</div><div id="beamTarget">n/a</div></div>
+          <div class="row"><div>Cond</div><div id="beamCond">n/a</div></div>
+          <div class="row"><div>Status</div><div id="beamStatus">n/a</div></div>
+          <div class="gain-bars" id="gainBars"></div>
+        </section>
+        <section class="panel health">
+          <div class="row"><div>Health</div><div id="healthStatus">n/a</div></div>
+          <div class="row"><div>Latency</div><div id="perfLatency">n/a</div></div>
+          <div id="healthReasons"></div>
         </section>
       </aside>
     </main>
@@ -248,6 +312,62 @@ def live_page() -> str:
         }
       }
 
+      function renderBeamformer(beam) {
+        const bars = document.getElementById("gainBars");
+        bars.innerHTML = "";
+        if (!beam) {
+          document.getElementById("beamMethod").textContent = "n/a";
+          document.getElementById("beamTarget").textContent = "n/a";
+          document.getElementById("beamCond").textContent = "n/a";
+          document.getElementById("beamStatus").textContent = "n/a";
+          return;
+        }
+        document.getElementById("beamMethod").textContent = beam.method || "n/a";
+        const target = beam.target_bearing_deg;
+        document.getElementById("beamTarget").textContent = target == null ? "n/a" : `${target.toFixed(1)}°`;
+        const cond = beam.mvdr_condition_number;
+        document.getElementById("beamCond").textContent = cond == null ? "n/a" : cond.toExponential(2);
+        document.getElementById("beamStatus").textContent = beam.fallback_active ? "fallback" : "ok";
+        const gains = beam.gains || [];
+        for (let i = 0; i < gains.length; i++) {
+          const g = Math.max(0, Math.min(1, gains[i]));
+          const wrap = document.createElement("div");
+          wrap.className = "gain";
+          const fill = document.createElement("div");
+          fill.style.height = `${Math.round(g * 100)}%`;
+          const label = document.createElement("span");
+          label.textContent = String(i);
+          wrap.appendChild(fill);
+          wrap.appendChild(label);
+          bars.appendChild(wrap);
+        }
+      }
+
+      function renderHealth(health, perf) {
+        const status = document.getElementById("healthStatus");
+        const reasons = document.getElementById("healthReasons");
+        const latency = document.getElementById("perfLatency");
+        reasons.innerHTML = "";
+        if (!health) {
+          status.textContent = "n/a";
+        } else {
+          status.textContent = health.status || "n/a";
+          const list = health.reasons || [];
+          for (const r of list.slice(0, 4)) {
+            const div = document.createElement("div");
+            const age = r.age_ms == null ? "?" : `${Math.round(r.age_ms)}ms`;
+            div.textContent = `${r.topic}: ${age}`;
+            reasons.appendChild(div);
+          }
+        }
+        if (!perf || !perf.enhanced_final) {
+          latency.textContent = "n/a";
+        } else {
+          const l = perf.enhanced_final.last_latency_ms;
+          latency.textContent = l == null ? "n/a" : `${Math.round(l)}ms`;
+        }
+      }
+
       async function update() {
         const response = await fetch(`/telemetry?ts=${Date.now()}`);
         if (!response.ok) return;
@@ -264,6 +384,8 @@ def live_page() -> str:
           drawFrame(cameraId, facesByCamera[cameraId] || [], targetId);
         }
         drawHeatmap(data.heatmap_summary);
+        renderBeamformer(data.beamformer);
+        renderHealth(data.health_summary, data.perf_summary);
         document.getElementById("lockState").textContent = lock.state || "NO_LOCK";
         document.getElementById("lockInfo").textContent =
           lock.state === "NO_LOCK"

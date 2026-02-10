@@ -1,34 +1,32 @@
-"""
+"""focusfield.audio.sync.channel_order_check
+
 CONTRACT: inline (source: src/focusfield/audio/sync/channel_order_check.md)
-ROLE: Verify channel mapping using test clip or live procedure.
+ROLE: Helper for channel mapping verification.
 
-INPUTS:
-  - Topic: n/a  Type: n/a
-OUTPUTS:
-  - Topic: n/a  Type: n/a
+This module is intentionally thin. The primary UX is the standalone script
+`scripts/calibrate_uma8.py`, which guides the user through a tap test.
 
-CONFIG KEYS:
-  - audio.sync.test_clip_path: path to test clip
-
-PERF / TIMING:
-  - offline calibration step
-
-FAILURE MODES:
-  - mapping mismatch -> log channel_order_mismatch
-
-LOG EVENTS:
-  - module=audio.channel_order_check, event=channel_order_mismatch, payload keys=expected, observed
-
-TESTS:
-  - n/a
-
-CONTRACT DETAILS (inline from src/focusfield/audio/sync/channel_order_check.md):
-# Channel order check
-
-- Verify channel mapping using a test clip.
-- Provide pass/fail criteria and logging.
+Here we provide shared helpers so other scripts can reuse the logic.
 """
 
-def not_implemented() -> None:
-    """Placeholder to be replaced by implementation."""
-    raise NotImplementedError("FocusField module stub.")
+from __future__ import annotations
+
+from typing import List
+
+import numpy as np
+
+
+def detect_tap_channel(frame: np.ndarray) -> int:
+    """Return channel index with highest RMS energy."""
+    x = np.asarray(frame)
+    if x.ndim != 2:
+        raise ValueError("Expected (samples, channels) array")
+    rms = np.sqrt(np.mean(x.astype(np.float32) ** 2, axis=0))
+    return int(np.argmax(rms))
+
+
+def build_channel_order(observed_ring: List[int], total_channels: int) -> List[int]:
+    """Build full channel_order by appending remaining channels."""
+    remaining = [ch for ch in range(int(total_channels)) if ch not in observed_ring]
+    return list(observed_ring) + remaining
+

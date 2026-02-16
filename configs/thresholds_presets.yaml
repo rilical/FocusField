@@ -1,6 +1,7 @@
 # Lock thresholds presets
 aggressive:
   acquire_threshold: 0.55
+  acquire_timeout_ms: 500
   hold_ms: 500
   handoff_min_ms: 400
   speak_on_threshold: 0.45
@@ -12,6 +13,7 @@ aggressive:
 
 balanced:
   acquire_threshold: 0.65
+  acquire_timeout_ms: 500
   hold_ms: 800
   handoff_min_ms: 700
   speak_on_threshold: 0.5
@@ -23,6 +25,7 @@ balanced:
 
 conservative:
   acquire_threshold: 0.75
+  acquire_timeout_ms: 500
   hold_ms: 1200
   handoff_min_ms: 1000
   speak_on_threshold: 0.6

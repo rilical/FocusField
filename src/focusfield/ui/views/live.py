@@ -390,7 +390,7 @@ def live_page() -> str:
         document.getElementById("lockInfo").textContent =
           lock.state === "NO_LOCK"
             ? "Waiting for speaking face..."
-            : `Target: ${lock.target_id || "n/a"} | ${lock.target_bearing_deg?.toFixed(1) ?? "?"}° | ${lock.reason || ""}`;
+            : `Mode: ${lock.mode || "n/a"} | Target: ${lock.target_id || "n/a"} | ${lock.target_bearing_deg?.toFixed(1) ?? "?"}° | ${lock.reason || ""}`;
       }
 
       setInterval(update, 120);

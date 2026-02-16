@@ -155,6 +155,12 @@ Important behavior:
 
 Pi setup + bring-up instructions live in `docs/30_pi_runbook.md`.
 
+## Virtual mic output (macOS)
+
+To route FocusField’s enhanced mono stream into call apps (Zoom/Meet/etc.) on macOS using a loopback device (BlackHole/Loopback), see:
+
+- `docs/virtual_mic_mac.md`
+
 ## FocusBench (quantitative evaluation and regression)
 
 FocusBench replays recorded scenes (audio and optional video), runs the identical pipeline deterministically, and produces a report bundle with plots and metrics (MAE, delta SIR, WER, latency histograms). This prevents "it sounded better bro."

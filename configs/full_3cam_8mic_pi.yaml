@@ -6,6 +6,7 @@ build: full
 runtime:
   run_id: ""
   fail_fast: true
+  enable_validation: true
   artifacts:
     dir: "artifacts"
     retention:
@@ -37,6 +38,8 @@ audio:
   sample_rate_hz: 48000
   block_size: 1024
   device_profile: minidsp_uma8_raw_7p1
+  capture:
+    allow_mono_fallback: false
   device_selector:
     match_substring: "miniDSP"
     require_input_channels: 8

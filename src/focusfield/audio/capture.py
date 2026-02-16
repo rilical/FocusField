@@ -67,6 +67,11 @@ def start_audio_capture(
     sample_rate = int(audio_cfg.get("sample_rate_hz", 48000))
     block_size = int(audio_cfg.get("block_size", 960))
     device_index = resolve_input_device_index(config, logger)
+    capture_cfg = audio_cfg.get("capture", {}) if isinstance(audio_cfg, dict) else {}
+    if not isinstance(capture_cfg, dict):
+        capture_cfg = {}
+    allow_mono_fallback = bool(capture_cfg.get("allow_mono_fallback", True))
+    fail_fast = bool(config.get("runtime", {}).get("fail_fast", True))
 
     def _run() -> None:
         stream = _open_stream(logger, channels, sample_rate, block_size, device_index)
@@ -113,6 +118,16 @@ def start_audio_capture(
                 {"error": str(exc), "channels": requested_channels},
             )
             if requested_channels > 1:
+                if not allow_mono_fallback:
+                    logger_obj.emit(
+                        "error",
+                        "audio.capture",
+                        "mono_fallback_disallowed",
+                        {"requested_channels": requested_channels, "device_index": device},
+                    )
+                    if fail_fast:
+                        stop_event.set()
+                    return None
                 try:
                     return sd.InputStream(
                         samplerate=sr,

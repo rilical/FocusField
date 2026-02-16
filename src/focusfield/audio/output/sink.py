@@ -21,6 +21,7 @@ import threading
 from typing import Any, Dict, Optional
 
 from focusfield.audio.output.file_sink import start_file_sink
+from focusfield.audio.output.virtual_mic import start_virtual_mic_sink
 
 
 def start_output_sink(
@@ -43,6 +44,5 @@ def start_output_sink(
             return None
         return start_file_sink(bus, config, logger, stop_event)
     if sink.lower() in {"virtual_mic", "virtual"}:
-        logger.emit("warning", "audio.output.sink", "sink_error", {"sink": sink, "error": "virtual_mic_not_implemented"})
-        return None
+        return start_virtual_mic_sink(bus, config, logger, stop_event)
     return None

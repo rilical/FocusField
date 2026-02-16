@@ -1,11 +1,16 @@
 # FocusField Full configuration (3 cameras, 6 microphones)
 build: full
 
+runtime:
+  enable_validation: true
+
 audio:
   channels: 6
   sample_rate_hz: 48000
   block_size: 1024
   device_profile: mic_array_6ch_default
+  capture:
+    allow_mono_fallback: false
   vad:
     enabled: true
     mode: 1

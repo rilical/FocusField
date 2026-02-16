@@ -37,6 +37,7 @@ This artifact folder is the intended unit of debugging and sharing: zip it and h
 - CameraCapture publishes vision.frames.cam*.
 - FaceTrack subscribes vision.frames.* -> publishes vision.face_tracks (bearing_deg_global + mouth_activity).
 - AVAssociation subscribes audio.doa_heatmap + vision.face_tracks -> publishes fusion.candidates.
+  - If faces are missing/stale, it can emit an audio-only fallback candidate (DOA+VAD) so steering continues without vision.
 - LockStateMachine subscribes fusion.candidates (+ audio.vad) -> publishes fusion.target_lock.
 - Beamformer subscribes audio.frames + fusion.target_lock -> publishes audio.enhanced.beamformed.
 - Denoise subscribes audio.enhanced.beamformed -> publishes audio.enhanced.final.

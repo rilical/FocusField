@@ -254,7 +254,10 @@ src/focusfield/audio/output/file_sink.py
 
 src/focusfield/audio/output/virtual_mic.py
 
-- ROLE: placeholder for OS-specific routing; documentation only.
+- ROLE: route enhanced stream to an OS audio output device (typically a loopback device on macOS like BlackHole/Loopback) so call apps can consume it as a microphone.
+- INPUTS: audio.enhanced.final.
+- OUTPUTS: OS audio device output stream (real-time).
+- CONFIG: output.virtual_mic.device_index OR output.virtual_mic.device_selector.match_substring, output.virtual_mic.channels, output.virtual_mic.sample_rate_hz.
 
 ### Vision pipeline
 
@@ -320,7 +323,9 @@ src/focusfield/fusion/av_association.py
 - ROLE: associate DOA peaks with face tracks.
 - INPUTS: audio.doa_heatmap, vision.face_tracks.
 - OUTPUTS: fusion.candidates (AssociationCandidate[]).
-- CONFIG: fusion.max_assoc_deg, score weights.
+- CONFIG: fusion.max_assoc_deg, fusion.weights (score weights).
+- BEHAVIOR: when faces are missing/stale, can emit an audio-only fallback candidate using DOA+VAD (fusion.audio_fallback.*).
+- BEHAVIOR: downweights far/small faces using bbox area (vision.face.area_soft_max).
 
 src/focusfield/fusion/confidence.py
 
@@ -333,7 +338,9 @@ src/focusfield/fusion/lock_state_machine.py
 - ROLE: stable target selection with hysteresis.
 - INPUTS: fusion.candidates (+ optional raw DOA peaks).
 - OUTPUTS: fusion.target_lock (TargetLock).
-- CONFIG: acquire_threshold, hold_ms, handoff_min_ms, drop_threshold.
+- STATES: NO_LOCK, ACQUIRE, LOCKED, HOLD, HANDOFF.
+- MODE: NO_LOCK, VISION_ONLY, AV_LOCK, AUDIO_ONLY.
+- CONFIG: acquire_threshold, acquire_timeout_ms, hold_ms, handoff_min_ms, drop_threshold.
 
 src/focusfield/fusion/target_output.py
 

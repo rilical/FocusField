@@ -56,10 +56,6 @@ def _try_open(path: str) -> tuple[bool, cv2.VideoCapture]:
         if cap.isOpened():
             return True, cap
         cap.release()
-        cap = cv2.VideoCapture(source, cv2.CAP_ANY)
-        if cap.isOpened():
-            return True, cap
-        cap.release()
     return False, cv2.VideoCapture()
 
 

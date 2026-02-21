@@ -82,11 +82,6 @@ def _try_open_camera(source: object) -> bool:
             cap.release()
             return True
         cap.release()
-        cap = cv2.VideoCapture(candidate, cv2.CAP_ANY)
-        if cap.isOpened():
-            cap.release()
-            return True
-        cap.release()
     return False
 
 

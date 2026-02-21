@@ -95,7 +95,16 @@ def resolve_input_device_index(config: Dict[str, Any], logger: Any = None) -> Op
     if not isinstance(audio_cfg, dict):
         audio_cfg = {}
     if "device_index" in audio_cfg and audio_cfg.get("device_index") is not None:
-        return int(audio_cfg["device_index"])
+        candidate = _coerce_device_index(audio_cfg.get("device_index"))
+        if candidate is not None:
+            return candidate
+        _log(
+            logger,
+            "warning",
+            "audio.devices",
+            "invalid_device_index",
+            {"device_index": audio_cfg.get("device_index")},
+        )
 
     required_channels = int(audio_cfg.get("channels", 0) or 0)
     device_id = audio_cfg.get("device_id")
@@ -150,6 +159,14 @@ def resolve_input_device_index(config: Dict[str, Any], logger: Any = None) -> Op
     return chosen.index
 
 
+def _coerce_device_index(value: object) -> Optional[int]:
+    try:
+        idx = int(value)
+    except (TypeError, ValueError):
+        return None
+    return idx if idx >= 0 else None
+
+
 def _best_by_channels(devices: List[AudioDeviceInfo], required_channels: int) -> Optional[AudioDeviceInfo]:
     if not devices:
         return None
@@ -178,4 +195,3 @@ def _log(logger: Any, level: str, module: str, event: str, payload: Dict[str, An
         logger.emit(level, module, event, payload)
     except Exception:  # noqa: BLE001
         return
-

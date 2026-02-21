@@ -74,6 +74,16 @@ def start_audio_capture(
     fail_fast = bool(config.get("runtime", {}).get("fail_fast", True))
 
     def _run() -> None:
+        if device_index is None:
+            logger.emit(
+                "error",
+                "audio.capture",
+                "device_not_found",
+                {"criteria": "input device could not be resolved"},
+            )
+            if fail_fast:
+                stop_event.set()
+            return
         stream = _open_stream(logger, channels, sample_rate, block_size, device_index)
         if stream is None:
             return

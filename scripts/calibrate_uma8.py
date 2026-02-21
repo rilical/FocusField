@@ -92,7 +92,7 @@ def _resolve_device(device: Optional[str], channels: int) -> int:
         for idx, d in enumerate(devices):
             if int(d.get("max_input_channels") or 0) >= channels:
                 return idx
-        return int(sd.default.device[0])
+        return _default_input_index()
 
     text = str(device).strip()
     if not text:
@@ -109,7 +109,7 @@ def _resolve_device(device: Optional[str], channels: int) -> int:
             matches.append(idx)
     if matches:
         return matches[0]
-    return int(sd.default.device[0])
+    return _default_input_index()
 
 
 def _tap_test(device_index: int, channels: int, sample_rate: int, seconds: float, tap_count: int) -> List[int]:
@@ -130,6 +130,16 @@ def _tap_test(device_index: int, channels: int, sample_rate: int, seconds: float
     # Append any remaining channels (e.g. center) in numeric order.
     observed.extend(sorted(remaining))
     return observed
+
+
+def _default_input_index() -> int:
+    default_idx = sd.default.device[0]
+    if default_idx is None:
+        raise RuntimeError("No default input device available. Plug in the UMA array and set it as default.")
+    default_idx_int = int(default_idx)
+    if default_idx_int < 0:
+        raise RuntimeError("No valid default input device available. Select an input device in sounddevice settings or pass --device.")
+    return default_idx_int
 
 
 def _orientation_test(

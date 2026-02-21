@@ -27,10 +27,13 @@ sudo apt install -y \
 ## Python environment
 
 ```bash
-python3 -m venv .venv
+deactivate 2>/dev/null || true
+rm -rf .venv
+python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e .
+pip install --no-deps -e .
+pip install -U "PyYAML>=6.0" "numpy>=1.23" "sounddevice>=0.4.6" "webrtcvad>=2.0.10"
 ```
 
 > FocusField on Raspberry Pi uses Debian's `python3-opencv` for `cv2`. `opencv-python`

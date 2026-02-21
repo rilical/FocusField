@@ -50,13 +50,19 @@ def _candidate_sources(path: str) -> list[str]:
     return list(dict.fromkeys(sources))
 
 
-def _try_open(path: str) -> tuple[bool, cv2.VideoCapture]:
+def _try_open(path: str) -> tuple[bool, cv2.VideoCapture, str]:
     for source in _candidate_sources(path):
         cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
         if cap.isOpened():
-            return True, cap
+            return True, cap, "CAP_V4L2"
         cap.release()
-    return False, cv2.VideoCapture()
+
+    for source in _candidate_sources(path):
+        cap = cv2.VideoCapture(source, cv2.CAP_ANY)
+        if cap.isOpened():
+            return True, cap, "CAP_ANY"
+        cap.release()
+    return False, cv2.VideoCapture(), "none"
 
 
 def main() -> None:
@@ -80,9 +86,9 @@ def main() -> None:
     print("\n=== OpenCV open test ===")
     for p in by_id:
         sources = _candidate_sources(p)
-        ok, cap = _try_open(p)
+        ok, cap, backend = _try_open(p)
         if not ok or not cap.isOpened():
-            print(f"OPEN FAIL: {p} tried={sources}")
+            print(f"OPEN FAIL: {p} backend={backend} tried={sources}")
             continue
         try:
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -90,10 +96,10 @@ def main() -> None:
             pass
         ok, frame = cap.read()
         if not ok or frame is None:
-            print(f"READ FAIL: {p} tried={sources}")
+            print(f"READ FAIL: {p} backend={backend} tried={sources}")
         else:
             h, w = frame.shape[:2]
-            print(f"OK: {p} frame={w}x{h} tried={sources}")
+            print(f"OK: {p} frame={w}x{h} backend={backend} tried={sources}")
         cap.release()
 
 

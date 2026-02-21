@@ -7,6 +7,7 @@ import glob
 import os
 import re
 from pathlib import Path
+from typing import Optional
 
 try:
     import cv2
@@ -74,15 +75,29 @@ def _candidate_sources(source: object) -> list[object]:
 
 
 def _try_open_camera(source: object) -> bool:
+    ok, _, _ = _try_open_camera_any_backend(source)
+    return ok
+
+
+def _try_open_camera_any_backend(source: object) -> tuple[bool, list[tuple[object, str]], Optional[tuple[object, str]]]:
     if cv2 is None:
-        return False
+        return False, [], None
+    backends = [
+        ("CAP_V4L2", cv2.CAP_V4L2),
+        ("CAP_ANY", cv2.CAP_ANY),
+    ]
+    tried: list[tuple[object, str]] = []
     for candidate in _candidate_sources(source):
-        cap = cv2.VideoCapture(candidate, cv2.CAP_V4L2)
-        if cap.isOpened():
+        for backend_name, backend in backends:
+            tried.append((candidate, backend_name))
+            cap = cv2.VideoCapture(candidate, backend)
+            if cap.isOpened():
+                ok, _ = cap.read()
+                if ok:
+                    cap.release()
+                    return True, tried, (candidate, backend_name)
             cap.release()
-            return True
-        cap.release()
-    return False
+    return False, tried, None
 
 
 def check_audio() -> int:
@@ -134,10 +149,11 @@ def check_cameras(config: dict) -> int:
             target = os.path.realpath(path)
         except Exception:
             target = "?"
-        ok = _try_open_camera(path)
+        ok, tried, opened = _try_open_camera_any_backend(path)
+        backend = opened[1] if opened is not None else "none"
         if ok:
             by_id_open_count += 1
-        print(f"{path} -> {target} | open={ok} | tried={_candidate_sources(path)}")
+        print(f"{path} -> {target} | open={ok} | backend={backend} | tried={tried}")
 
     if by_id_open_count == 0:
         print("No camera sources opened successfully")
@@ -151,10 +167,11 @@ def check_cameras(config: dict) -> int:
         source = idx
         if isinstance(cam, dict):
             source = cam.get("device_path") or cam.get("device_index", idx)
-        ok = _try_open_camera(source)
+        ok, tried, opened = _try_open_camera_any_backend(source)
+        backend = opened[1] if opened is not None else "none"
         if ok:
             config_open_count += 1
-        print(f"Config camera[{idx}]: {source} | open={ok} | tried={_candidate_sources(source)}")
+        print(f"Config camera[{idx}]: {source} | open={ok} | backend={backend} | tried={tried}")
 
     if config and config_open_count < len(cameras):
         print(f"Configured camera open failures: {len(cameras)-config_open_count}/{len(cameras)}")

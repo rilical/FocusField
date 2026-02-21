@@ -49,13 +49,20 @@ def candidate_sources(source: str) -> List[str]:
 
 
 def can_open_v4l2(path: str) -> Tuple[bool, Optional[str]]:
-    """Return whether OpenCV can open `path` via CAP_V4L2."""
+    """Return whether OpenCV can open `path` via preferred backends."""
+    backends = (
+        cv2.CAP_V4L2,
+        cv2.CAP_ANY,
+    )
     for candidate in candidate_sources(path):
-        cap = cv2.VideoCapture(candidate, cv2.CAP_V4L2)
-        if cap.isOpened():
+        for backend in backends:
+            cap = cv2.VideoCapture(candidate, backend)
+            if cap.isOpened():
+                ok, _ = cap.read()
+                cap.release()
+                if ok:
+                    return True, candidate
             cap.release()
-            return True, candidate
-        cap.release()
     return False, None
 
 
@@ -97,7 +104,11 @@ def pick_profile_name(channels: int, profiles: Dict[str, Any], preferred: str) -
 
 def detect_cameras(limit: int) -> List[Tuple[str, str]]:
     cameras: List[Tuple[str, str]] = []
-    for by_id in sorted(glob.glob("/dev/v4l/by-id/*")):
+    sources: List[str] = sorted(glob.glob("/dev/v4l/by-id/*"))
+    if not sources:
+        sources = sorted(path for path in glob.glob("/dev/video*") if re.match(r"^/dev/video\\d+$", path))
+
+    for by_id in sources:
         opened, opened_source = can_open_v4l2(by_id)
         if not opened or opened_source is None:
             continue

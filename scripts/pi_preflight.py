@@ -79,6 +79,18 @@ def _try_open_camera(source: object) -> bool:
     return ok
 
 
+def _backend_to_source_key(source: object) -> object:
+    if not isinstance(source, str):
+        return source
+    match = re.search(r"/dev/video(\d+)$", source)
+    if match is None:
+        return source
+    try:
+        return int(match.group(1))
+    except Exception:
+        return source
+
+
 def _try_open_camera_any_backend(source: object) -> tuple[bool, list[tuple[object, str]], Optional[tuple[object, str]]]:
     if cv2 is None:
         return False, [], None
@@ -88,9 +100,10 @@ def _try_open_camera_any_backend(source: object) -> tuple[bool, list[tuple[objec
     ]
     tried: list[tuple[object, str]] = []
     for candidate in _candidate_sources(source):
+        source_for_open = _backend_to_source_key(candidate)
         for backend_name, backend in backends:
             tried.append((candidate, backend_name))
-            cap = cv2.VideoCapture(candidate, backend)
+            cap = cv2.VideoCapture(source_for_open, backend)
             if cap.isOpened():
                 ok, _ = cap.read()
                 if ok:

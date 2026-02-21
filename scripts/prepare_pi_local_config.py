@@ -48,15 +48,28 @@ def candidate_sources(source: str) -> List[str]:
     return list(dict.fromkeys(sources))
 
 
+def _video_index_for_path(path: str) -> Optional[int]:
+    m = re.search(r"/dev/video(\d+)$", path)
+    if m is None:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
 def can_open_v4l2(path: str) -> Tuple[bool, Optional[str]]:
     """Return whether OpenCV can open `path` via preferred backends."""
     backends = (
         cv2.CAP_V4L2,
         cv2.CAP_ANY,
     )
-    for candidate in candidate_sources(path):
+    candidates = candidate_sources(path)
+    for candidate in candidates:
+        index = _video_index_for_path(candidate)
+        source_obj: str | int = index if index is not None else candidate
         for backend in backends:
-            cap = cv2.VideoCapture(candidate, backend)
+            cap = cv2.VideoCapture(source_obj, backend)
             if cap.isOpened():
                 ok, _ = cap.read()
                 cap.release()

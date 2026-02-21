@@ -50,15 +50,28 @@ def _candidate_sources(path: str) -> list[str]:
     return list(dict.fromkeys(sources))
 
 
+def _source_to_open_target(source: str) -> str | int:
+    match = re.search(r"/dev/video(\d+)$", source)
+    if match is None:
+        return source
+    try:
+        return int(match.group(1))
+    except Exception:
+        return source
+
+
 def _try_open(path: str) -> tuple[bool, cv2.VideoCapture, str]:
-    for source in _candidate_sources(path):
-        cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+    candidates = _candidate_sources(path)
+    for source in candidates:
+        source_obj = _source_to_open_target(source)
+        cap = cv2.VideoCapture(source_obj, cv2.CAP_V4L2)
         if cap.isOpened():
             return True, cap, "CAP_V4L2"
         cap.release()
 
-    for source in _candidate_sources(path):
-        cap = cv2.VideoCapture(source, cv2.CAP_ANY)
+    for source in candidates:
+        source_obj = _source_to_open_target(source)
+        cap = cv2.VideoCapture(source_obj, cv2.CAP_ANY)
         if cap.isOpened():
             return True, cap, "CAP_ANY"
         cap.release()

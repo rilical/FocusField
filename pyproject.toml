@@ -15,9 +15,13 @@ dynamic = ["version"]
 dependencies = [
   "PyYAML>=6.0",
   "numpy>=1.23",
-  "opencv-python>=4.8",
   "sounddevice>=0.4.6",
   "webrtcvad>=2.0.10",
+]
+
+[project.optional-dependencies]
+vision = [
+  "opencv-python>=4.8",
   "mediapipe>=0.10.14",
 ]
 

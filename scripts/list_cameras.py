@@ -20,13 +20,13 @@ from pathlib import Path
 
 import cv2
 
-_V4L2_CAPTURE_BITS = (0x00000001, 0x00000010, 0x00000040, 0x00000100, 0x00001000)
+_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000)
 
 
 def _video_index_for_source(path: str) -> int | None:
     match = re.search(r"/dev/video(\d+)$", path)
     if match is None:
-        return False
+        return None
     try:
         return int(match.group(1))
     except Exception:
@@ -51,14 +51,11 @@ def _is_capture_node(path: str) -> bool | None:
     return any(caps & bit for bit in _V4L2_CAPTURE_BITS)
 
 
-def _candidate_sources(path: str) -> list[str]:
+def _candidate_sources(path: str) -> list[object]:
     """Return candidate open sources for a by-id camera path."""
-    sources: list[str] = []
+    sources: list[object] = []
     path_is_video = path.startswith("/dev/video")
     path_is_by_id = path.startswith("/dev/v4l/by-id/")
-
-    if path_is_video and _is_capture_node(path) is False:
-        return []
 
     if path_is_video:
         sources.append(path)
@@ -71,10 +68,9 @@ def _candidate_sources(path: str) -> list[str]:
 
     if resolved and resolved != path:
         if resolved.startswith("/dev/video"):
-            if _is_capture_node(resolved) is False:
-                return []
-            if resolved not in sources:
-                sources.append(resolved)
+            if _is_capture_node(resolved) is not False:
+                if resolved not in sources:
+                    sources.append(resolved)
             m = re.search(r"/dev/video(\d+)$", resolved)
             if m is not None:
                 video_source = f"/dev/video{m.group(1)}"
@@ -94,13 +90,17 @@ def _candidate_sources(path: str) -> list[str]:
     if not path_is_video and path not in sources:
         sources.append(path)
 
-    if path_is_video and sources == [path] and _is_capture_node(path) is False:
-        return []
+    if path_is_video and _is_capture_node(path) is False:
+        path_index = _video_index_for_source(path)
+        if path_index is not None and path_index not in sources:
+            sources.append(path_index)
 
     return list(dict.fromkeys(sources))
 
 
-def _source_to_open_target(source: str) -> str | int:
+def _source_to_open_target(source: object) -> str | int:
+    if not isinstance(source, str):
+        return source
     match = re.search(r"/dev/video(\d+)$", source)
     if match is None:
         return source
@@ -108,6 +108,26 @@ def _source_to_open_target(source: str) -> str | int:
         return int(match.group(1))
     except Exception:
         return source
+
+
+def _video_nodes() -> list[str]:
+    return sorted(
+        path for path in glob.glob("/dev/video*") if re.match(r"^/dev/video\d+$", path)
+    )
+
+
+def _collect_camera_sources() -> tuple[list[str], list[str]]:
+    by_id = sorted(glob.glob("/dev/v4l/by-id/*"))
+    nodes = _video_nodes()
+    all_sources: list[str] = []
+    all_sources.extend(by_id)
+    by_id_real = {os.path.realpath(path) for path in by_id}
+    for node in nodes:
+        if os.path.realpath(node) in by_id_real:
+            continue
+        if node not in all_sources:
+            all_sources.append(node)
+    return by_id, all_sources
 
 
 def _try_open(path: str) -> tuple[bool, cv2.VideoCapture, str]:
@@ -131,7 +151,7 @@ def _try_open(path: str) -> tuple[bool, cv2.VideoCapture, str]:
 
 
 def main() -> None:
-    by_id = sorted(glob.glob("/dev/v4l/by-id/*"))
+    by_id, sources = _collect_camera_sources()
     print("=== /dev/v4l/by-id ===")
     if not by_id:
         print("(none)")
@@ -149,11 +169,11 @@ def main() -> None:
         return
 
     print("\n=== OpenCV open test ===")
-    for p in by_id:
-        sources = _candidate_sources(p)
+    for p in sources:
+        candidates = _candidate_sources(p)
         ok, cap, backend = _try_open(p)
         if not ok or not cap.isOpened():
-            print(f"OPEN FAIL: {p} backend={backend} tried={sources}")
+            print(f"OPEN FAIL: {p} backend={backend} tried={candidates}")
             continue
         try:
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -161,10 +181,10 @@ def main() -> None:
             pass
         ok, frame = cap.read()
         if not ok or frame is None:
-            print(f"READ FAIL: {p} backend={backend} tried={sources}")
+            print(f"READ FAIL: {p} backend={backend} tried={candidates}")
         else:
             h, w = frame.shape[:2]
-            print(f"OK: {p} frame={w}x{h} backend={backend} tried={sources}")
+            print(f"OK: {p} frame={w}x{h} backend={backend} tried={candidates}")
         cap.release()
 
 

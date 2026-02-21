@@ -32,13 +32,27 @@ else:
     sounddevice_error = None
 
 
-_V4L2_CAPTURE_BITS = (0x00000001, 0x00000010, 0x00000040, 0x00000100, 0x00001000)
+_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000)
+
+
+def _video_nodes() -> list[str]:
+    return sorted(path for path in glob.glob("/dev/video*") if re.match(r"^/dev/video\d+$", path))
+
+
+def _collect_camera_sources() -> list[str]:
+    by_id = sorted(glob.glob("/dev/v4l/by-id/*"))
+    by_id_set = set(by_id)
+    sources = list(by_id)
+    for node in _video_nodes():
+        if node not in by_id_set:
+            sources.append(node)
+    return sources
 
 
 def _video_index_for_source(source: str) -> int | None:
     match = re.search(r"/dev/video(\d+)$", source)
     if match is None:
-        return False
+        return None
     try:
         return int(match.group(1))
     except Exception:
@@ -83,8 +97,6 @@ def _candidate_sources(source: object) -> list[object]:
     source_is_video = source.startswith("/dev/video")
     source_is_by_id = source.startswith("/dev/v4l/by-id/")
 
-    if source_is_video and _is_capture_node(source) is False:
-        return []
     if source_is_video:
         sources.append(source)
 
@@ -96,8 +108,6 @@ def _candidate_sources(source: object) -> list[object]:
 
     if resolved and resolved != source:
         if resolved.startswith("/dev/video"):
-            if _is_capture_node(resolved) is False:
-                return []
             if resolved not in sources:
                 sources.append(resolved)
             m = re.search(r"/dev/video(\d+)$", resolved)
@@ -116,8 +126,10 @@ def _candidate_sources(source: object) -> list[object]:
     if not source_is_video and source not in sources:
         sources.append(source)
 
-    if source_is_video and sources == [source] and _is_capture_node(source) is False:
-        return []
+    if source_is_video and _is_capture_node(source) is False:
+        source_index = _video_index_for_source(source)
+        if source_index is not None and source_index not in sources:
+            sources.append(source_index)
 
     return list(dict.fromkeys(sources))
 
@@ -153,10 +165,8 @@ def _try_open_camera_any_backend(source: object) -> tuple[bool, list[tuple[objec
             tried.append((candidate, backend_name))
             cap = cv2.VideoCapture(source_for_open, backend)
             if cap.isOpened():
-                ok, _ = cap.read()
-                if ok:
-                    cap.release()
-                    return True, tried, (candidate, backend_name)
+                cap.release()
+                return True, tried, (candidate, backend_name)
             cap.release()
     return False, tried, None
 
@@ -201,11 +211,11 @@ def check_cameras(config: dict) -> int:
         print(f"cv2 import failed: {cv2_error}")
         return 1
 
-    by_id = sorted(glob.glob("/dev/v4l/by-id/*"))
+    camera_sources = _collect_camera_sources()
     by_id_open_count = 0
-    if not by_id:
+    if not camera_sources:
         print("(none) /dev/v4l/by-id entries")
-    for path in by_id:
+    for path in camera_sources:
         try:
             target = os.path.realpath(path)
         except Exception:

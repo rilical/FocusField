@@ -18,13 +18,13 @@ import cv2
 import sounddevice as sd
 import yaml
 
-_V4L2_CAPTURE_BITS = (0x00000001, 0x00000010, 0x00000040, 0x00000100, 0x00001000)
+_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000)
 
 
 def _video_index_for_path(path: str) -> Optional[int]:
     m = re.search(r"/dev/video(\d+)$", path)
     if m is None:
-        return False
+        return None
     try:
         return int(m.group(1))
     except Exception:
@@ -49,13 +49,11 @@ def _is_capture_node(path: str) -> bool | None:
     return any(caps & bit for bit in _V4L2_CAPTURE_BITS)
 
 
-def candidate_sources(source: str) -> List[str]:
+def candidate_sources(source: str) -> List[object]:
     """Return fallback camera paths for OpenCV probing."""
-    sources: List[str] = []
+    sources: List[object] = []
     source_is_video = source.startswith("/dev/video")
     source_is_by_id = source.startswith("/dev/v4l/by-id/")
-    if source_is_video and _is_capture_node(source) is False:
-        return []
     if source_is_video:
         sources.append(source)
 
@@ -66,10 +64,9 @@ def candidate_sources(source: str) -> List[str]:
     else:
         if resolved and resolved != source:
             if resolved.startswith("/dev/video"):
-                if _is_capture_node(resolved) is False:
-                    return []
-                if resolved not in sources:
-                    sources.append(resolved)
+                if _is_capture_node(resolved) is not False:
+                    if resolved not in sources:
+                        sources.append(resolved)
                 m = re.search(r"/dev/video(\d+)$", resolved)
                 if m is not None:
                     video_source = f"/dev/video{m.group(1)}"
@@ -86,8 +83,10 @@ def candidate_sources(source: str) -> List[str]:
     if not source_is_video and source not in sources:
         sources.append(source)
 
-    if source_is_video and sources == [source] and _is_capture_node(source) is False:
-        return []
+    if source_is_video and _is_capture_node(source) is False:
+        source_index = _video_index_for_path(source)
+        if source_index is not None and source_index not in sources:
+            sources.append(source_index)
 
     # Keep this deterministic and short.
     return list(dict.fromkeys(sources))
@@ -103,17 +102,30 @@ def can_open_v4l2(path: str) -> Tuple[bool, Optional[object]]:
     if not candidates:
         return False, None
     for candidate in candidates:
-        index = _video_index_for_path(candidate)
+        index = _video_index_for_path(candidate if isinstance(candidate, str) else str(candidate))
         source_obj: str | int = index if index is not None else candidate
         for backend in backends:
             cap = cv2.VideoCapture(source_obj, backend)
             if cap.isOpened():
-                ok, _ = cap.read()
                 cap.release()
-                if ok:
-                    return True, index if index is not None else candidate
+                return True, index if index is not None else candidate
             cap.release()
     return False, None
+
+
+def _dedupe_paths(paths: List[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for item in paths:
+        try:
+            resolved = os.path.realpath(item)
+        except Exception:
+            resolved = item
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(item)
+    return out
 
 
 def load_profiles(config_root: Path) -> dict:
@@ -154,9 +166,11 @@ def pick_profile_name(channels: int, profiles: Dict[str, Any], preferred: str) -
 
 def detect_cameras(limit: int) -> List[Tuple[str, object]]:
     cameras: List[Tuple[str, object]] = []
-    sources: List[str] = sorted(glob.glob("/dev/v4l/by-id/*"))
-    if not sources:
-        sources = sorted(path for path in glob.glob("/dev/video*") if re.match(r"^/dev/video\\d+$", path))
+    by_id_sources: List[str] = sorted(glob.glob("/dev/v4l/by-id/*"))
+    video_node_sources: List[str] = sorted(
+        path for path in glob.glob("/dev/video*") if re.match(r"^/dev/video\\d+$", path)
+    )
+    sources = _dedupe_paths(by_id_sources + video_node_sources)
 
     for by_id in sources:
         opened, opened_source = can_open_v4l2(by_id)
@@ -165,6 +179,58 @@ def detect_cameras(limit: int) -> List[Tuple[str, object]]:
         cameras.append((by_id, opened_source))
         if len(cameras) >= limit:
             break
+    return cameras
+
+
+def parse_camera_indices(values: Optional[List[str]]) -> List[int]:
+    if not values:
+        return []
+    result: List[int] = []
+    for value in values:
+        if not value:
+            continue
+        for token in str(value).replace(",", " ").split():
+            token = token.strip()
+            if not token:
+                continue
+            if token.startswith("/dev/video"):
+                token = token.replace("/dev/video", "", 1).strip()
+            elif token.startswith("video"):
+                token = token[5:].strip()
+            try:
+                idx = int(token)
+            except ValueError:
+                continue
+            if idx < 0:
+                continue
+            if idx not in result:
+                result.append(idx)
+    return result
+
+
+def _camera_paths_from_indices(indices: List[int], limit: int) -> List[Tuple[str, int]]:
+    cameras: List[Tuple[str, int]] = []
+    seen: set[int] = set()
+    for idx in indices:
+        if idx in seen:
+            continue
+        if limit >= 0 and len(cameras) >= limit:
+            break
+        seen.add(idx)
+        path = f"/dev/video{idx}"
+        if os.path.exists(path):
+            opened, opened_source = can_open_v4l2(path)
+            if opened and opened_source is not None and isinstance(opened_source, int):
+                cameras.append((path, opened_source))
+            else:
+                # Keep explicit user selection even if current probe fails.
+                cameras.append((path, idx))
+                print(
+                    f"warning: explicit camera index {idx} ({path}) not opened during probe; "
+                    "it will be added to output for manual validation."
+                )
+        else:
+            print(f"warning: explicit camera index {idx} does not exist ({path}); skipping")
     return cameras
 
 
@@ -198,14 +264,25 @@ def build_video_entries(
     camera_sources: List[Tuple[str, object]],
 ) -> List[Dict[str, Any]]:
     result: List[Dict[str, Any]] = []
-    for i, (device_path, _opened_path) in enumerate(camera_sources):
+    for i, (device_path, opened_path) in enumerate(camera_sources):
         if i >= len(base_cameras):
             break
         base = dict(base_cameras[i])
+        opened_index: Optional[int]
+        if isinstance(opened_path, int):
+            opened_index = opened_path
+        elif isinstance(opened_path, str):
+            opened_index = _video_index_for_path(opened_path)
+        else:
+            opened_index = None
+
+        if opened_index is None and isinstance(device_path, str):
+            opened_index = _video_index_for_path(device_path)
+
         base.update(
             {
                 "device_path": device_path,
-                "device_index": i,
+                "device_index": opened_index if opened_index is not None else i,
             }
         )
         result.append(base)
@@ -230,6 +307,12 @@ def main() -> int:
         default=3,
         help="How many cameras to include in output.",
     )
+    parser.add_argument(
+        "--camera-indices",
+        nargs="+",
+        default=None,
+        help="Explicit video indices to force into config (e.g. --camera-indices 0 1 2).",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -248,7 +331,15 @@ def main() -> int:
     if not isinstance(cfg, dict):
         raise SystemExit("Base config missing or not a mapping.")
 
-    cameras = detect_cameras(args.max_cameras)
+    explicit_indices = parse_camera_indices(args.camera_indices)
+    if explicit_indices:
+        cameras = _camera_paths_from_indices(explicit_indices, args.max_cameras)
+        if not cameras:
+            raise SystemExit("No explicit camera indices resolved.")
+    else:
+        cameras = detect_cameras(args.max_cameras)
+        if not cameras:
+            raise SystemExit("No working cameras found via CAP_V4L2 probe.")
     if not cameras:
         raise SystemExit("No working cameras found via CAP_V4L2 probe.")
 

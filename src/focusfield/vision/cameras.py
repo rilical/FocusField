@@ -50,7 +50,7 @@ import cv2
 from focusfield.core.clock import now_ns
 
 
-_V4L2_CAPTURE_BITS = (0x00000001, 0x00000010, 0x00000040, 0x00000100, 0x00001000)
+_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000)
 
 
 def start_cameras(
@@ -134,24 +134,30 @@ def _camera_candidates(device_path: object, device_index: int) -> list[object]:
         path = device_path.strip()
         path_is_video = path.startswith("/dev/video")
         path_is_by_id = path.startswith("/dev/v4l/by-id/")
-        if path_is_video and _is_capture_node(path) is False:
-            return []
         try:
             resolved = str(Path(path).resolve())
         except Exception:  # noqa: BLE001
             resolved = None
         if resolved:
             if resolved.startswith("/dev/video"):
-                if _is_capture_node(resolved):
+                if _is_capture_node(resolved) is not False:
                     candidates.append(resolved)
                     m = re.search(r"/dev/video(\d+)$", resolved)
                     if m is not None:
                         video_source = f"/dev/video{m.group(1)}"
                         if video_source not in candidates:
                             candidates.append(video_source)
+                elif path_is_video:
+                    # Path resolves to a non-capture endpoint. Keep numeric index
+                    # fallback so explicit configs still work when path probing is noisy.
+                    try:
+                        idx = int(re.search(r"/dev/video(\d+)$", resolved).group(1))  # type: ignore[union-attr]
+                        if idx not in candidates:
+                            candidates.append(idx)
+                    except Exception:
+                        pass
                 return candidates
-            else:
-                candidates.append(resolved)
+            candidates.append(resolved)
         if (not path_is_by_id or resolved is None) and path not in candidates:
             candidates.append(path)
         if not path_is_video and path not in candidates:
@@ -183,21 +189,21 @@ def _as_open_target(source: object) -> object:
         return source
 
 
-def _is_capture_node(path: str) -> bool:
+def _is_capture_node(path: str) -> bool | None:
     match = re.search(r"/dev/video(\d+)$", path)
     if match is None:
-        return True
+        return None
     index = match.group(1)
     if index is None:
-        return True
+        return None
     capabilities_path = Path(f"/sys/class/video4linux/video{index}/capabilities")
     if not capabilities_path.exists():
-        return False
+        return None
     try:
         raw = capabilities_path.read_text(encoding="utf-8", errors="ignore").strip()
         caps = int(raw, 0)
     except Exception:  # pragma: no cover - platform dependent
-        return False
+        return None
     return any(caps & bit for bit in _V4L2_CAPTURE_BITS)
 
 
@@ -207,7 +213,7 @@ def _open_camera(device_path: object, device_index: int) -> cv2.VideoCapture:
     candidates = _camera_candidates(device_path, device_index)
 
     for candidate in candidates:
-        if isinstance(candidate, str) and not _is_capture_node(candidate):
+        if isinstance(candidate, str) and _is_capture_node(candidate) is False:
             continue
         cap = cv2.VideoCapture(_as_open_target(candidate), cv2.CAP_V4L2)
         if cap.isOpened():
@@ -216,7 +222,7 @@ def _open_camera(device_path: object, device_index: int) -> cv2.VideoCapture:
 
     # Fallback for environments where CAP_V4L2 is unavailable/unstable.
     for candidate in candidates:
-        if isinstance(candidate, str) and not _is_capture_node(candidate):
+        if isinstance(candidate, str) and _is_capture_node(candidate) is False:
             continue
         cap = cv2.VideoCapture(_as_open_target(candidate), cv2.CAP_ANY)
         if cap.isOpened():

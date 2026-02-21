@@ -87,7 +87,7 @@ def _camera_loop(
     fps: int,
     topic: str,
 ) -> None:
-    cap = cv2.VideoCapture(str(device_path)) if device_path else cv2.VideoCapture(device_index)
+    cap = _open_camera(device_path, device_index)
     if not cap.isOpened():
         logger.emit("error", "vision.cameras", "camera_missing", {"camera_id": camera_id})
         return
@@ -121,3 +121,14 @@ def _camera_loop(
         }
         bus.publish(topic, msg)
     cap.release()
+
+
+def _open_camera(device_path: object, device_index: int) -> cv2.VideoCapture:
+    source = str(device_path) if device_path else int(device_index)
+    cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+    if cap.isOpened():
+        return cap
+    cap.release()
+    # Fallback for environments where CAP_V4L2 is unavailable/unstable.
+    cap = cv2.VideoCapture(source, cv2.CAP_ANY)
+    return cap

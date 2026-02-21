@@ -15,6 +15,16 @@ from __future__ import annotations
 import glob
 import os
 
+import cv2
+
+
+def _try_open(path: str) -> tuple[bool, cv2.VideoCapture]:
+    cap = cv2.VideoCapture(path, cv2.CAP_V4L2)
+    if cap.isOpened():
+        return True, cap
+    cap.release()
+    cap = cv2.VideoCapture(path)
+    return cap.isOpened(), cap
 
 def main() -> None:
     by_id = sorted(glob.glob("/dev/v4l/by-id/*"))
@@ -28,15 +38,13 @@ def main() -> None:
             target = "?"
         print(f"{p} -> {target}")
 
-    try:
-        import cv2
-    except Exception as exc:  # noqa: BLE001
-        print(f"OpenCV not available: {exc}")
+    if not hasattr(cv2, "VideoCapture"):
+        print("OpenCV not available: missing VideoCapture")
         return
 
     print("\n=== OpenCV open test ===")
     for p in by_id:
-        cap = cv2.VideoCapture(p)
+        ok, cap = _try_open(p)
         if not cap.isOpened():
             print(f"OPEN FAIL: {p}")
             continue
@@ -55,4 +63,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

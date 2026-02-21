@@ -13,6 +13,9 @@ This runbook is the fastest path to a stable bring-up on Raspberry Pi 4/5.
 ### Raspberry Pi OS (64-bit)
 
 ```bash
+cd /home/focus/FocusField
+git checkout main
+git pull --ff-only
 sudo apt update
 sudo apt install -y \
   python3-pip python3-venv \
@@ -45,6 +48,7 @@ pip install -U "PyYAML>=6.0" "numpy>=1.23" "sounddevice>=0.4.6" "webrtcvad>=2.0.
 Prefer `/dev/v4l/by-id/*` symlinks (stable across reboots):
 
 ```bash
+python3 scripts/pi_preflight.py --config configs/full_3cam_8mic_pi.yaml
 python3 scripts/list_cameras.py
 ```
 

@@ -32,6 +32,37 @@ else:
     sounddevice_error = None
 
 
+_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000, 0x0000000200, 0x0000080000)
+
+
+def _video_index_for_source(source: str) -> int | None:
+    match = re.search(r"/dev/video(\d+)$", source)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _is_capture_node(source: str) -> bool | None:
+    index = _video_index_for_source(source)
+    if index is None:
+        return None
+
+    capabilities_path = Path(f"/sys/class/video4linux/video{index}/capabilities")
+    if not capabilities_path.exists():
+        return None
+
+    try:
+        raw = capabilities_path.read_text(encoding="utf-8", errors="ignore").strip()
+        caps = int(raw, 0)
+    except Exception:
+        return None
+
+    return any(caps & bit for bit in _V4L2_CAPTURE_BITS)
+
+
 def _safe_yaml_load(path: Path) -> dict:
     if yaml is None:
         return {}
@@ -49,7 +80,12 @@ def _candidate_sources(source: object) -> list[object]:
         return [source]
 
     sources: list[object] = []
-    if source.startswith("/dev/video"):
+    source_is_video = source.startswith("/dev/video")
+    source_is_by_id = source.startswith("/dev/v4l/by-id/")
+
+    if source_is_video and _is_capture_node(source) is False:
+        return []
+    if source_is_video:
         sources.append(source)
 
     resolved: str | None = None
@@ -57,8 +93,11 @@ def _candidate_sources(source: object) -> list[object]:
         resolved = os.path.realpath(source)
     except Exception:  # noqa: BLE001
         resolved = None
-    else:
-        if resolved:
+
+    if resolved and resolved != source:
+        if resolved.startswith("/dev/video"):
+            if _is_capture_node(resolved) is False:
+                return []
             if resolved not in sources:
                 sources.append(resolved)
             m = re.search(r"/dev/video(\d+)$", resolved)
@@ -66,10 +105,19 @@ def _candidate_sources(source: object) -> list[object]:
                 video_source = f"/dev/video{m.group(1)}"
                 if video_source not in sources:
                     sources.append(video_source)
-            if source not in sources:
-                sources.append(source)
-    if source not in sources:
+            return sources
+
+        if resolved not in sources:
+            sources.append(resolved)
+
+    if not source_is_by_id or resolved is None:
+        if source not in sources:
+            sources.append(source)
+    if not source_is_video and source not in sources:
         sources.append(source)
+
+    if source_is_video and sources == [source] and _is_capture_node(source) is False:
+        return []
 
     return list(dict.fromkeys(sources))
 

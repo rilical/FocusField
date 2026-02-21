@@ -16,23 +16,63 @@ from __future__ import annotations
 import glob
 import os
 import re
+from pathlib import Path
 
 import cv2
+
+_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000, 0x0000000200, 0x0000080000)
+
+
+def _video_index_for_source(path: str) -> int | None:
+    match = re.search(r"/dev/video(\d+)$", path)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _is_capture_node(path: str) -> bool | None:
+    index = _video_index_for_source(path)
+    if index is None:
+        return None
+
+    capabilities_path = Path(f"/sys/class/video4linux/video{index}/capabilities")
+    if not capabilities_path.exists():
+        return None
+
+    try:
+        raw = capabilities_path.read_text(encoding="utf-8", errors="ignore").strip()
+        caps = int(raw, 0)
+    except Exception:
+        return None
+
+    return any(caps & bit for bit in _V4L2_CAPTURE_BITS)
 
 
 def _candidate_sources(path: str) -> list[str]:
     """Return candidate open sources for a by-id camera path."""
     sources: list[str] = []
-    if path.startswith("/dev/video"):
+    path_is_video = path.startswith("/dev/video")
+    path_is_by_id = path.startswith("/dev/v4l/by-id/")
+
+    if path_is_video and _is_capture_node(path) is False:
+        return []
+
+    if path_is_video:
         sources.append(path)
 
-    resolved: str | None = None
+    resolved = None
     try:
         resolved = os.path.realpath(path)
     except Exception:  # noqa: BLE001
         resolved = None
-    else:
-        if resolved and resolved != path:
+
+    if resolved and resolved != path:
+        if resolved.startswith("/dev/video"):
+            if _is_capture_node(resolved) is False:
+                return []
             if resolved not in sources:
                 sources.append(resolved)
             m = re.search(r"/dev/video(\d+)$", resolved)
@@ -40,13 +80,23 @@ def _candidate_sources(path: str) -> list[str]:
                 video_source = f"/dev/video{m.group(1)}"
                 if video_source not in sources:
                     sources.append(video_source)
-            if path not in sources:
-                sources.append(path)
-        elif resolved and path not in sources:
+            return list(dict.fromkeys(sources))
+
+        if resolved not in sources:
+            sources.append(resolved)
+
+    # For stable by-id links where realpath fails to map to /dev/video,
+    # keep the original path as fallback.
+    if not path_is_by_id or resolved is None:
+        if path not in sources:
             sources.append(path)
 
-    if path not in sources:
+    if not path_is_video and path not in sources:
         sources.append(path)
+
+    if path_is_video and sources == [path] and _is_capture_node(path) is False:
+        return []
+
     return list(dict.fromkeys(sources))
 
 
@@ -62,6 +112,8 @@ def _source_to_open_target(source: str) -> str | int:
 
 def _try_open(path: str) -> tuple[bool, cv2.VideoCapture, str]:
     candidates = _candidate_sources(path)
+    if not candidates:
+        return False, cv2.VideoCapture(), "skip"
     for source in candidates:
         source_obj = _source_to_open_target(source)
         cap = cv2.VideoCapture(source_obj, cv2.CAP_V4L2)

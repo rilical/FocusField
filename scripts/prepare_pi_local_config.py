@@ -18,34 +18,7 @@ import cv2
 import sounddevice as sd
 import yaml
 
-
-def candidate_sources(source: str) -> List[str]:
-    """Return fallback camera paths for OpenCV probing."""
-    sources: List[str] = []
-    if source.startswith("/dev/video"):
-        sources.append(source)
-
-    try:
-        resolved = os.path.realpath(source)
-    except Exception:
-        resolved = None
-    else:
-        if resolved and resolved != source:
-            if resolved not in sources:
-                sources.append(resolved)
-            m = re.search(r"/dev/video(\d+)$", resolved)
-            if m is not None:
-                video_source = f"/dev/video{m.group(1)}"
-                if video_source not in sources:
-                    sources.append(video_source)
-            if source not in sources:
-                sources.append(source)
-
-    if source not in sources:
-        sources.append(source)
-
-    # Keep this deterministic and short.
-    return list(dict.fromkeys(sources))
+_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000, 0x0000000200, 0x0000080000)
 
 
 def _video_index_for_path(path: str) -> Optional[int]:
@@ -58,6 +31,68 @@ def _video_index_for_path(path: str) -> Optional[int]:
         return None
 
 
+def _is_capture_node(path: str) -> bool | None:
+    index = _video_index_for_path(path)
+    if index is None:
+        return None
+
+    capabilities_path = Path(f"/sys/class/video4linux/video{index}/capabilities")
+    if not capabilities_path.exists():
+        return None
+
+    try:
+        raw = capabilities_path.read_text(encoding="utf-8", errors="ignore").strip()
+        caps = int(raw, 0)
+    except Exception:
+        return None
+
+    return any(caps & bit for bit in _V4L2_CAPTURE_BITS)
+
+
+def candidate_sources(source: str) -> List[str]:
+    """Return fallback camera paths for OpenCV probing."""
+    sources: List[str] = []
+    source_is_video = source.startswith("/dev/video")
+    source_is_by_id = source.startswith("/dev/v4l/by-id/")
+    if source_is_video and _is_capture_node(source) is False:
+        return []
+    if source_is_video:
+        sources.append(source)
+
+    try:
+        resolved = os.path.realpath(source)
+    except Exception:
+        resolved = None
+    else:
+        if resolved and resolved != source:
+            if resolved.startswith("/dev/video"):
+                if _is_capture_node(resolved) is False:
+                    return []
+                if resolved not in sources:
+                    sources.append(resolved)
+                m = re.search(r"/dev/video(\d+)$", resolved)
+                if m is not None:
+                    video_source = f"/dev/video{m.group(1)}"
+                    if video_source not in sources:
+                        sources.append(video_source)
+                return sources
+
+            if resolved not in sources:
+                sources.append(resolved)
+
+    if not source_is_by_id or resolved is None:
+        if source not in sources:
+            sources.append(source)
+    if not source_is_video and source not in sources:
+        sources.append(source)
+
+    if source_is_video and sources == [source] and _is_capture_node(source) is False:
+        return []
+
+    # Keep this deterministic and short.
+    return list(dict.fromkeys(sources))
+
+
 def can_open_v4l2(path: str) -> Tuple[bool, Optional[object]]:
     """Return whether OpenCV can open `path` via preferred backends."""
     backends = (
@@ -65,6 +100,8 @@ def can_open_v4l2(path: str) -> Tuple[bool, Optional[object]]:
         cv2.CAP_ANY,
     )
     candidates = candidate_sources(path)
+    if not candidates:
+        return False, None
     for candidate in candidates:
         index = _video_index_for_path(candidate)
         source_obj: str | int = index if index is not None else candidate

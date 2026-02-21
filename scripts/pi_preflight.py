@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 from pathlib import Path
 
 try:
@@ -42,18 +43,36 @@ def _safe_yaml_load(path: Path) -> dict:
         return {}
 
 
+def _candidate_sources(path: str) -> list[str]:
+    sources: list[str] = [path]
+    resolved: str | None = None
+    try:
+        resolved = os.path.realpath(path)
+    except Exception:  # noqa: BLE001
+        resolved = None
+    else:
+        if resolved and resolved != path:
+            sources.append(resolved)
+            m = re.search(r"/dev/video(\d+)$", resolved)
+            if m is not None:
+                sources.append(f"/dev/video{m.group(1)}")
+    return list(dict.fromkeys(sources))
+
+
 def _try_open_camera(source: str) -> bool:
     if cv2 is None:
         return False
-    cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
-    if cap.isOpened():
+    for candidate in _candidate_sources(source):
+        cap = cv2.VideoCapture(candidate, cv2.CAP_V4L2)
+        if cap.isOpened():
+            cap.release()
+            return True
         cap.release()
-        return True
-    cap.release()
-    cap = cv2.VideoCapture(source)
-    if cap.isOpened():
+        cap = cv2.VideoCapture(candidate, cv2.CAP_ANY)
+        if cap.isOpened():
+            cap.release()
+            return True
         cap.release()
-        return True
     return False
 
 
@@ -98,6 +117,7 @@ def check_cameras(config: dict) -> int:
         return 1
 
     by_id = sorted(glob.glob("/dev/v4l/by-id/*"))
+    open_count = 0
     if not by_id:
         print("(none) /dev/v4l/by-id entries")
     for path in by_id:
@@ -106,7 +126,13 @@ def check_cameras(config: dict) -> int:
         except Exception:
             target = "?"
         ok = _try_open_camera(path)
-        print(f"{path} -> {target} | open={ok}")
+        if ok:
+            open_count += 1
+        print(f"{path} -> {target} | open={ok} | tried={_candidate_sources(path)}")
+
+    if open_count == 0:
+        print("No camera sources opened successfully")
+        return 1
 
     cameras = config.get("video", {}).get("cameras", []) if isinstance(config, dict) else []
     if not isinstance(cameras, list):

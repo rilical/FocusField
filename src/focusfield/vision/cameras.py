@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 import cv2
@@ -124,11 +125,42 @@ def _camera_loop(
 
 
 def _open_camera(device_path: object, device_index: int) -> cv2.VideoCapture:
+    # NOTE: some OpenCV builds can fail opening by-id paths with CAP_V4L2.
+    # Resolve symlinks first and then try the integer index fallback.
     source = str(device_path) if device_path else int(device_index)
-    cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
-    if cap.isOpened():
-        return cap
-    cap.release()
+    resolved = source
+    try:
+        if isinstance(device_path, str):
+            resolved_path = str(Path(device_path).resolve())
+            if resolved_path:
+                resolved = resolved_path
+    except Exception:  # noqa: BLE001
+        pass
+
+    candidates = []
+    for value in (source, resolved):
+        if value not in candidates:
+            candidates.append(value)
+
+    # If we still have a by-id-style path, also try the numeric node.
+    if isinstance(device_path, str) and "by-id" in device_path:
+        if str(source).endswith(f"video-index{device_index}"):
+            candidates.append(int(device_index))
+        # Fallback: if realpath is /dev/videoX, use that path explicitly.
+        if isinstance(resolved, str) and resolved.startswith("/dev/video"):
+            candidates.append(resolved)
+
+    for candidate in candidates:
+        cap = cv2.VideoCapture(candidate, cv2.CAP_V4L2)
+        if cap.isOpened():
+            return cap
+        cap.release()
+
     # Fallback for environments where CAP_V4L2 is unavailable/unstable.
-    cap = cv2.VideoCapture(source, cv2.CAP_ANY)
-    return cap
+    for candidate in candidates:
+        cap = cv2.VideoCapture(candidate, cv2.CAP_ANY)
+        if cap.isOpened():
+            return cap
+        cap.release()
+
+    return cv2.VideoCapture()

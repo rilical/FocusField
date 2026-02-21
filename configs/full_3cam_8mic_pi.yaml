@@ -140,7 +140,7 @@ vision:
     min_activity: 0.02
     max_activity: 0.2
     diff_threshold: 4
-    use_facemesh: true
+    use_facemesh: false
     mesh_every_n: 2
     mesh_max_faces: 3
     mesh_min_detection_confidence: 0.5

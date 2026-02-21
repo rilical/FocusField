@@ -18,7 +18,10 @@ sudo apt install -y \
   python3-pip python3-venv \
   portaudio19-dev \
   v4l-utils \
-  libatlas-base-dev
+  libatlas3-base \
+  libopenblas-dev \
+  ffmpeg \
+  python3-opencv
 ```
 
 ## Python environment
@@ -29,6 +32,10 @@ source .venv/bin/activate
 pip install -U pip
 pip install -e .
 ```
+
+> FocusField on Raspberry Pi uses Debian's `python3-opencv` for `cv2`. `opencv-python`
+> wheels are not published for this environment, and `mediapipe` is not currently available
+> on ARM64 Python 3.13 wheels in this OS image.
 
 ## Stable camera paths
 
@@ -98,4 +105,3 @@ If something goes wrong, zip the run folder and share it.
 - Increase `audio.block_size` to 1024 or 2048.
 - Lower camera fps.
 - Check for thermal throttling.
-

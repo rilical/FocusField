@@ -5,6 +5,11 @@ mic_arrays:
     positions_m:
       - [0.000000, 0.000000]
     channel_order: [0]
+  mic_array_2ch_default:
+    geometry: circular
+    radius_m: 0.04
+    channel_order: [0, 1]
+
   mic_array_4ch_default:
     geometry: circular
     radius_m: 0.05

@@ -45,14 +45,20 @@ pip install -U "PyYAML>=6.0" "numpy>=1.23" "sounddevice>=0.4.6" "webrtcvad>=2.0.
 
 ## Stable camera paths
 
-Prefer `/dev/v4l/by-id/*` symlinks (stable across reboots):
+Generate a hardware-matched local config (recommended for plug-and-play):
 
 ```bash
-python3 scripts/pi_preflight.py --config configs/full_3cam_8mic_pi.yaml
+python3 scripts/prepare_pi_local_config.py --base-config configs/full_3cam_8mic_pi.yaml --output configs/full_3cam_working_local.yaml
+```
+
+Then verify:
+
+```bash
+python3 scripts/pi_preflight.py --config configs/full_3cam_working_local.yaml
 python3 scripts/list_cameras.py
 ```
 
-Copy the desired paths into your config under `video.cameras[].device_path`.
+If needed, inspect `configs/full_3cam_working_local.yaml` and re-run with flags to tweak values.
 
 ## UMA-8 calibration
 
@@ -67,13 +73,13 @@ Paste the emitted YAML snippet into `configs/device_profiles.yaml`.
 ## Smoke test (sensors + pipeline)
 
 ```bash
-python3 scripts/pi_smoke.py --config configs/full_3cam_8mic_pi.yaml --run-seconds 10
+python3 scripts/pi_smoke.py --config configs/full_3cam_working_local.yaml --run-seconds 10
 ```
 
 ## Running live
 
 ```bash
-python3 -m focusfield.main.run --config configs/full_3cam_8mic_pi.yaml
+python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml
 ```
 
 Open the UI:

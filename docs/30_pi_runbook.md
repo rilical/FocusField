@@ -76,6 +76,30 @@ Paste the emitted YAML snippet into `configs/device_profiles.yaml`.
 python3 scripts/pi_smoke.py --config configs/full_3cam_working_local.yaml --run-seconds 10
 ```
 
+If you see:
+
+```text
+cascade_missing
+```
+
+your OpenCV install is missing Haar cascades. Face tracking is disabled by design and the pipeline continues.
+To re-enable face detection, install the distro OpenCV data package and rerun:
+
+```bash
+sudo apt install -y opencv-data libopencv-data || sudo apt install -y opencv-data
+python3 -m pip install --no-deps -e .
+```
+
+If only one camera is detected, verify USB bandwidth and hub topology before proceeding:
+
+```bash
+v4l2-ctl --list-devices
+lsusb -t
+```
+
+If needed, start with `--max-cameras 1` temporarily to avoid false expectations from missing
+or non-ready capture endpoints.
+
 ## Running live
 
 ```bash

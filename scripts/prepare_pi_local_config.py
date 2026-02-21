@@ -58,7 +58,7 @@ def _video_index_for_path(path: str) -> Optional[int]:
         return None
 
 
-def can_open_v4l2(path: str) -> Tuple[bool, Optional[str]]:
+def can_open_v4l2(path: str) -> Tuple[bool, Optional[object]]:
     """Return whether OpenCV can open `path` via preferred backends."""
     backends = (
         cv2.CAP_V4L2,
@@ -74,7 +74,7 @@ def can_open_v4l2(path: str) -> Tuple[bool, Optional[str]]:
                 ok, _ = cap.read()
                 cap.release()
                 if ok:
-                    return True, candidate
+                    return True, index if index is not None else candidate
             cap.release()
     return False, None
 
@@ -115,8 +115,8 @@ def pick_profile_name(channels: int, profiles: Dict[str, Any], preferred: str) -
     return preferred
 
 
-def detect_cameras(limit: int) -> List[Tuple[str, str]]:
-    cameras: List[Tuple[str, str]] = []
+def detect_cameras(limit: int) -> List[Tuple[str, object]]:
+    cameras: List[Tuple[str, object]] = []
     sources: List[str] = sorted(glob.glob("/dev/v4l/by-id/*"))
     if not sources:
         sources = sorted(path for path in glob.glob("/dev/video*") if re.match(r"^/dev/video\\d+$", path))
@@ -158,7 +158,7 @@ def detect_audio() -> Tuple[Optional[int], int, str]:
 
 def build_video_entries(
     base_cameras: List[dict],
-    camera_sources: List[Tuple[str, str]],
+    camera_sources: List[Tuple[str, object]],
 ) -> List[Dict[str, Any]]:
     result: List[Dict[str, Any]] = []
     for i, (device_path, _opened_path) in enumerate(camera_sources):

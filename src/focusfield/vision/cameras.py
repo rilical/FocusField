@@ -43,6 +43,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List
+import re
 
 import cv2
 
@@ -153,20 +154,32 @@ def _camera_candidates(device_path: object, device_index: int) -> list[object]:
     return deduped
 
 
+def _as_open_target(source: object) -> object:
+    if not isinstance(source, str):
+        return source
+    match = re.search(r"/dev/video(\d+)$", source)
+    if match is None:
+        return source
+    try:
+        return int(match.group(1))
+    except Exception:
+        return source
+
+
 def _open_camera(device_path: object, device_index: int) -> cv2.VideoCapture:
     # NOTE: some OpenCV builds can fail opening by-id paths with CAP_V4L2.
     # Prefer resolved numeric /dev/videoN nodes over by-id paths.
     candidates = _camera_candidates(device_path, device_index)
 
     for candidate in candidates:
-        cap = cv2.VideoCapture(candidate, cv2.CAP_V4L2)
+        cap = cv2.VideoCapture(_as_open_target(candidate), cv2.CAP_V4L2)
         if cap.isOpened():
             return cap
         cap.release()
 
     # Fallback for environments where CAP_V4L2 is unavailable/unstable.
     for candidate in candidates:
-        cap = cv2.VideoCapture(candidate, cv2.CAP_ANY)
+        cap = cv2.VideoCapture(_as_open_target(candidate), cv2.CAP_ANY)
         if cap.isOpened():
             return cap
         cap.release()

@@ -72,6 +72,11 @@ def _default_config() -> Dict[str, Any]:
             "run_id": "",
             "fail_fast": True,
             "enable_validation": False,
+            "requirements": {
+                "strict": False,
+                "min_cameras": 0,
+                "min_audio_channels": 0,
+            },
             "artifacts": {
                 "dir": "artifacts",
                 "retention": {
@@ -256,6 +261,34 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
                     errors.append(
                         f"audio.channels={channels} but device profile '{profile_name}' has positions_m length {len(positions)}"
                     )
+
+    runtime_cfg = config.get("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+    req_cfg = runtime_cfg.get("requirements", {})
+    if not isinstance(req_cfg, dict):
+        req_cfg = {}
+    strict = bool(req_cfg.get("strict", False))
+    min_cameras = int(req_cfg.get("min_cameras", 0) or 0)
+    min_audio_channels = int(req_cfg.get("min_audio_channels", 0) or 0)
+    if min_cameras < 0:
+        errors.append("runtime.requirements.min_cameras must be >= 0")
+    if min_audio_channels < 0:
+        errors.append("runtime.requirements.min_audio_channels must be >= 0")
+    if strict:
+        if channels <= 0:
+            errors.append("runtime.requirements.strict=true requires audio.channels > 0")
+        if min_audio_channels > 0 and channels < min_audio_channels:
+            errors.append(
+                f"runtime.requirements.min_audio_channels={min_audio_channels} but audio.channels={channels}"
+            )
+        video_cfg = config.get("video", {})
+        cameras = video_cfg.get("cameras", []) if isinstance(video_cfg, dict) else []
+        camera_count = len(cameras) if isinstance(cameras, list) else 0
+        if min_cameras > 0 and camera_count < min_cameras:
+            errors.append(
+                f"runtime.requirements.min_cameras={min_cameras} but video.cameras has {camera_count} entries"
+            )
 
     output_cfg = config.get("output", {})
     if not isinstance(output_cfg, dict):

@@ -1,6 +1,8 @@
 # FocusField Pi4 Runbook (A→Z)
 
-This runbook is the fastest path to a stable bring-up on Raspberry Pi 4/5.
+This runbook provides two explicit run modes on Raspberry Pi 4/5:
+- strict full-target mode (3 capture cameras + 8 mic channels required)
+- degraded debug mode (best-effort bring-up for diagnostics)
 
 ## Hardware checklist (avoid random failures)
 
@@ -45,20 +47,54 @@ pip install -U "PyYAML>=6.0" "numpy>=1.23" "sounddevice>=0.4.6" "webrtcvad>=2.0.
 
 ## Stable camera paths
 
-Generate a hardware-matched local config (recommended for plug-and-play):
+### Hardware verification (required before strict full-target)
 
 ```bash
-python3 scripts/prepare_pi_local_config.py --base-config configs/full_3cam_8mic_pi.yaml --output configs/full_3cam_working_local.yaml
+v4l2-ctl --list-devices
+ls -l /dev/v4l/by-path /dev/v4l/by-id
+lsusb -t
+```
+
+If you do not see at least three capture-capable camera endpoints and one input
+audio device with at least 8 channels, strict full-target mode will fail fast.
+
+### Strict full-target config generation (recommended for production)
+
+```bash
+python3 scripts/prepare_pi_local_config.py \
+  --base-config configs/full_3cam_8mic_pi.yaml \
+  --output configs/full_3cam_working_local.yaml \
+  --camera-source by-path \
+  --max-cameras 3 \
+  --require-cameras 3 \
+  --require-audio-channels 8 \
+  --strict
 ```
 
 Then verify:
 
 ```bash
-python3 scripts/pi_preflight.py --config configs/full_3cam_working_local.yaml
+python3 scripts/pi_preflight.py \
+  --config configs/full_3cam_working_local.yaml \
+  --camera-source by-path \
+  --require-cameras 3 \
+  --require-audio-channels 8 \
+  --strict
 python3 scripts/list_cameras.py
 ```
 
-If needed, inspect `configs/full_3cam_working_local.yaml` and re-run with flags to tweak values.
+### Debug/degraded config generation (best-effort diagnostics)
+
+Use this when strict contract cannot be met and you still need traces/logs:
+
+```bash
+python3 scripts/prepare_pi_local_config.py \
+  --base-config configs/full_3cam_8mic_pi_debug.yaml \
+  --output configs/full_3cam_working_local.yaml \
+  --camera-source auto \
+  --max-cameras 3
+python3 scripts/pi_preflight.py --config configs/full_3cam_working_local.yaml --camera-source auto
+```
 
 ## UMA-8 calibration
 
@@ -90,20 +126,21 @@ sudo apt install -y opencv-data libopencv-data || sudo apt install -y opencv-dat
 python3 -m pip install --no-deps -e .
 ```
 
-If only one camera is detected, verify USB bandwidth and hub topology before proceeding:
-
-```bash
-v4l2-ctl --list-devices
-lsusb -t
-```
-
-If needed, start with `--max-cameras 1` temporarily to avoid false expectations from missing
-or non-ready capture endpoints.
+If strict full-target is required, do not proceed when smoke/preflight reports fewer than
+3 openable cameras or fewer than 8 audio channels.
 
 ## Running live
 
+### Strict full-target run
+
 ```bash
-python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml
+python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml --mode vision
+```
+
+### Degraded debug run
+
+```bash
+python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml --mode vision
 ```
 
 Open the UI:
@@ -129,7 +166,8 @@ If something goes wrong, zip the run folder and share it.
 
 ### Cameras reshuffle
 
-- Use `/dev/v4l/by-id` paths (not numeric indices).
+- Prefer `/dev/v4l/by-path` for strict mode to bind identity to physical USB ports.
+- Use `/dev/v4l/by-id` or numeric indices only for debug mode.
 
 ### USB bandwidth issues
 

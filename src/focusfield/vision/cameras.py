@@ -60,6 +60,7 @@ def start_cameras(
     stop_event: threading.Event,
 ) -> List[threading.Thread]:
     cameras = config.get("video", {}).get("cameras", [])
+    fail_fast = bool(config.get("runtime", {}).get("fail_fast", True))
     threads: List[threading.Thread] = []
     for index, cam_cfg in enumerate(cameras):
         camera_id = cam_cfg.get("id", f"cam{index}")
@@ -72,7 +73,19 @@ def start_cameras(
         thread = threading.Thread(
             target=_camera_loop,
             name=f"camera-{camera_id}",
-            args=(bus, logger, stop_event, camera_id, device_path, device_index, width, height, fps, topic),
+            args=(
+                bus,
+                logger,
+                stop_event,
+                fail_fast,
+                camera_id,
+                device_path,
+                device_index,
+                width,
+                height,
+                fps,
+                topic,
+            ),
             daemon=True,
         )
         thread.start()
@@ -84,6 +97,7 @@ def _camera_loop(
     bus: Any,
     logger: Any,
     stop_event: threading.Event,
+    fail_fast: bool,
     camera_id: str,
     device_path: object,
     device_index: int,
@@ -95,6 +109,8 @@ def _camera_loop(
     cap = _open_camera(device_path, device_index)
     if not cap.isOpened():
         logger.emit("error", "vision.cameras", "camera_missing", {"camera_id": camera_id})
+        if fail_fast:
+            stop_event.set()
         return
     try:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))

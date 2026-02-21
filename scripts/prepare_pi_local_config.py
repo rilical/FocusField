@@ -1,131 +1,22 @@
 #!/usr/bin/env python3
-"""Generate a local Pi config from currently attached devices.
-
-This avoids manual YAML editing and picks a compatible audio profile when the
-connected microphones don't match the full UMA-8 profile.
-"""
+"""Generate a local Pi config from currently attached devices."""
 
 from __future__ import annotations
 
 import argparse
-import glob
 import os
-import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-import cv2
 import sounddevice as sd
 import yaml
 
-_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000)
-
-
-def _video_index_for_path(path: str) -> Optional[int]:
-    m = re.search(r"/dev/video(\d+)$", path)
-    if m is None:
-        return None
-    try:
-        return int(m.group(1))
-    except Exception:
-        return None
-
-
-def _is_capture_node(path: str) -> bool | None:
-    index = _video_index_for_path(path)
-    if index is None:
-        return None
-
-    capabilities_path = Path(f"/sys/class/video4linux/video{index}/capabilities")
-    if not capabilities_path.exists():
-        return None
-
-    try:
-        raw = capabilities_path.read_text(encoding="utf-8", errors="ignore").strip()
-        caps = int(raw, 0)
-    except Exception:
-        return None
-
-    return any(caps & bit for bit in _V4L2_CAPTURE_BITS)
-
-
-def candidate_sources(source: str) -> List[object]:
-    """Return fallback camera paths for OpenCV probing."""
-    sources: List[object] = []
-    source_is_video = source.startswith("/dev/video")
-    source_is_by_id = source.startswith("/dev/v4l/by-id/")
-    if source_is_video:
-        sources.append(source)
-
-    try:
-        resolved = os.path.realpath(source)
-    except Exception:
-        resolved = None
-    else:
-        if resolved and resolved != source:
-            if resolved.startswith("/dev/video"):
-                if _is_capture_node(resolved) is not False:
-                    if resolved not in sources:
-                        sources.append(resolved)
-                m = re.search(r"/dev/video(\d+)$", resolved)
-                if m is not None:
-                    video_source = f"/dev/video{m.group(1)}"
-                    if video_source not in sources:
-                        sources.append(video_source)
-                return sources
-
-            if resolved not in sources:
-                sources.append(resolved)
-
-    if not source_is_by_id or resolved is None:
-        if source not in sources:
-            sources.append(source)
-    if not source_is_video and source not in sources:
-        sources.append(source)
-
-    if source_is_video and _is_capture_node(source) is False:
-        source_index = _video_index_for_path(source)
-        if source_index is not None and source_index not in sources:
-            sources.append(source_index)
-
-    # Keep this deterministic and short.
-    return list(dict.fromkeys(sources))
-
-
-def can_open_v4l2(path: str) -> Tuple[bool, Optional[object]]:
-    """Return whether OpenCV can open `path` via preferred backends."""
-    backends = (
-        cv2.CAP_V4L2,
-        cv2.CAP_ANY,
-    )
-    candidates = candidate_sources(path)
-    if not candidates:
-        return False, None
-    for candidate in candidates:
-        index = _video_index_for_path(candidate if isinstance(candidate, str) else str(candidate))
-        source_obj: str | int = index if index is not None else candidate
-        for backend in backends:
-            cap = cv2.VideoCapture(source_obj, backend)
-            if cap.isOpened():
-                cap.release()
-                return True, index if index is not None else candidate
-            cap.release()
-    return False, None
-
-
-def _dedupe_paths(paths: List[str]) -> List[str]:
-    seen: set[str] = set()
-    out: List[str] = []
-    for item in paths:
-        try:
-            resolved = os.path.realpath(item)
-        except Exception:
-            resolved = item
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        out.append(item)
-    return out
+from focusfield.platform.hardware_probe import (
+    collect_camera_sources,
+    is_capture_node,
+    try_open_camera_any_backend,
+    video_index_for_source,
+)
 
 
 def load_profiles(config_root: Path) -> dict:
@@ -164,24 +55,6 @@ def pick_profile_name(channels: int, profiles: Dict[str, Any], preferred: str) -
     return preferred
 
 
-def detect_cameras(limit: int) -> List[Tuple[str, object]]:
-    cameras: List[Tuple[str, object]] = []
-    by_id_sources: List[str] = sorted(glob.glob("/dev/v4l/by-id/*"))
-    video_node_sources: List[str] = sorted(
-        path for path in glob.glob("/dev/video*") if re.match(r"^/dev/video\\d+$", path)
-    )
-    sources = _dedupe_paths(by_id_sources + video_node_sources)
-
-    for by_id in sources:
-        opened, opened_source = can_open_v4l2(by_id)
-        if not opened or opened_source is None:
-            continue
-        cameras.append((by_id, opened_source))
-        if len(cameras) >= limit:
-            break
-    return cameras
-
-
 def parse_camera_indices(values: Optional[List[str]]) -> List[int]:
     if not values:
         return []
@@ -208,8 +81,48 @@ def parse_camera_indices(values: Optional[List[str]]) -> List[int]:
     return result
 
 
-def _camera_paths_from_indices(indices: List[int], limit: int) -> List[Tuple[str, int]]:
-    cameras: List[Tuple[str, int]] = []
+def _camera_capture_capable(source: str) -> bool:
+    try:
+        resolved = os.path.realpath(source)
+    except Exception:
+        resolved = source
+    if not resolved.startswith("/dev/video"):
+        return True
+    capture = is_capture_node(resolved)
+    return capture is not False
+
+
+def detect_cameras(limit: int, camera_source: str, strict_capture: bool) -> tuple[list[tuple[str, object]], dict]:
+    cameras: list[tuple[str, object]] = []
+    discovered = collect_camera_sources(camera_source)
+    capture_capable = 0
+    openable = 0
+
+    for source in discovered:
+        if _camera_capture_capable(source):
+            capture_capable += 1
+        elif camera_source == "auto" or strict_capture:
+            continue
+
+        ok, _, opened = try_open_camera_any_backend(source, strict_capture=strict_capture)
+        if not ok or opened is None:
+            continue
+        openable += 1
+        cameras.append((source, opened[0]))
+        if len(cameras) >= limit:
+            break
+
+    stats = {
+        "discovered_sources": len(discovered),
+        "capture_capable_sources": capture_capable,
+        "openable_sources": openable,
+    }
+    return cameras, stats
+
+
+def _camera_paths_from_indices(indices: List[int], limit: int, strict: bool) -> tuple[list[tuple[str, int]], list[str]]:
+    cameras: list[tuple[str, int]] = []
+    failures: list[str] = []
     seen: set[int] = set()
     for idx in indices:
         if idx in seen:
@@ -218,23 +131,33 @@ def _camera_paths_from_indices(indices: List[int], limit: int) -> List[Tuple[str
             break
         seen.add(idx)
         path = f"/dev/video{idx}"
-        if os.path.exists(path):
-            opened, opened_source = can_open_v4l2(path)
-            if opened and opened_source is not None and isinstance(opened_source, int):
+        if not os.path.exists(path):
+            failures.append(f"explicit camera index {idx} does not exist ({path})")
+            continue
+
+        ok, _, opened = try_open_camera_any_backend(path, strict_capture=strict)
+        if ok and opened is not None:
+            opened_source = opened[0]
+            if isinstance(opened_source, int):
                 cameras.append((path, opened_source))
+            elif isinstance(opened_source, str):
+                opened_index = video_index_for_source(opened_source)
+                cameras.append((path, opened_index if opened_index is not None else idx))
             else:
-                # Keep explicit user selection even if current probe fails.
                 cameras.append((path, idx))
-                print(
-                    f"warning: explicit camera index {idx} ({path}) not opened during probe; "
-                    "it will be added to output for manual validation."
-                )
+            continue
+
+        if strict:
+            failures.append(f"explicit camera index {idx} ({path}) failed strict open probe")
         else:
-            print(f"warning: explicit camera index {idx} does not exist ({path}); skipping")
-    return cameras
+            cameras.append((path, idx))
+            failures.append(
+                f"explicit camera index {idx} ({path}) not opened during probe; added for manual validation"
+            )
+    return cameras, failures
 
 
-def detect_audio() -> Tuple[Optional[int], int, str]:
+def detect_audio() -> tuple[Optional[int], int, str]:
     selected_index = None
     selected_channels = 0
     selected_name = ""
@@ -259,10 +182,7 @@ def detect_audio() -> Tuple[Optional[int], int, str]:
     return selected_index, selected_channels, selected_name
 
 
-def build_video_entries(
-    base_cameras: List[dict],
-    camera_sources: List[Tuple[str, object]],
-) -> List[Dict[str, Any]]:
+def build_video_entries(base_cameras: List[dict], camera_sources: List[tuple[str, object]]) -> List[Dict[str, Any]]:
     result: List[Dict[str, Any]] = []
     for i, (device_path, opened_path) in enumerate(camera_sources):
         if i >= len(base_cameras):
@@ -272,12 +192,12 @@ def build_video_entries(
         if isinstance(opened_path, int):
             opened_index = opened_path
         elif isinstance(opened_path, str):
-            opened_index = _video_index_for_path(opened_path)
+            opened_index = video_index_for_source(opened_path)
         else:
             opened_index = None
 
         if opened_index is None and isinstance(device_path, str):
-            opened_index = _video_index_for_path(device_path)
+            opened_index = video_index_for_source(device_path)
 
         base.update(
             {
@@ -289,29 +209,54 @@ def build_video_entries(
     return result
 
 
+def _apply_runtime_requirements(cfg: Dict[str, Any], strict: bool, min_cameras: int, min_audio_channels: int) -> None:
+    runtime_cfg = cfg.get("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+        cfg["runtime"] = runtime_cfg
+    req = runtime_cfg.get("requirements", {})
+    if not isinstance(req, dict):
+        req = {}
+    req["strict"] = bool(strict)
+    req["min_cameras"] = int(max(0, min_cameras))
+    req["min_audio_channels"] = int(max(0, min_audio_channels))
+    runtime_cfg["requirements"] = req
+    if strict:
+        runtime_cfg["fail_fast"] = True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--base-config",
-        default="configs/full_3cam_8mic_pi.yaml",
-        help="Template config to patch.",
-    )
+    parser.add_argument("--base-config", default="configs/full_3cam_8mic_pi.yaml", help="Template config to patch.")
     parser.add_argument(
         "--output",
         default="configs/full_3cam_working_local.yaml",
         help="Output path for hardware-adaptive config.",
     )
+    parser.add_argument("--max-cameras", type=int, default=3, help="How many cameras to include in output.")
     parser.add_argument(
-        "--max-cameras",
-        type=int,
-        default=3,
-        help="How many cameras to include in output.",
+        "--camera-source",
+        choices=["auto", "by-path", "by-id", "index"],
+        default="auto",
+        help="Camera discovery mode. auto prefers by-path then by-id then /dev/videoN.",
     )
     parser.add_argument(
         "--camera-indices",
         nargs="+",
         default=None,
         help="Explicit video indices to force into config (e.g. --camera-indices 0 1 2).",
+    )
+    parser.add_argument("--require-cameras", type=int, default=0, help="Minimum required openable cameras.")
+    parser.add_argument(
+        "--require-audio-channels",
+        type=int,
+        default=0,
+        help="Minimum required input channels on selected audio device.",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Enforce contract requirements and fail without writing output when unmet.",
     )
     args = parser.parse_args()
 
@@ -332,20 +277,44 @@ def main() -> int:
         raise SystemExit("Base config missing or not a mapping.")
 
     explicit_indices = parse_camera_indices(args.camera_indices)
+    discovery_stats = {"discovered_sources": 0, "capture_capable_sources": 0, "openable_sources": 0}
+    notices: list[str] = []
     if explicit_indices:
-        cameras = _camera_paths_from_indices(explicit_indices, args.max_cameras)
+        cameras, notices = _camera_paths_from_indices(explicit_indices, args.max_cameras, strict=args.strict)
+        discovery_stats["discovered_sources"] = len(explicit_indices)
+        discovery_stats["capture_capable_sources"] = len(cameras)
+        discovery_stats["openable_sources"] = len(cameras)
         if not cameras:
             raise SystemExit("No explicit camera indices resolved.")
     else:
-        cameras = detect_cameras(args.max_cameras)
+        cameras, discovery_stats = detect_cameras(
+            args.max_cameras,
+            camera_source=args.camera_source,
+            strict_capture=args.strict,
+        )
         if not cameras:
-            raise SystemExit("No working cameras found via CAP_V4L2 probe.")
-    if not cameras:
-        raise SystemExit("No working cameras found via CAP_V4L2 probe.")
+            raise SystemExit("No working cameras found via probe.")
 
     audio_index, audio_channels, audio_name = detect_audio()
     if audio_index is None:
         raise SystemExit("No input audio device found.")
+
+    contract_errors: list[str] = []
+    req_cams = int(max(0, args.require_cameras))
+    req_audio = int(max(0, args.require_audio_channels))
+    if req_cams > 0 and len(cameras) < req_cams:
+        contract_errors.append(
+            f"required cameras={req_cams} but openable cameras={len(cameras)} "
+            f"(discovered={discovery_stats['discovered_sources']}, capture_capable={discovery_stats['capture_capable_sources']})"
+        )
+    if req_audio > 0 and audio_channels < req_audio:
+        contract_errors.append(
+            f"required audio_channels={req_audio} but selected device has channels={audio_channels} "
+            f"(index={audio_index}, name={audio_name!r})"
+        )
+    if args.strict and contract_errors:
+        joined = "\n".join(f"- {err}" for err in contract_errors)
+        raise SystemExit(f"Strict contract check failed:\n{joined}")
 
     profiles = load_profiles(repo_root)
     audio_cfg = cfg.get("audio", {})
@@ -379,12 +348,30 @@ def main() -> int:
     if isinstance(ui_cfg, dict):
         ui_cfg["host"] = "0.0.0.0"
 
+    _apply_runtime_requirements(
+        cfg,
+        strict=args.strict,
+        min_cameras=req_cams,
+        min_audio_channels=req_audio,
+    )
+
     output_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     print(f"wrote: {output_path}")
     print(
-        f"cameras_used={len(cameras)} channels={audio_channels} audio_idx={audio_index} profile={audio_cfg['device_profile']}"
+        f"cameras_used={len(cameras)} channels={audio_channels} audio_idx={audio_index} "
+        f"profile={audio_cfg['device_profile']}"
     )
     print(f"selected_audio={audio_name!r} default_ch={audio_channels}")
+    print(
+        "camera_probe: "
+        f"source_mode={args.camera_source} discovered={discovery_stats['discovered_sources']} "
+        f"capture_capable={discovery_stats['capture_capable_sources']} openable={discovery_stats['openable_sources']}"
+    )
+    for notice in notices:
+        print(f"notice: {notice}")
+    if contract_errors:
+        for err in contract_errors:
+            print(f"contract_warning: {err}")
     return 0
 
 

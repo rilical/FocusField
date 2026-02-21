@@ -1,16 +1,15 @@
-# FocusField Full configuration (3 cameras, 8 microphones) - Pi-optimized
-# Use this on Raspberry Pi 5 / Pi-class devices.
+# FocusField Full configuration (3 cameras, 8 microphones) - Pi debug/degraded
 
 build: full
 
 runtime:
   run_id: ""
-  fail_fast: true
+  fail_fast: false
   enable_validation: true
   requirements:
-    strict: true
-    min_cameras: 3
-    min_audio_channels: 8
+    strict: false
+    min_cameras: 0
+    min_audio_channels: 0
   artifacts:
     dir: "artifacts"
     retention:
@@ -20,9 +19,9 @@ trace:
   enabled: true
   level: medium
   thumbnails:
-    enabled: false
+    enabled: true
     fps: 1
-  record_raw_audio: false
+  record_raw_audio: true
   record_heatmap_full: false
 
 health:
@@ -40,7 +39,7 @@ perf:
 audio:
   channels: 8
   sample_rate_hz: 48000
-  block_size: 2048
+  block_size: 1024
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
@@ -165,7 +164,7 @@ fusion:
   require_speaking: true
 
 bus:
-  max_queue_depth: 32
+  max_queue_depth: 8
 
 logging:
   level: info

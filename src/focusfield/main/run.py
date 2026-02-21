@@ -44,6 +44,7 @@ from focusfield.core.health import start_health_monitor
 from focusfield.core.log_sink import start_log_sink
 from focusfield.core.logging import LogEmitter
 from focusfield.audio.capture import start_audio_capture
+from focusfield.audio.devices import list_input_devices, resolve_input_device_index
 from focusfield.audio.beamform.delay_and_sum import start_delay_and_sum
 from focusfield.audio.beamform.mvdr import start_mvdr
 from focusfield.audio.doa.srp_phat import start_srp_phat
@@ -57,6 +58,7 @@ from focusfield.fusion.av_association import start_av_association
 from focusfield.fusion.lock_state_machine import start_lock_state_machine
 from focusfield.ui.server import start_ui_server
 from focusfield.ui.telemetry import start_telemetry
+from focusfield.platform.hardware_probe import try_open_camera_any_backend
 from focusfield.vision.cameras import start_cameras
 from focusfield.vision.speaker_heatmap import start_speaker_heatmap
 from focusfield.vision.tracking.face_track import start_face_tracking
@@ -79,6 +81,112 @@ def _start_beamformed_passthrough(bus: Bus, logger: LogEmitter, stop_event: thre
     thread.start()
     logger.emit("info", "main.run", "denoise_disabled_passthrough", {})
     return thread
+
+
+def _runtime_requirements(config: Dict[str, Any]) -> Dict[str, Any]:
+    runtime_cfg = config.get("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+    req_cfg = runtime_cfg.get("requirements", {})
+    if not isinstance(req_cfg, dict):
+        req_cfg = {}
+    return {
+        "strict": bool(req_cfg.get("strict", False)),
+        "min_cameras": int(req_cfg.get("min_cameras", 0) or 0),
+        "min_audio_channels": int(req_cfg.get("min_audio_channels", 0) or 0),
+    }
+
+
+def _selected_audio_info(config: Dict[str, Any]) -> Dict[str, Any]:
+    selected_idx = resolve_input_device_index(config, logger=None)
+    selected_name = ""
+    selected_channels = 0
+    for device in list_input_devices():
+        if device.index != selected_idx:
+            continue
+        selected_name = device.name
+        selected_channels = int(device.max_input_channels)
+        break
+    return {
+        "device_index": selected_idx,
+        "device_name": selected_name,
+        "channels": selected_channels,
+    }
+
+
+def _configured_camera_status(config: Dict[str, Any], strict_capture: bool) -> Dict[str, Any]:
+    cameras = config.get("video", {}).get("cameras", [])
+    if not isinstance(cameras, list):
+        cameras = []
+    total = len(cameras)
+    openable = 0
+    entries: List[Dict[str, Any]] = []
+    for idx, cam in enumerate(cameras):
+        source: object = idx
+        camera_id = f"cam{idx}"
+        if isinstance(cam, dict):
+            camera_id = str(cam.get("id", camera_id))
+            source = cam.get("device_path") or cam.get("device_index", idx)
+        ok, tried, opened = try_open_camera_any_backend(source, strict_capture=strict_capture)
+        if ok:
+            openable += 1
+        entries.append(
+            {
+                "camera_id": camera_id,
+                "source": source,
+                "open": ok,
+                "backend": opened[1] if opened is not None else "none",
+                "tried": tried,
+            }
+        )
+    return {
+        "total": total,
+        "openable": openable,
+        "entries": entries,
+    }
+
+
+def _validate_runtime_requirements(config: Dict[str, Any], logger: LogEmitter) -> None:
+    req = _runtime_requirements(config)
+    if not req["strict"]:
+        return
+
+    failures: List[str] = []
+    camera_status = _configured_camera_status(config, strict_capture=True)
+    audio_status = _selected_audio_info(config)
+    min_cameras = int(req["min_cameras"])
+    min_audio_channels = int(req["min_audio_channels"])
+
+    if min_cameras > 0 and camera_status["openable"] < min_cameras:
+        failures.append(
+            f"required cameras={min_cameras}, observed openable cameras={camera_status['openable']}"
+        )
+    if min_audio_channels > 0 and int(audio_status["channels"]) < min_audio_channels:
+        failures.append(
+            f"required audio_channels={min_audio_channels}, observed channels={audio_status['channels']}"
+        )
+    if not failures:
+        logger.emit(
+            "info",
+            "main.run",
+            "runtime_requirements_passed",
+            {
+                "requirements": req,
+                "camera_status": {"total": camera_status["total"], "openable": camera_status["openable"]},
+                "audio_status": audio_status,
+            },
+        )
+        return
+
+    payload = {
+        "requirements": req,
+        "camera_status": camera_status,
+        "audio_status": audio_status,
+        "failures": failures,
+    }
+    logger.emit("error", "main.run", "runtime_requirements_failed", payload)
+    joined = "\n".join(f"- {item}" for item in failures)
+    raise RuntimeError(f"Runtime requirements check failed:\n{joined}")
 
 
 def _ensure_artifacts(config: Dict[str, Any]) -> Path:
@@ -243,6 +351,10 @@ def main() -> None:
     if args.mode not in {"vision"}:
         logger.emit("error", "main.run", "invalid_mode", {"mode": args.mode})
         raise SystemExit(f"Unsupported mode: {args.mode}")
+    try:
+        _validate_runtime_requirements(config, logger)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
 
     log_thread = start_log_sink(bus, config, logger, stop_event)
     if log_thread is not None:

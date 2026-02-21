@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import json
@@ -106,9 +107,7 @@ class CameraTracker:
         self._speak_off_frames = int(thresholds.get("min_off_frames", 3))
         self._speaking: Dict[int, SpeakingHysteresis] = {}
         self._camera_cfg = camera_cfg
-        self._cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
+        self._cascade = self._load_face_cascade()
         self._frame_count = 0
         self._last_detections: List[Tuple[BBox, float]] = []
         self._bearing_model = str(camera_cfg.get("bearing_model", "linear")).lower()
@@ -187,7 +186,50 @@ class CameraTracker:
             )
         return output_tracks
 
+    def _load_face_cascade(self):
+        candidates = []
+
+        if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+            candidates.append(Path(str(cv2.data.haarcascades)) / "haarcascade_frontalface_default.xml")
+
+        cv2_root = Path(cv2.__file__).resolve().parent if cv2.__file__ else None
+        if cv2_root is not None:
+            candidates.extend(
+                [
+                    cv2_root / "data" / "haarcascade_frontalface_default.xml",
+                    cv2_root.parent / "share" / "opencv4" / "haarcascades" / "haarcascade_frontalface_default.xml",
+                ]
+            )
+
+        candidates.extend(
+            [
+                Path("/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"),
+                Path("/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"),
+                Path("/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"),
+            ]
+        )
+
+        for path in candidates:
+            if not path.exists():
+                continue
+            cascade = cv2.CascadeClassifier(str(path))
+            if not cascade.empty():
+                return cascade
+
+        self._logger.emit(
+            "warning",
+            "vision.face_track",
+            "cascade_missing",
+            {
+                "camera_id": self._camera_id,
+                "note": "Face cascade unavailable; running with face detection disabled. Install opencv-data or add haarcascade file manually.",
+            },
+        )
+        return None
+
     def _detect_faces(self, gray_frame) -> List[Tuple[BBox, float]]:
+        if self._cascade is None:
+            return []
         height, width = gray_frame.shape[:2]
         scale = 1.0
         resized = gray_frame

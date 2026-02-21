@@ -43,23 +43,37 @@ def _safe_yaml_load(path: Path) -> dict:
         return {}
 
 
-def _candidate_sources(path: str) -> list[str]:
-    sources: list[str] = [path]
+def _candidate_sources(source: object) -> list[object]:
+    if not isinstance(source, str):
+        return [source]
+
+    sources: list[object] = []
+    if source.startswith("/dev/video"):
+        sources.append(source)
+
     resolved: str | None = None
     try:
-        resolved = os.path.realpath(path)
+        resolved = os.path.realpath(source)
     except Exception:  # noqa: BLE001
         resolved = None
     else:
-        if resolved and resolved != path:
-            sources.append(resolved)
+        if resolved:
+            if resolved not in sources:
+                sources.append(resolved)
             m = re.search(r"/dev/video(\d+)$", resolved)
             if m is not None:
-                sources.append(f"/dev/video{m.group(1)}")
+                video_source = f"/dev/video{m.group(1)}"
+                if video_source not in sources:
+                    sources.append(video_source)
+            if source not in sources:
+                sources.append(source)
+    if source not in sources:
+        sources.append(source)
+
     return list(dict.fromkeys(sources))
 
 
-def _try_open_camera(source: str) -> bool:
+def _try_open_camera(source: object) -> bool:
     if cv2 is None:
         return False
     for candidate in _candidate_sources(source):
@@ -117,7 +131,7 @@ def check_cameras(config: dict) -> int:
         return 1
 
     by_id = sorted(glob.glob("/dev/v4l/by-id/*"))
-    open_count = 0
+    by_id_open_count = 0
     if not by_id:
         print("(none) /dev/v4l/by-id entries")
     for path in by_id:
@@ -127,23 +141,29 @@ def check_cameras(config: dict) -> int:
             target = "?"
         ok = _try_open_camera(path)
         if ok:
-            open_count += 1
+            by_id_open_count += 1
         print(f"{path} -> {target} | open={ok} | tried={_candidate_sources(path)}")
 
-    if open_count == 0:
+    if by_id_open_count == 0:
         print("No camera sources opened successfully")
         return 1
 
     cameras = config.get("video", {}).get("cameras", []) if isinstance(config, dict) else []
     if not isinstance(cameras, list):
         cameras = []
+    config_open_count = 0
     for idx, cam in enumerate(cameras):
-        source = None
+        source = idx
         if isinstance(cam, dict):
             source = cam.get("device_path") or cam.get("device_index", idx)
-        else:
-            source = idx
-        print(f"Config camera[{idx}]: {source}")
+        ok = _try_open_camera(source)
+        if ok:
+            config_open_count += 1
+        print(f"Config camera[{idx}]: {source} | open={ok} | tried={_candidate_sources(source)}")
+
+    if config and config_open_count < len(cameras):
+        print(f"Configured camera open failures: {len(cameras)-config_open_count}/{len(cameras)}")
+        return 1
     return 0
 
 

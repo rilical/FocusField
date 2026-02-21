@@ -124,31 +124,39 @@ def _camera_loop(
     cap.release()
 
 
+def _camera_candidates(device_path: object, device_index: int) -> list[object]:
+    candidates: list[object] = []
+    if isinstance(device_path, str) and device_path.strip():
+        try:
+            resolved = str(Path(device_path).resolve())
+        except Exception:  # noqa: BLE001
+            resolved = None
+        if resolved:
+            if resolved not in candidates:
+                candidates.append(resolved)
+            if resolved.startswith("/dev/video") and resolved not in candidates:
+                candidates.append(resolved)
+        if device_path not in candidates:
+            candidates.append(device_path)
+
+    try:
+        index_candidate = int(device_index)
+    except (TypeError, ValueError):
+        index_candidate = None
+    if index_candidate is not None and index_candidate not in candidates:
+        candidates.append(index_candidate)
+
+    deduped: list[object] = []
+    for value in candidates:
+        if value not in deduped:
+            deduped.append(value)
+    return deduped
+
+
 def _open_camera(device_path: object, device_index: int) -> cv2.VideoCapture:
     # NOTE: some OpenCV builds can fail opening by-id paths with CAP_V4L2.
-    # Resolve symlinks first and then try the integer index fallback.
-    source = str(device_path) if device_path else int(device_index)
-    resolved = source
-    try:
-        if isinstance(device_path, str):
-            resolved_path = str(Path(device_path).resolve())
-            if resolved_path:
-                resolved = resolved_path
-    except Exception:  # noqa: BLE001
-        pass
-
-    candidates = []
-    for value in (source, resolved):
-        if value not in candidates:
-            candidates.append(value)
-
-    # If we still have a by-id-style path, also try the numeric node.
-    if isinstance(device_path, str) and "by-id" in device_path:
-        if str(source).endswith(f"video-index{device_index}"):
-            candidates.append(int(device_index))
-        # Fallback: if realpath is /dev/videoX, use that path explicitly.
-        if isinstance(resolved, str) and resolved.startswith("/dev/video"):
-            candidates.append(resolved)
+    # Prefer resolved numeric /dev/videoN nodes over by-id paths.
+    candidates = _camera_candidates(device_path, device_index)
 
     for candidate in candidates:
         cap = cv2.VideoCapture(candidate, cv2.CAP_V4L2)

@@ -22,7 +22,10 @@ import cv2
 
 def _candidate_sources(path: str) -> list[str]:
     """Return candidate open sources for a by-id camera path."""
-    sources: list[str] = [path]
+    sources: list[str] = []
+    if path.startswith("/dev/video"):
+        sources.append(path)
+
     resolved: str | None = None
     try:
         resolved = os.path.realpath(path)
@@ -30,10 +33,20 @@ def _candidate_sources(path: str) -> list[str]:
         resolved = None
     else:
         if resolved and resolved != path:
-            sources.append(resolved)
+            if resolved not in sources:
+                sources.append(resolved)
             m = re.search(r"/dev/video(\d+)$", resolved)
             if m is not None:
-                sources.append(f"/dev/video{m.group(1)}")
+                video_source = f"/dev/video{m.group(1)}"
+                if video_source not in sources:
+                    sources.append(video_source)
+            if path not in sources:
+                sources.append(path)
+        elif resolved and path not in sources:
+            sources.append(path)
+
+    if path not in sources:
+        sources.append(path)
     return list(dict.fromkeys(sources))
 
 

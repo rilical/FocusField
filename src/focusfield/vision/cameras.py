@@ -50,7 +50,7 @@ import cv2
 from focusfield.core.clock import now_ns
 
 
-_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000, 0x0000000200, 0x0000080000)
+_V4L2_CAPTURE_BITS = (0x00000001, 0x00000010, 0x00000040, 0x00000100, 0x00001000)
 
 
 def start_cameras(
@@ -192,12 +192,12 @@ def _is_capture_node(path: str) -> bool:
         return True
     capabilities_path = Path(f"/sys/class/video4linux/video{index}/capabilities")
     if not capabilities_path.exists():
-        return True
+        return False
     try:
         raw = capabilities_path.read_text(encoding="utf-8", errors="ignore").strip()
         caps = int(raw, 0)
     except Exception:  # pragma: no cover - platform dependent
-        return True
+        return False
     return any(caps & bit for bit in _V4L2_CAPTURE_BITS)
 
 

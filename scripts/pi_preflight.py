@@ -32,13 +32,13 @@ else:
     sounddevice_error = None
 
 
-_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000, 0x0000000200, 0x0000080000)
+_V4L2_CAPTURE_BITS = (0x00000001, 0x00000010, 0x00000040, 0x00000100, 0x00001000)
 
 
 def _video_index_for_source(source: str) -> int | None:
     match = re.search(r"/dev/video(\d+)$", source)
     if match is None:
-        return None
+        return False
     try:
         return int(match.group(1))
     except Exception:

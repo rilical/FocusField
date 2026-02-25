@@ -81,7 +81,7 @@ def start_ui_server(
     logger: Any,
     stop_event: threading.Event,
 ) -> threading.Thread:
-    host = config.get("ui", {}).get("host", "127.0.0.1")
+    host = config.get("ui", {}).get("host", "0.0.0.0")
     port = int(config.get("ui", {}).get("port", 8080))
     cameras = [cam.get("id", f"cam{idx}") for idx, cam in enumerate(config.get("video", {}).get("cameras", []))]
     state = UIState()
@@ -137,6 +137,7 @@ def start_ui_server(
                 self.send_response(200)
                 self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(encoded.tobytes())
                 return
@@ -145,6 +146,7 @@ def start_ui_server(
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(payload)
                 return
@@ -159,6 +161,7 @@ def start_ui_server(
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(payload)
 

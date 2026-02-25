@@ -90,6 +90,22 @@ def _default_config() -> Dict[str, Any]:
             "port": 8080,
             "telemetry_hz": 15,
         },
+        "uma8_leds": {
+            "enabled": False,
+            "enabled_fallback": True,
+            "backend": "simulate",
+            "ring_size": 12,
+            "update_hz": 12.0,
+            "base_bearing_offset_deg": 0.0,
+            "idle_rgb": [10, 10, 24],
+            "lock_rgb": [0, 255, 128],
+            "search_rgb": [0, 140, 255],
+            "smoothing_alpha": 0.35,
+            "brightness_min": 0.05,
+            "brightness_max": 0.85,
+            "vendor_id": 10066,
+            "product_id": 28,
+        },
         "trace": {
             "enabled": True,
             "level": "medium",
@@ -409,6 +425,67 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             if device_index is not None and int(device_index) < 0:
                 errors.append("output.virtual_mic.device_index must be >= 0")
 
+    uma8_cfg = config.get("uma8_leds", {})
+    if uma8_cfg is not None and not isinstance(uma8_cfg, dict):
+        errors.append("uma8_leds must be a mapping when provided")
+        uma8_cfg = {}
+    if isinstance(uma8_cfg, dict):
+        backend = str(uma8_cfg.get("backend", "simulate") or "simulate").strip().lower()
+        if backend not in {"hid", "simulate", "none"}:
+            errors.append("uma8_leds.backend must be one of: hid, simulate, none")
+
+        try:
+            ring_size = int(uma8_cfg.get("ring_size", 12))
+            if ring_size < 1:
+                errors.append("uma8_leds.ring_size must be >= 1")
+        except Exception:
+            errors.append("uma8_leds.ring_size must be integer")
+
+        try:
+            update_hz = float(uma8_cfg.get("update_hz", 12.0))
+            if update_hz <= 0.0:
+                errors.append("uma8_leds.update_hz must be > 0")
+        except Exception:
+            errors.append("uma8_leds.update_hz must be numeric")
+
+        try:
+            _ = float(uma8_cfg.get("base_bearing_offset_deg", 0.0))
+        except Exception:
+            errors.append("uma8_leds.base_bearing_offset_deg must be numeric")
+
+        try:
+            smoothing_alpha = float(uma8_cfg.get("smoothing_alpha", 0.35))
+            if not 0.0 <= smoothing_alpha <= 1.0:
+                errors.append("uma8_leds.smoothing_alpha must be in [0, 1]")
+        except Exception:
+            errors.append("uma8_leds.smoothing_alpha must be numeric")
+
+        try:
+            brightness_min = float(uma8_cfg.get("brightness_min", 0.05))
+            brightness_max = float(uma8_cfg.get("brightness_max", 0.85))
+            if not 0.0 <= brightness_min <= 1.0:
+                errors.append("uma8_leds.brightness_min must be in [0, 1]")
+            if not 0.0 <= brightness_max <= 1.0:
+                errors.append("uma8_leds.brightness_max must be in [0, 1]")
+            if brightness_max < brightness_min:
+                errors.append("uma8_leds.brightness_max must be >= brightness_min")
+        except Exception:
+            errors.append("uma8_leds.brightness_min/max must be numeric")
+
+        for rgb_key in ("idle_rgb", "lock_rgb", "search_rgb"):
+            if rgb_key in uma8_cfg and not _is_rgb_triplet(uma8_cfg.get(rgb_key)):
+                errors.append(f"uma8_leds.{rgb_key} must be a 3-item RGB list in [0, 255]")
+
+        for key in ("vendor_id", "product_id"):
+            if key not in uma8_cfg:
+                continue
+            try:
+                value = int(uma8_cfg.get(key, 0))
+                if value <= 0 or value > 0xFFFF:
+                    errors.append(f"uma8_leds.{key} must be in [1, 65535]")
+            except Exception:
+                errors.append(f"uma8_leds.{key} must be integer")
+
     return errors
 
 
@@ -425,3 +502,16 @@ def _load_device_profile(profile_name: str) -> Optional[Dict[str, Any]]:
         return profile if isinstance(profile, dict) else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _is_rgb_triplet(value: Any) -> bool:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return False
+    for item in value:
+        try:
+            v = int(item)
+        except Exception:
+            return False
+        if v < 0 or v > 255:
+            return False
+    return True

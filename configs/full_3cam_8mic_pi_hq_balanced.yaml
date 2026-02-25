@@ -212,6 +212,30 @@ output:
   file_sink:
     dir: artifacts
     write_raw_multich: true
+uma8_leds:
+  enabled: false
+  enabled_fallback: true
+  backend: simulate
+  ring_size: 12
+  update_hz: 12
+  base_bearing_offset_deg: 0.0
+  idle_rgb:
+  - 10
+  - 10
+  - 24
+  lock_rgb:
+  - 0
+  - 255
+  - 128
+  search_rgb:
+  - 0
+  - 140
+  - 255
+  smoothing_alpha: 0.35
+  brightness_min: 0.05
+  brightness_max: 0.85
+  vendor_id: 10066
+  product_id: 28
 ui:
   host: 127.0.0.1
   port: 8080

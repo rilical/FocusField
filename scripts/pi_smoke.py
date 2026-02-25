@@ -38,6 +38,7 @@ from focusfield.audio.sync.drift_check import start_drift_check
 from focusfield.bench.replay.recorder import start_trace_recorder
 from focusfield.fusion.av_association import start_av_association
 from focusfield.fusion.lock_state_machine import start_lock_state_machine
+from focusfield.uma8.led_control import start_uma8_led_service
 from focusfield.platform.hardware_probe import normalize_camera_scope
 from focusfield.vision.cameras import start_cameras
 from focusfield.vision.speaker_heatmap import start_speaker_heatmap
@@ -154,6 +155,7 @@ def main() -> None:
     threads.append(start_speaker_heatmap(bus, config, logger, stop_event))
     threads.append(start_av_association(bus, config, logger, stop_event))
     threads.append(start_lock_state_machine(bus, config, logger, stop_event))
+    threads.append(start_uma8_led_service(bus, config, logger, stop_event))
 
     beam = start_mvdr(bus, config, logger, stop_event)
     if beam is None:

@@ -28,12 +28,40 @@ CAMERA_SOURCE=${FOCUSFIELD_CAMERA_SOURCE:-by-path}
 CAMERA_SCOPE=${FOCUSFIELD_CAMERA_SCOPE:-usb}
 REQUIRE_CAMERAS=${FOCUSFIELD_REQUIRE_CAMERAS:-3}
 REQUIRE_CHANNELS=${FOCUSFIELD_REQUIRE_AUDIO_CHANNELS:-8}
+ENABLE_UMA8_LEDS=${FOCUSFIELD_ENABLE_UMA8_LEDS:-}
+
+CONFIG_EFFECTIVE="$CONFIG_PATH"
+if [[ -n "$ENABLE_UMA8_LEDS" ]]; then
+  CONFIG_EFFECTIVE=$(mktemp /tmp/focusfield-config.XXXXXX.yaml)
+  "$PYTHON_BIN" - "$CONFIG_PATH" "$CONFIG_EFFECTIVE" "$ENABLE_UMA8_LEDS" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+raw = str(sys.argv[3]).strip().lower()
+enabled = raw in {"1", "true", "yes", "on"}
+
+cfg = yaml.safe_load(src.read_text()) or {}
+if not isinstance(cfg, dict):
+    cfg = {}
+uma8 = cfg.get("uma8_leds")
+if not isinstance(uma8, dict):
+    uma8 = {}
+uma8["enabled"] = enabled
+cfg["uma8_leds"] = uma8
+dst.write_text(yaml.safe_dump(cfg, sort_keys=False))
+print(dst)
+PY
+  echo "Using runtime LED override: uma8_leds.enabled=${ENABLE_UMA8_LEDS} (${CONFIG_EFFECTIVE})"
+fi
 
 attempt=0
 while :; do
   attempt=$((attempt + 1))
   if "$PYTHON_BIN" scripts/pi_preflight.py \
-    --config "$CONFIG_PATH" \
+    --config "$CONFIG_EFFECTIVE" \
     --camera-source "$CAMERA_SOURCE" \
     --camera-scope "$CAMERA_SCOPE" \
     --require-cameras "$REQUIRE_CAMERAS" \
@@ -52,5 +80,5 @@ while :; do
 done
 
 "$PYTHON_BIN" -m focusfield.main.run \
-  --config "$CONFIG_PATH" \
+  --config "$CONFIG_EFFECTIVE" \
   --mode vision

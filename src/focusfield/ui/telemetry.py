@@ -7,6 +7,7 @@ INPUTS:
   - Topic: vision.speaker_heatmap  Type: DoaHeatmap
   - Topic: vision.face_tracks  Type: FaceTrack[]
   - Topic: fusion.target_lock  Type: TargetLock
+  - Topic: uma8_leds.state  Type: Uma8LedState
   - Topic: log.events  Type: LogEvent
 OUTPUTS:
   - Topic: ui.telemetry  Type: TelemetrySnapshot
@@ -55,6 +56,7 @@ def start_telemetry(
     q_audio = bus.subscribe("audio.doa_heatmap")
     q_faces = bus.subscribe("vision.face_tracks")
     q_lock = bus.subscribe("fusion.target_lock")
+    q_uma8_leds = bus.subscribe("uma8_leds.state")
     q_logs = bus.subscribe("log.events")
     q_beam = bus.subscribe("audio.beamformer.debug")
     q_health = bus.subscribe("runtime.health")
@@ -65,6 +67,7 @@ def start_telemetry(
         "audio_heatmap": None,
         "faces": [],
         "lock": None,
+        "uma8_leds": None,
         "logs": [],
         "beam": None,
         "health": None,
@@ -98,6 +101,9 @@ def start_telemetry(
             lock_msg = _drain(q_lock)
             if lock_msg is not None:
                 state["lock"] = lock_msg
+            led_msg = _drain(q_uma8_leds)
+            if led_msg is not None:
+                state["uma8_leds"] = led_msg
             beam_msg = _drain(q_beam)
             if beam_msg is not None:
                 state["beam"] = beam_msg
@@ -130,6 +136,7 @@ def start_telemetry(
 def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     heatmap = state.get("heatmap") or state.get("audio_heatmap") or {}
     lock_state = state.get("lock") or {}
+    led_state = state.get("uma8_leds") or {}
     faces = state.get("faces") or []
     cameras = sorted({face.get("camera_id") for face in faces if face.get("camera_id")})
     return {
@@ -163,6 +170,17 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             for face in faces
         ],
         "beamformer": state.get("beam"),
+        "uma8_leds": {
+            "enabled": bool(led_state.get("enabled", False)),
+            "backend": led_state.get("backend", "none"),
+            "state": led_state.get("state", "NO_LOCK"),
+            "sector": led_state.get("sector"),
+            "sectors": led_state.get("sectors", []),
+            "brightness": led_state.get("brightness", 0.0),
+            "rgb": led_state.get("rgb", [0, 0, 0]),
+            "mapped_bearing_deg": led_state.get("mapped_bearing_deg"),
+            "base_bearing_offset_deg": led_state.get("base_bearing_offset_deg", 0.0),
+        },
         "health_summary": state.get("health") or {},
         "perf_summary": state.get("perf") or {},
         "logs": state.get("logs", []),

@@ -112,6 +112,35 @@ class PiContractTests(unittest.TestCase):
         self.assertTrue(any("bench.targets.si_sdr_delta_db_min" in e for e in errs))
         self.assertTrue(any("bench.targets.latency_p95_ms_max" in e for e in errs))
 
+    def test_config_validation_rejects_invalid_uma8_leds(self) -> None:
+        cfg = {
+            "runtime": {"enable_validation": True},
+            "uma8_leds": {
+                "backend": "bad-backend",
+                "ring_size": 0,
+                "update_hz": 0,
+                "smoothing_alpha": 1.5,
+                "brightness_min": 0.9,
+                "brightness_max": 0.1,
+                "idle_rgb": [0, 0, 999],
+                "lock_rgb": [0, 1],
+                "search_rgb": ["x", 2, 3],
+                "vendor_id": -1,
+                "product_id": 70000,
+            },
+        }
+        errs = validate_config(cfg)
+        self.assertTrue(any("uma8_leds.backend" in e for e in errs))
+        self.assertTrue(any("uma8_leds.ring_size" in e for e in errs))
+        self.assertTrue(any("uma8_leds.update_hz" in e for e in errs))
+        self.assertTrue(any("uma8_leds.smoothing_alpha" in e for e in errs))
+        self.assertTrue(any("uma8_leds.brightness_max" in e for e in errs))
+        self.assertTrue(any("uma8_leds.idle_rgb" in e for e in errs))
+        self.assertTrue(any("uma8_leds.lock_rgb" in e for e in errs))
+        self.assertTrue(any("uma8_leds.search_rgb" in e for e in errs))
+        self.assertTrue(any("uma8_leds.vendor_id" in e for e in errs))
+        self.assertTrue(any("uma8_leds.product_id" in e for e in errs))
+
     def test_collect_camera_sources_prefers_by_path(self) -> None:
         mapping = {
             "/dev/v4l/by-path/*": ["/dev/v4l/by-path/p1", "/dev/v4l/by-path/p2"],

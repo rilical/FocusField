@@ -112,6 +112,49 @@ Then verify:
 python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml --mode vision
 ```
 
+### Camera + UMA-8 directional alignment
+
+Use this once your 3-camera rig is physically mounted.
+
+1. Set physical reference direction:
+- Define cam0 as 0deg (front/reference).
+- Mount cam1 approximately +120deg and cam2 approximately +240deg around the UMA-8.
+
+2. Confirm config azimuths:
+- `video.cameras[0].yaw_offset_deg: 0`
+- `video.cameras[1].yaw_offset_deg: 120`
+- `video.cameras[2].yaw_offset_deg: 240`
+
+3. Enable LED simulation/hardware output in config:
+- `uma8_leds.enabled: true`
+- `uma8_leds.backend: simulate` first, then `hid` when protocol path is confirmed.
+
+4. Run preflight and smoke:
+
+```bash
+python3 scripts/pi_preflight.py \
+  --config configs/full_3cam_working_local.yaml \
+  --camera-source by-path \
+  --camera-scope usb \
+  --require-cameras 3 \
+  --require-audio-channels 8 \
+  --strict
+
+python3 scripts/pi_smoke.py \
+  --config configs/full_3cam_working_local.yaml \
+  --run-seconds 30 \
+  --strict \
+  --camera-scope usb
+```
+
+5. Verify in browser:
+- Open `http://<pi-ip>:8080/telemetry`
+- Check `lock_state.target_bearing_deg` and `uma8_leds.sector` while speaking from known angles.
+
+6. Tune alignment:
+- Rotate LED ring mapping with `uma8_leds.base_bearing_offset_deg`.
+- If visual direction is correct but face direction is off, tune each `video.cameras[].yaw_offset_deg`.
+
 ### Debug/degraded config generation (best-effort diagnostics)
 
 Use this when strict contract cannot be met and you still need traces/logs:
@@ -192,12 +235,18 @@ sudo systemctl status focusfield
 sudo journalctl -u focusfield -f
 ```
 
+Expected UMA-8 LED events in logs when enabled:
+- `uma8_leds.started`
+- `uma8_leds.transport_init_ok`
+- `uma8_leds.frame_sent`
+
 To tune startup behavior, set these env vars before install so they are written into the service:
 
 - `FOCUSFIELD_PRECHECK_RETRIES` (default `15`)
 - `FOCUSFIELD_PRECHECK_DELAY_SECONDS` (default `5`)
 - `FOCUSFIELD_CAMERA_SOURCE` (default `by-path`)
 - `FOCUSFIELD_CAMERA_SCOPE` (default `usb`)
+- `FOCUSFIELD_ENABLE_UMA8_LEDS` (`true`/`false`, optional runtime override)
 
 Example:
 
@@ -206,6 +255,7 @@ FOCUSFIELD_CAMERA_SOURCE=auto \
 FOCUSFIELD_CAMERA_SCOPE=any \
 FOCUSFIELD_PRECHECK_RETRIES=30 \
 FOCUSFIELD_PRECHECK_DELAY_SECONDS=3 \
+FOCUSFIELD_ENABLE_UMA8_LEDS=true \
 sudo scripts/install_systemd_service.sh focusfield /home/focus/FocusField/configs/full_3cam_working_local.yaml
 ```
 

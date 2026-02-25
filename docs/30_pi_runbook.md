@@ -168,6 +168,43 @@ If strict full-target is required, do not proceed when smoke/preflight reports f
 python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml --mode vision
 ```
 
+### Auto-start at boot (Raspberry Pi)
+
+Once `configs/full_3cam_working_local.yaml` is valid on the device, install a systemd service:
+
+```bash
+cd /home/focus/FocusField
+sudo scripts/install_systemd_service.sh focusfield /home/focus/FocusField/configs/full_3cam_working_local.yaml
+sudo systemctl enable --now focusfield
+```
+
+The installer sets a boot-time wrapper that:
+
+- waits for USB/video to settle,
+- runs `scripts/pi_preflight.py` up to 15 times before giving up,
+- starts `focusfield.main.run --mode vision`,
+- auto-restarts the service if it exits.
+
+Useful checks:
+
+```bash
+sudo systemctl status focusfield
+sudo journalctl -u focusfield -f
+```
+
+To tune startup behavior, override these env vars in
+`scripts/focusfield_boot.sh` or by exporting before launch:
+
+- `FOCUSFIELD_PRECHECK_RETRIES` (default `15`)
+- `FOCUSFIELD_PRECHECK_DELAY_SECONDS` (default `5`)
+- `FOCUSFIELD_CAMERA_SOURCE` (default `by-path`)
+- `FOCUSFIELD_CAMERA_SCOPE` (default `usb`)
+
+If strict boot keeps failing, inspect logs and confirm camera/audio contracts first:
+
+- run `python3 scripts/list_cameras.py`
+- run `python3 scripts/pi_preflight.py --config ... --camera-scope usb --require-cameras 3 --require-audio-channels 8 --strict`
+
 ## Mandatory A/B benchmark gate (release flow)
 
 Run this after capturing:

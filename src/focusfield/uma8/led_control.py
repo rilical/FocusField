@@ -93,20 +93,26 @@ class HidTransport(Uma8LedTransport):
         self.product_id = int(product_id)
         self._hid_module: Any = None
         self._device: Any = None
+        self.last_error: str = ""
+        self.last_device_count: int = 0
 
     def open(self) -> bool:
         try:
             import hid  # type: ignore[import-not-found]
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"hid_import_failed:{exc}"
             return False
 
         self._hid_module = hid
         try:
             devices = hid.enumerate(self.vendor_id, self.product_id)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"hid_enumerate_failed:{exc}"
             return False
 
+        self.last_device_count = len(devices)
         if not devices:
+            self.last_error = f"hid_no_device vid=0x{self.vendor_id:04x} pid=0x{self.product_id:04x}"
             return False
 
         try:
@@ -116,9 +122,11 @@ class HidTransport(Uma8LedTransport):
                 self._device.open_path(path)
             else:
                 self._device.open(self.vendor_id, self.product_id)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             self._device = None
+            self.last_error = f"hid_open_failed:{exc}"
             return False
+        self.last_error = ""
         return True
 
     def send(self, led_state: LedState) -> bool:
@@ -386,6 +394,8 @@ def _init_transport(cfg: Dict[str, Any], logger: Any) -> Uma8LedTransport:
             {
                 "backend": backend,
                 "reason": "open_failed",
+                "error": getattr(transport, "last_error", ""),
+                "device_count": getattr(transport, "last_device_count", None),
             },
         )
 
@@ -524,6 +534,8 @@ def start_uma8_led_service(
                     search_phase=search_phase,
                     pulse_phase=pulse_phase,
                 )
+                # Report the actual active transport backend (hid/simulate/none) in telemetry.
+                led_state.backend = transport.backend
 
                 sent = transport.send(led_state)
                 if not sent:

@@ -43,11 +43,11 @@ bench:
 audio:
   channels: 8
   sample_rate_hz: 48000
-  block_size: 512
+  block_size: 1024
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
-    queue_depth: 4
+    queue_depth: 12
     stats_emit_hz: 1
   device_selector:
     match_substring: miniDSP
@@ -115,7 +115,7 @@ audio:
     hybrid:
       postfilter_strength: 0.5
   sync:
-    enabled: true
+    enabled: false
     drift_check:
       max_offset_samples: 6
       check_every_s: 2.0
@@ -191,7 +191,7 @@ fusion:
 bus:
   max_queue_depth: 24
   topic_queue_depths:
-    audio.frames: 16
+    audio.frames: 32
     audio.vad: 32
     audio.enhanced.beamformed: 16
     audio.enhanced.final: 16

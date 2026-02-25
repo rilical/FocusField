@@ -66,6 +66,16 @@ def start_telemetry(
         for idx, cam in enumerate(config.get("video", {}).get("cameras", []))
         if isinstance(cam, dict)
     ]
+    configured_camera_map = [
+        {
+            "id": str(cam.get("id", f"cam{idx}")),
+            "device_path": str(cam.get("device_path", "") or ""),
+            "device_index": cam.get("device_index"),
+            "yaw_offset_deg": float(cam.get("yaw_offset_deg", 0.0) or 0.0),
+        }
+        for idx, cam in enumerate(config.get("video", {}).get("cameras", []))
+        if isinstance(cam, dict)
+    ]
 
     state: Dict[str, Any] = {
         "heatmap": None,
@@ -78,6 +88,7 @@ def start_telemetry(
         "health": None,
         "perf": None,
         "configured_cameras": configured_cameras,
+        "configured_camera_map": configured_camera_map,
     }
     seq = 0
 
@@ -195,5 +206,6 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
         "meta": {
             "cameras": cameras,
             "active_face_cameras": active_face_cameras,
+            "camera_map": state.get("configured_camera_map") or [],
         },
     }

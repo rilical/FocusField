@@ -59,8 +59,8 @@ audio:
     min_speech_ratio: 0.3
   doa:
     method: srp_phat
-    bins: 72
-    update_hz: 10
+    bins: 36
+    update_hz: 6
     freq_low_hz: 200
     freq_high_hz: 4500
     continuity_weight: 0.18
@@ -124,9 +124,9 @@ video:
   - id: cam0
     device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.1:1.0-video-index0
     device_index: 0
-    width: 640
-    height: 360
-    fps: 10
+    width: 480
+    height: 270
+    fps: 8
     hfov_deg: 160
     yaw_offset_deg: 0
     bearing_model: linear
@@ -134,9 +134,9 @@ video:
   - id: cam1
     device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.2:1.0-video-index0
     device_index: 1
-    width: 640
-    height: 360
-    fps: 10
+    width: 480
+    height: 270
+    fps: 8
     hfov_deg: 160
     yaw_offset_deg: 120
     bearing_model: linear
@@ -144,9 +144,9 @@ video:
   - id: cam2
     device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.4:1.0-video-index0
     device_index: 2
-    width: 640
-    height: 360
-    fps: 10
+    width: 480
+    height: 270
+    fps: 8
     hfov_deg: 160
     yaw_offset_deg: 240
     bearing_model: linear
@@ -184,8 +184,8 @@ vision:
     top_k_peaks: 2
     smoothing_alpha: 0.25
 fusion:
-  thresholds_preset: balanced
-  require_vad: true
+  thresholds_preset: aggressive
+  require_vad: false
   vad_max_age_ms: 500
   require_speaking: false
 bus:
@@ -209,7 +209,7 @@ logging:
     flush_interval_ms: 200
     rotate_mb: 50
 output:
-  sink: file
+  sink: none
   file_sink:
     dir: artifacts
     write_raw_multich: true
@@ -240,4 +240,4 @@ uma8_leds:
 ui:
   host: 0.0.0.0
   port: 8080
-  telemetry_hz: 10
+  telemetry_hz: 8

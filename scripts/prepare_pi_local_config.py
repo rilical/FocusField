@@ -137,6 +137,44 @@ def detect_cameras(
     return cameras, stats
 
 
+def detect_cameras_with_fallback(
+    limit: int,
+    camera_source: str,
+    strict_capture: bool,
+    camera_scope: str,
+) -> tuple[list[tuple[str, object]], dict, list[str]]:
+    attempts: list[tuple[str, str]] = [(camera_source, camera_scope)]
+    fallback_sources: list[tuple[str, str]] = []
+    if strict_capture and camera_source != "auto":
+        fallback_sources.append(("auto", camera_scope))
+    if strict_capture and camera_scope != "any":
+        fallback_sources.append((camera_source, "any"))
+        if camera_source != "auto":
+            fallback_sources.append(("auto", "any"))
+
+    tried = []
+    notices: list[str] = []
+    for source, scope in attempts + fallback_sources:
+        if (source, scope) in tried:
+            continue
+        tried.append((source, scope))
+        cameras, stats = detect_cameras(
+            limit=limit,
+            camera_source=source,
+            strict_capture=strict_capture,
+            camera_scope=scope,
+        )
+        if cameras:
+            if source != camera_source or scope != camera_scope:
+                notices.append(
+                    f"camera probe fallback used: source={source!r} scope={scope!r} "
+                    f"(original source={camera_source!r} scope={camera_scope!r})"
+                )
+            return cameras, stats, notices
+
+    return [], {"discovered_sources": 0, "capture_capable_sources": 0, "openable_sources": 0}, notices
+
+
 def _camera_paths_from_indices(
     indices: List[int],
     limit: int,
@@ -338,12 +376,14 @@ def main() -> int:
         if not cameras:
             raise SystemExit("No explicit camera indices resolved.")
     else:
-        cameras, discovery_stats = detect_cameras(
+        cameras, discovery_stats, notices = detect_cameras_with_fallback(
             args.max_cameras,
             camera_source=args.camera_source,
             strict_capture=args.strict,
             camera_scope=camera_scope,
         )
+        for notice in notices:
+            print(f"NOTICE: {notice}")
         if not cameras:
             raise SystemExit("No working cameras found via probe.")
 

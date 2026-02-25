@@ -38,18 +38,46 @@ from focusfield.audio.sync.drift_check import start_drift_check
 from focusfield.bench.replay.recorder import start_trace_recorder
 from focusfield.fusion.av_association import start_av_association
 from focusfield.fusion.lock_state_machine import start_lock_state_machine
+from focusfield.platform.hardware_probe import normalize_camera_scope
 from focusfield.vision.cameras import start_cameras
 from focusfield.vision.speaker_heatmap import start_speaker_heatmap
 from focusfield.vision.tracking.face_track import start_face_tracking
+
+
+def _runtime_requirements(config: dict) -> dict[str, object]:
+    runtime_cfg = config.get("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+    req_cfg = runtime_cfg.get("requirements", {})
+    if not isinstance(req_cfg, dict):
+        req_cfg = {}
+    try:
+        camera_scope = normalize_camera_scope(req_cfg.get("camera_scope", "any"))
+    except Exception:
+        camera_scope = "any"
+    return {
+        "strict": bool(req_cfg.get("strict", False)),
+        "camera_scope": camera_scope,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="FocusField Pi smoke")
     parser.add_argument("--config", default="configs/full_3cam_8mic_pi.yaml")
     parser.add_argument("--run-seconds", type=float, default=10.0)
+    parser.add_argument("--strict", action="store_true", help="Require strict camera/audio requirements while running.")
+    parser.add_argument(
+        "--camera-scope",
+        choices=["any", "usb"],
+        default=None,
+        help="Override camera scope for discovery/open attempts.",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
+    req = _runtime_requirements(config)
+    strict = bool(args.strict or req["strict"])
+    camera_scope = normalize_camera_scope(args.camera_scope or req["camera_scope"])
 
     runtime = config.setdefault("runtime", {})
     artifacts = runtime.setdefault("artifacts", {})
@@ -112,7 +140,16 @@ def main() -> None:
     if doa is not None:
         threads.append(doa)
 
-    threads.extend(start_cameras(bus, config, logger, stop_event))
+    threads.extend(
+        start_cameras(
+            bus,
+            config,
+            logger,
+            stop_event,
+            strict_capture=strict,
+            camera_scope=camera_scope,
+        )
+    )
     threads.append(start_face_tracking(bus, config, logger, stop_event))
     threads.append(start_speaker_heatmap(bus, config, logger, stop_event))
     threads.append(start_av_association(bus, config, logger, stop_event))

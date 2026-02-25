@@ -417,6 +417,8 @@ def main() -> None:
     except RuntimeError as exc:
         raise SystemExit(str(exc))
 
+    req = _runtime_requirements(config)
+
     log_thread = start_log_sink(bus, config, logger, stop_event)
     if log_thread is not None:
         threads.append(log_thread)
@@ -443,7 +445,16 @@ def main() -> None:
     if doa_thread is not None:
         threads.append(doa_thread)
 
-    threads.extend(start_cameras(bus, config, logger, stop_event))
+    threads.extend(
+        start_cameras(
+            bus,
+            config,
+            logger,
+            stop_event,
+            strict_capture=req["strict"],
+            camera_scope=req["camera_scope"],
+        )
+    )
     threads.append(start_face_tracking(bus, config, logger, stop_event))
     threads.append(start_speaker_heatmap(bus, config, logger, stop_event))
     threads.append(start_av_association(bus, config, logger, stop_event))

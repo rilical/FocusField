@@ -124,7 +124,7 @@ def check_audio(config: dict) -> tuple[int, dict[str, Any]]:
     return 0, details
 
 
-def _source_capture_capable(path: str, camera_scope: str) -> bool:
+def _source_capture_capable(path: str, camera_scope: str, strict_capture: bool = False) -> bool:
     if not source_matches_camera_scope(path, camera_scope=camera_scope):
         return False
     try:
@@ -134,6 +134,8 @@ def _source_capture_capable(path: str, camera_scope: str) -> bool:
     if not resolved.startswith("/dev/video"):
         return True
     capture = is_capture_node(resolved)
+    if strict_capture:
+        return capture is True
     return capture is not False
 
 
@@ -161,7 +163,11 @@ def check_cameras(config: dict, camera_source: str, strict_capture: bool, camera
             target = os.path.realpath(path)
         except Exception:
             target = "?"
-        if _source_capture_capable(path, camera_scope=camera_scope):
+        if _source_capture_capable(
+            path,
+            camera_scope=camera_scope,
+            strict_capture=strict_capture,
+        ):
             details["capture_capable_sources"] += 1
         ok, tried, opened = try_open_camera_any_backend(
             path,

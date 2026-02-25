@@ -83,7 +83,7 @@ def parse_camera_indices(values: Optional[List[str]]) -> List[int]:
     return result
 
 
-def _camera_capture_capable(source: str, camera_scope: str) -> bool:
+def _camera_capture_capable(source: str, camera_scope: str, strict_capture: bool = False) -> bool:
     if not source_matches_camera_scope(source, camera_scope=camera_scope):
         return False
     try:
@@ -93,6 +93,8 @@ def _camera_capture_capable(source: str, camera_scope: str) -> bool:
     if not resolved.startswith("/dev/video"):
         return True
     capture = is_capture_node(resolved)
+    if strict_capture:
+        return capture is True
     return capture is not False
 
 
@@ -108,7 +110,9 @@ def detect_cameras(
     openable = 0
 
     for source in discovered:
-        if _camera_capture_capable(source, camera_scope=camera_scope):
+        if _camera_capture_capable(
+            source, camera_scope=camera_scope, strict_capture=strict_capture
+        ):
             capture_capable += 1
         elif camera_source == "auto" or strict_capture:
             continue

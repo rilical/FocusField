@@ -41,16 +41,12 @@ from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, List
-import re
 
 import cv2
 
 from focusfield.core.clock import now_ns
-
-
-_V4L2_CAPTURE_BITS = (0x00000001, 0x00001000)
+from focusfield.platform.hardware_probe import candidate_sources, source_to_open_target
 
 
 def start_cameras(
@@ -58,6 +54,8 @@ def start_cameras(
     config: Dict[str, Any],
     logger: Any,
     stop_event: threading.Event,
+    strict_capture: bool = False,
+    camera_scope: str = "any",
 ) -> List[threading.Thread]:
     cameras = config.get("video", {}).get("cameras", [])
     fail_fast = bool(config.get("runtime", {}).get("fail_fast", True))
@@ -85,6 +83,8 @@ def start_cameras(
                 height,
                 fps,
                 topic,
+                strict_capture,
+                camera_scope,
             ),
             daemon=True,
         )
@@ -105,8 +105,15 @@ def _camera_loop(
     height: int,
     fps: int,
     topic: str,
+    strict_capture: bool,
+    camera_scope: str,
 ) -> None:
-    cap = _open_camera(device_path, device_index)
+    cap = _open_camera(
+        device_path,
+        device_index,
+        strict_capture=strict_capture,
+        camera_scope=camera_scope,
+    )
     if not cap.isOpened():
         logger.emit("error", "vision.cameras", "camera_missing", {"camera_id": camera_id})
         if fail_fast:
@@ -154,40 +161,21 @@ def _camera_loop(
     cap.release()
 
 
-def _camera_candidates(device_path: object, device_index: int) -> list[object]:
+def _camera_candidates(
+    device_path: object,
+    device_index: int,
+    strict_capture: bool = False,
+    camera_scope: str = "any",
+) -> list[object]:
     candidates: list[object] = []
     if isinstance(device_path, str) and device_path.strip():
-        path = device_path.strip()
-        path_is_video = path.startswith("/dev/video")
-        path_is_by_id = path.startswith("/dev/v4l/by-id/")
-        try:
-            resolved = str(Path(path).resolve())
-        except Exception:  # noqa: BLE001
-            resolved = None
-        if resolved:
-            if resolved.startswith("/dev/video"):
-                if _is_capture_node(resolved) is not False:
-                    candidates.append(resolved)
-                    m = re.search(r"/dev/video(\d+)$", resolved)
-                    if m is not None:
-                        video_source = f"/dev/video{m.group(1)}"
-                        if video_source not in candidates:
-                            candidates.append(video_source)
-                elif path_is_video:
-                    # Path resolves to a non-capture endpoint. Keep numeric index
-                    # fallback so explicit configs still work when path probing is noisy.
-                    try:
-                        idx = int(re.search(r"/dev/video(\d+)$", resolved).group(1))  # type: ignore[union-attr]
-                        if idx not in candidates:
-                            candidates.append(idx)
-                    except Exception:
-                        pass
-                return candidates
-            candidates.append(resolved)
-        if (not path_is_by_id or resolved is None) and path not in candidates:
-            candidates.append(path)
-        if not path_is_video and path not in candidates:
-            candidates.append(path)
+        candidates = candidate_sources(
+            device_path.strip(),
+            strict_capture=strict_capture,
+            camera_scope=camera_scope,
+        )
+        if not candidates:
+            candidates.append(device_path.strip())
 
     try:
         index_candidate = int(device_index)
@@ -203,54 +191,32 @@ def _camera_candidates(device_path: object, device_index: int) -> list[object]:
     return deduped
 
 
-def _as_open_target(source: object) -> object:
-    if not isinstance(source, str):
-        return source
-    match = re.search(r"/dev/video(\d+)$", source)
-    if match is None:
-        return source
-    try:
-        return int(match.group(1))
-    except Exception:
-        return source
-
-
-def _is_capture_node(path: str) -> bool | None:
-    match = re.search(r"/dev/video(\d+)$", path)
-    if match is None:
-        return None
-    index = match.group(1)
-    if index is None:
-        return None
-    capabilities_path = Path(f"/sys/class/video4linux/video{index}/capabilities")
-    if not capabilities_path.exists():
-        return None
-    try:
-        raw = capabilities_path.read_text(encoding="utf-8", errors="ignore").strip()
-        caps = int(raw, 0)
-    except Exception:  # pragma: no cover - platform dependent
-        return None
-    return any(caps & bit for bit in _V4L2_CAPTURE_BITS)
-
-
-def _open_camera(device_path: object, device_index: int) -> cv2.VideoCapture:
+def _open_camera(
+    device_path: object,
+    device_index: int,
+    strict_capture: bool = False,
+    camera_scope: str = "any",
+) -> cv2.VideoCapture:
     # NOTE: some OpenCV builds can fail opening by-id paths with CAP_V4L2.
     # Prefer resolved numeric /dev/videoN nodes over by-id paths.
-    candidates = _camera_candidates(device_path, device_index)
+    candidates = _camera_candidates(
+        device_path,
+        device_index,
+        strict_capture=strict_capture,
+        camera_scope=camera_scope,
+    )
 
     for candidate in candidates:
-        if isinstance(candidate, str) and _is_capture_node(candidate) is False:
-            continue
-        cap = cv2.VideoCapture(_as_open_target(candidate), cv2.CAP_V4L2)
+        source = source_to_open_target(candidate)
+        cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
         if cap.isOpened():
             return cap
         cap.release()
 
     # Fallback for environments where CAP_V4L2 is unavailable/unstable.
     for candidate in candidates:
-        if isinstance(candidate, str) and _is_capture_node(candidate) is False:
-            continue
-        cap = cv2.VideoCapture(_as_open_target(candidate), cv2.CAP_ANY)
+        source = source_to_open_target(candidate)
+        cap = cv2.VideoCapture(source, cv2.CAP_ANY)
         if cap.isOpened():
             return cap
         cap.release()

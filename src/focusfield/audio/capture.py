@@ -78,6 +78,8 @@ def start_audio_capture(
     stats_emit_hz = float(capture_cfg.get("stats_emit_hz", 1.0))
     stats_emit_hz = max(0.2, min(10.0, stats_emit_hz))
     stats_period_s = 1.0 / stats_emit_hz
+    status_log_interval_s = float(capture_cfg.get("status_log_interval_s", 1.0))
+    status_log_interval_s = max(0.25, min(5.0, status_log_interval_s))
 
     frame_queue: queue.Queue[tuple[int, int, np.ndarray]] = queue.Queue(maxsize=capture_queue_depth)
     stats_lock = threading.Lock()
@@ -88,6 +90,8 @@ def start_audio_capture(
         "status_input_overflow": 0,
         "status_other": 0,
     }
+
+    status_counts = {"input_overflow": 0}
 
     def _run() -> None:
         if device_index is None:
@@ -137,16 +141,38 @@ def start_audio_capture(
                     )
                     next_stats_emit = now_s + stats_period_s
 
+    last_status_log_ns = [0]
+
+    def _throttle_status_log() -> bool:
+        now_ns = time.perf_counter_ns()
+        interval_ns = int(status_log_interval_s * 1_000_000_000)
+        if now_ns - last_status_log_ns[0] < interval_ns:
+            return False
+        last_status_log_ns[0] = now_ns
+        return True
+
     def _callback(indata, frames, time_info, status) -> None:  # noqa: ARG001
         if status:
             status_text = str(status)
             if "input overflow" in status_text.lower():
                 with stats_lock:
                     stats["status_input_overflow"] += 1
+                    status_counts["input_overflow"] += 1
             else:
                 with stats_lock:
                     stats["status_other"] += 1
-            logger.emit("warning", "audio.capture", "underrun", {"status": status_text})
+            if _throttle_status_log():
+                logger.emit(
+                    "warning",
+                    "audio.capture",
+                    "underrun",
+                    {
+                        "status": status_text,
+                        "status_input_overflow_count": status_counts["input_overflow"],
+                    },
+                )
+                with stats_lock:
+                    status_counts["input_overflow"] = 0
         frame = np.array(indata, copy=True)
         t_ns = now_ns()
         if frame_queue.full():

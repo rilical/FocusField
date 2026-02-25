@@ -253,10 +253,13 @@ def try_open_camera_any_backend(
     if cv2 is None:
         return False, [], None
 
-    backends = [
-        ("CAP_V4L2", cv2.CAP_V4L2),
-        ("CAP_ANY", cv2.CAP_ANY),
-    ]
+    if strict_capture:
+        backends = [("CAP_V4L2", cv2.CAP_V4L2)]
+    else:
+        backends = [
+            ("CAP_V4L2", cv2.CAP_V4L2),
+            ("CAP_ANY", cv2.CAP_ANY),
+        ]
     tried: list[tuple[object, str]] = []
     for candidate in candidate_sources(source, strict_capture=strict_capture, camera_scope=camera_scope):
         source_for_open = source_to_open_target(candidate)

@@ -61,6 +61,11 @@ def start_telemetry(
     q_beam = bus.subscribe("audio.beamformer.debug")
     q_health = bus.subscribe("runtime.health")
     q_perf = bus.subscribe("runtime.perf")
+    configured_cameras = [
+        cam.get("id", f"cam{idx}")
+        for idx, cam in enumerate(config.get("video", {}).get("cameras", []))
+        if isinstance(cam, dict)
+    ]
 
     state: Dict[str, Any] = {
         "heatmap": None,
@@ -72,6 +77,7 @@ def start_telemetry(
         "beam": None,
         "health": None,
         "perf": None,
+        "configured_cameras": configured_cameras,
     }
     seq = 0
 
@@ -138,7 +144,9 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     lock_state = state.get("lock") or {}
     led_state = state.get("uma8_leds") or {}
     faces = state.get("faces") or []
-    cameras = sorted({face.get("camera_id") for face in faces if face.get("camera_id")})
+    active_face_cameras = sorted({face.get("camera_id") for face in faces if face.get("camera_id")})
+    configured_cameras = [str(cam) for cam in (state.get("configured_cameras") or [])]
+    cameras = configured_cameras if configured_cameras else active_face_cameras
     return {
         "t_ns": now_ns(),
         "seq": seq,
@@ -186,5 +194,6 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
         "logs": state.get("logs", []),
         "meta": {
             "cameras": cameras,
+            "active_face_cameras": active_face_cameras,
         },
     }

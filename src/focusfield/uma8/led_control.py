@@ -271,7 +271,12 @@ def compute_led_state(
         brightness = brightness_min + (brightness_max - brightness_min) * (0.35 + 0.65 * pulse)
     else:
         idle_on = bool(cfg.get("idle_on", True))
-        sectors = [sector] if (idle_on and sector is not None) else []
+        if idle_on:
+            # Keep a visible idle indicator even before first lock/target bearing.
+            idle_sector = sector if sector is not None else (search_phase % ring_size)
+            sectors = [idle_sector]
+        else:
+            sectors = []
         rgb = idle_rgb
         brightness = brightness_min if sectors else 0.0
 

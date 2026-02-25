@@ -1,0 +1,10 @@
+scenes:
+  - scene_id: competing_talkers
+    description: Two simultaneous speakers with intermittent target dominance.
+    target_angle_deg: 350
+    interferer_angle_deg: 110
+    target_reference_wav: bench_scenes/data/competing_target.wav
+    interferer_reference_wav: bench_scenes/data/competing_interferer.wav
+    reference_text: "focus on the primary speaker and suppress the overlap"
+    baseline_text: ""
+    candidate_text: ""

@@ -70,7 +70,22 @@ def main() -> None:
     print(f"Selected input device index: {sel}")
     print(f"Run dir: {run_dir}")
 
-    bus = Bus(max_queue_depth=int(config.get("bus", {}).get("max_queue_depth", 8)))
+    bus_cfg = config.get("bus", {})
+    if not isinstance(bus_cfg, dict):
+        bus_cfg = {}
+    topic_queue_depths = bus_cfg.get("topic_queue_depths", {})
+    if not isinstance(topic_queue_depths, dict):
+        topic_queue_depths = {}
+    parsed_topic_depths = {}
+    for key, value in topic_queue_depths.items():
+        try:
+            parsed_topic_depths[str(key)] = int(value)
+        except Exception:
+            continue
+    bus = Bus(
+        max_queue_depth=int(bus_cfg.get("max_queue_depth", 8)),
+        topic_queue_depths=parsed_topic_depths,
+    )
     logger = LogEmitter(bus, min_level=config.get("logging", {}).get("level", "info"), run_id=str(runtime.get("run_id", "")))
     stop_event = threading.Event()
 

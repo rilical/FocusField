@@ -1,0 +1,10 @@
+scenes:
+  - scene_id: moving_talker
+    description: Target speaker moving across azimuth while speaking continuously.
+    target_angle_deg: 45
+    interferer_angle_deg: 220
+    target_reference_wav: bench_scenes/data/moving_talker_target.wav
+    interferer_reference_wav: bench_scenes/data/moving_talker_interferer.wav
+    reference_text: "we need to keep tracking stable during movement"
+    baseline_text: ""
+    candidate_text: ""

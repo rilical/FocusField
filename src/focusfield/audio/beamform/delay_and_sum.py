@@ -87,13 +87,21 @@ def start_delay_and_sum(
         except queue.Empty:
             return
 
+    def _drain_latest() -> Optional[Dict[str, Any]]:
+        frame_msg = None
+        try:
+            while True:
+                frame_msg = q_frames.get_nowait()
+        except queue.Empty:
+            pass
+        return frame_msg
+
     def _run() -> None:
         nonlocal last_target, seq_out, debug_seq, last_debug_ns
         while not stop_event.is_set():
             _drain_lock()
-            try:
-                frame_msg = q_frames.get(timeout=0.1)
-            except queue.Empty:
+            frame_msg = _drain_latest()
+            if frame_msg is None:
                 continue
             data = frame_msg.get("data")
             if data is None:

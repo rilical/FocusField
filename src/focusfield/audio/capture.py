@@ -37,6 +37,7 @@ CONTRACT DETAILS (inline from src/focusfield/audio/capture.md):
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -71,7 +72,22 @@ def start_audio_capture(
     if not isinstance(capture_cfg, dict):
         capture_cfg = {}
     allow_mono_fallback = bool(capture_cfg.get("allow_mono_fallback", True))
+    capture_queue_depth = int(capture_cfg.get("queue_depth", 16) or 16)
+    capture_queue_depth = max(4, min(256, capture_queue_depth))
     fail_fast = bool(config.get("runtime", {}).get("fail_fast", True))
+    stats_emit_hz = float(capture_cfg.get("stats_emit_hz", 1.0))
+    stats_emit_hz = max(0.2, min(10.0, stats_emit_hz))
+    stats_period_s = 1.0 / stats_emit_hz
+
+    frame_queue: queue.Queue[tuple[int, int, np.ndarray]] = queue.Queue(maxsize=capture_queue_depth)
+    stats_lock = threading.Lock()
+    stats: Dict[str, int] = {
+        "frames_enqueued": 0,
+        "frames_published": 0,
+        "callback_overflow_drop": 0,
+        "status_input_overflow": 0,
+        "status_other": 0,
+    }
 
     def _run() -> None:
         if device_index is None:
@@ -89,24 +105,64 @@ def start_audio_capture(
             return
         with stream:
             logger.emit("info", "audio.capture", "started", {"channels": stream.channels, "sample_rate_hz": sample_rate})
+            next_stats_emit = time.time() + stats_period_s
             while not stop_event.is_set():
-                time.sleep(0.05)
+                try:
+                    t_ns, frames, frame = frame_queue.get(timeout=0.05)
+                    nonlocal_seq[0] += 1
+                    msg = {
+                        "t_ns": t_ns,
+                        "seq": nonlocal_seq[0],
+                        "sample_rate_hz": sample_rate,
+                        "frame_samples": frames,
+                        "channels": frame.shape[1] if frame.ndim > 1 else 1,
+                        "data": frame,
+                    }
+                    bus.publish("audio.frames", msg)
+                    with stats_lock:
+                        stats["frames_published"] += 1
+                except queue.Empty:
+                    pass
+                now_s = time.time()
+                if now_s >= next_stats_emit:
+                    with stats_lock:
+                        snapshot = dict(stats)
+                    bus.publish(
+                        "audio.capture.stats",
+                        {
+                            "t_ns": now_ns(),
+                            "queue_depth": frame_queue.qsize(),
+                            **snapshot,
+                        },
+                    )
+                    next_stats_emit = now_s + stats_period_s
 
     def _callback(indata, frames, time_info, status) -> None:  # noqa: ARG001
         if status:
-            logger.emit("warning", "audio.capture", "underrun", {"status": str(status)})
+            status_text = str(status)
+            if "input overflow" in status_text.lower():
+                with stats_lock:
+                    stats["status_input_overflow"] += 1
+            else:
+                with stats_lock:
+                    stats["status_other"] += 1
+            logger.emit("warning", "audio.capture", "underrun", {"status": status_text})
         frame = np.array(indata, copy=True)
         t_ns = now_ns()
-        nonlocal_seq[0] += 1
-        msg = {
-            "t_ns": t_ns,
-            "seq": nonlocal_seq[0],
-            "sample_rate_hz": sample_rate,
-            "frame_samples": frames,
-            "channels": frame.shape[1] if frame.ndim > 1 else 1,
-            "data": frame,
-        }
-        bus.publish("audio.frames", msg)
+        if frame_queue.full():
+            try:
+                frame_queue.get_nowait()
+            except queue.Empty:
+                pass
+            with stats_lock:
+                stats["callback_overflow_drop"] += 1
+        try:
+            frame_queue.put_nowait((t_ns, int(frames), frame))
+            with stats_lock:
+                stats["frames_enqueued"] += 1
+        except queue.Full:
+            with stats_lock:
+                stats["callback_overflow_drop"] += 1
 
     nonlocal_seq = [0]
 

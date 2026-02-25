@@ -83,6 +83,33 @@ class ArtifactsAndTracingTests(unittest.TestCase):
             self.assertTrue((run_dir / "traces" / "lock.jsonl").exists())
             self.assertTrue((run_dir / "traces" / "beamformer.jsonl").exists())
 
+    def test_bus_topic_depth_matching_prefers_exact_then_wildcard(self) -> None:
+        bus = Bus(
+            max_queue_depth=32,
+            topic_queue_depths={
+                "vision.frames.cam1": 6,
+                "vision.frames.*": 4,
+                "audio.*": 8,
+            },
+        )
+
+        camera0_depth = bus.get_topic_depth("vision.frames.cam0")
+        camera1_depth = bus.get_topic_depth("vision.frames.cam1")
+        audio_depth = bus.get_topic_depth("audio.frames")
+        unknown_depth = bus.get_topic_depth("other.topic")
+
+        self.assertEqual(camera0_depth, 4)
+        self.assertEqual(camera1_depth, 6)
+        self.assertEqual(audio_depth, 8)
+        self.assertEqual(unknown_depth, 32)
+
+        q_cam0 = bus.subscribe("vision.frames.cam0")
+        q_cam1 = bus.subscribe("vision.frames.cam1")
+        q_audio = bus.subscribe("audio.frames")
+        self.assertEqual(q_cam0.maxsize, 4)
+        self.assertEqual(q_cam1.maxsize, 6)
+        self.assertEqual(q_audio.maxsize, 8)
+
 
 if __name__ == "__main__":
     unittest.main()

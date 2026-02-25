@@ -52,12 +52,20 @@ def start_drift_check(
 
     q = bus.subscribe("audio.frames")
 
+    def _drain_latest(q_in: queue.Queue) -> Optional[Dict[str, Any]]:
+        frame = None
+        try:
+            while True:
+                frame = q_in.get_nowait()
+        except queue.Empty:
+            pass
+        return frame
+
     def _run() -> None:
         last_check = 0.0
         while not stop_event.is_set():
-            try:
-                frame_msg = q.get(timeout=0.1)
-            except queue.Empty:
+            frame_msg = _drain_latest(q)
+            if frame_msg is None:
                 continue
             now_s = time.time()
             if now_s - last_check < check_every_s:
@@ -106,4 +114,3 @@ def _estimate_offset_samples(x: np.ndarray, y: np.ndarray) -> int:
     cc = np.concatenate((cc[-max_shift:], cc[: max_shift + 1]))
     shift = int(np.argmax(np.abs(cc)) - max_shift)
     return shift
-

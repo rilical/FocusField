@@ -1,20 +1,17 @@
-# FocusField Full configuration (3 cameras, 8 microphones) - Pi debug/degraded
-
 build: full
-
 runtime:
-  run_id: ""
+  run_id: ''
   fail_fast: false
   enable_validation: true
   requirements:
     strict: false
     min_cameras: 0
     min_audio_channels: 0
+    camera_scope: any
   artifacts:
-    dir: "artifacts"
+    dir: artifacts
     retention:
       max_runs: 10
-
 trace:
   enabled: true
   level: medium
@@ -23,7 +20,6 @@ trace:
     fps: 1
   record_raw_audio: true
   record_heatmap_full: false
-
 health:
   enabled: true
   thresholds_ms:
@@ -31,11 +27,19 @@ health:
     enhanced_final: 300
     face_tracks: 1000
     camera_frame: 1000
-
 perf:
   enabled: true
   emit_hz: 1
-
+bench:
+  targets:
+    si_sdr_delta_db_min: 2.0
+    stoi_delta_min: 0.03
+    wer_relative_improvement_min: 0.12
+    sir_delta_db_min: 4.0
+    latency_p95_ms_max: 150.0
+    latency_p99_ms_max: 220.0
+    audio_queue_full_max: 40
+    audio_underrun_rate_max: 0.01
 audio:
   channels: 8
   sample_rate_hz: 48000
@@ -44,7 +48,7 @@ audio:
   capture:
     allow_mono_fallback: false
   device_selector:
-    match_substring: "miniDSP"
+    match_substring: miniDSP
     require_input_channels: 8
   vad:
     enabled: true
@@ -63,7 +67,7 @@ audio:
     channel_weights:
       enabled: true
       spatial_exponent: 2.0
-      dead_rms_threshold: 1.0e-5
+      dead_rms_threshold: 1.0e-05
       min_snr_db: 3.0
       max_snr_db: 18.0
       max_clip_fraction: 0.01
@@ -74,56 +78,62 @@ audio:
       nfft: 1024
       refresh_ms: 250
       noise_ema_alpha: 0.95
-      diagonal_loading: 1.0e-3
+      diagonal_loading: 0.001
       steering_update_deg: 5.0
       max_condition_number: 1.0e6
-
+      weight_interp_alpha: 0.35
+      speech_freeze_covariance: true
+      freq_low_hz: 150
+      freq_high_hz: 4600
+      postfilter:
+        enabled: true
+        noise_ema_alpha: 0.97
+        speech_ema_alpha: 0.9
+        over_subtraction: 1.15
+        min_gain: 0.08
   denoise:
     enabled: true
     backend: wiener
     wiener:
       g_min: 0.05
       noise_ema_alpha: 0.98
-
   sync:
     enabled: true
     drift_check:
       max_offset_samples: 6
       check_every_s: 2.0
-
 video:
   cameras:
-    - id: cam0
-      device_path: ""
-      device_index: 0
-      width: 640
-      height: 360
-      fps: 15
-      hfov_deg: 160
-      yaw_offset_deg: 0
-      bearing_model: linear
-      bearing_lut_path: ""
-    - id: cam1
-      device_path: ""
-      device_index: 1
-      width: 640
-      height: 360
-      fps: 15
-      hfov_deg: 160
-      yaw_offset_deg: 120
-      bearing_model: linear
-      bearing_lut_path: ""
-    - id: cam2
-      device_path: ""
-      device_index: 2
-      width: 640
-      height: 360
-      fps: 15
-      hfov_deg: 160
-      yaw_offset_deg: 240
-      bearing_model: linear
-      bearing_lut_path: ""
-
+  - id: cam0
+    device_path: ''
+    device_index: 0
+    width: 640
+    height: 360
+    fps: 15
+    hfov_deg: 160
+    yaw_offset_deg: 0
+    bearing_model: linear
+    bearing_lut_path: ''
+  - id: cam1
+    device_path: ''
+    device_index: 1
+    width: 640
+    height: 360
+    fps: 15
+    hfov_deg: 160
+    yaw_offset_deg: 120
+    bearing_model: linear
+    bearing_lut_path: ''
+  - id: cam2
+    device_path: ''
+    device_index: 2
+    width: 640
+    height: 360
+    fps: 15
+    hfov_deg: 160
+    yaw_offset_deg: 240
+    bearing_model: linear
+    bearing_lut_path: ''
 vision:
   face:
     min_confidence: 0.6
@@ -150,35 +160,41 @@ vision:
     mesh_min_tracking_confidence: 0.5
     mesh_min_activity: 0.005
     mesh_max_activity: 0.1
-    mesh_model_path: ""
+    mesh_model_path: ''
   heatmap:
     bin_size_deg: 10
     sigma_deg: 18
     top_k_peaks: 2
     smoothing_alpha: 0.25
-
 fusion:
   thresholds_preset: balanced
   require_vad: true
   vad_max_age_ms: 500
   require_speaking: true
-
 bus:
   max_queue_depth: 8
-
+  topic_queue_depths:
+    audio.frames: 24
+    audio.vad: 32
+    audio.enhanced.beamformed: 16
+    audio.enhanced.final: 16
+    vision.frames.*: 4
+    vision.frames.cam0: 4
+    vision.frames.cam1: 4
+    vision.frames.cam2: 4
+    vision.face_tracks: 4
+    runtime.perf: 16
 logging:
   level: info
   file:
     enabled: true
     flush_interval_ms: 200
     rotate_mb: 50
-
 output:
   sink: file
   file_sink:
-    dir: "artifacts"
+    dir: artifacts
     write_raw_multich: true
-
 ui:
   host: 127.0.0.1
   port: 8080

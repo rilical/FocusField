@@ -30,7 +30,13 @@ else:
     sounddevice_error = None
 
 from focusfield.audio.devices import list_input_devices, resolve_input_device_index
-from focusfield.platform.hardware_probe import collect_camera_sources, is_capture_node, try_open_camera_any_backend
+from focusfield.platform.hardware_probe import (
+    collect_camera_sources,
+    is_capture_node,
+    normalize_camera_scope,
+    source_matches_camera_scope,
+    try_open_camera_any_backend,
+)
 
 
 def _safe_yaml_load(path: Path) -> dict:
@@ -45,9 +51,10 @@ def _safe_yaml_load(path: Path) -> dict:
         return {}
 
 
-def _format_input_channels(config: dict) -> tuple[int | None, int]:
+def _format_input_channels(config: dict) -> tuple[int | None, int, str]:
     selected_idx: int | None = None
     selected_channels = 0
+    selected_name = ""
     try:
         if config:
             selected_idx = resolve_input_device_index(config, logger=None)
@@ -59,6 +66,7 @@ def _format_input_channels(config: dict) -> tuple[int | None, int]:
         selected = next((d for d in inputs if d.index == selected_idx), None)
         if selected is not None:
             selected_channels = int(selected.max_input_channels)
+            selected_name = str(selected.name)
     if selected_idx is None and sd is not None:
         try:
             default_idx = sd.default.device[0]
@@ -67,9 +75,10 @@ def _format_input_channels(config: dict) -> tuple[int | None, int]:
                 selected = next((d for d in inputs if d.index == selected_idx), None)
                 if selected is not None:
                     selected_channels = int(selected.max_input_channels)
+                    selected_name = str(selected.name)
         except Exception:
             selected_idx = None
-    return selected_idx, selected_channels
+    return selected_idx, selected_channels, selected_name
 
 
 def check_audio(config: dict) -> tuple[int, dict[str, Any]]:
@@ -78,6 +87,7 @@ def check_audio(config: dict) -> tuple[int, dict[str, Any]]:
         "input_count": 0,
         "selected_index": None,
         "selected_channels": 0,
+        "selected_name": "",
         "max_channels": 0,
     }
     if sd is None:
@@ -106,14 +116,17 @@ def check_audio(config: dict) -> tuple[int, dict[str, Any]]:
     details["input_count"] = found
     details["max_channels"] = max_channels
 
-    selected_idx, selected_channels = _format_input_channels(config)
+    selected_idx, selected_channels, selected_name = _format_input_channels(config)
     details["selected_index"] = selected_idx
     details["selected_channels"] = selected_channels
+    details["selected_name"] = selected_name
     print(f"Selected input index: {selected_idx}")
     return 0, details
 
 
-def _source_capture_capable(path: str) -> bool:
+def _source_capture_capable(path: str, camera_scope: str) -> bool:
+    if not source_matches_camera_scope(path, camera_scope=camera_scope):
+        return False
     try:
         resolved = os.path.realpath(path)
     except Exception:
@@ -124,9 +137,10 @@ def _source_capture_capable(path: str) -> bool:
     return capture is not False
 
 
-def check_cameras(config: dict, camera_source: str, strict_capture: bool) -> tuple[int, dict[str, Any]]:
+def check_cameras(config: dict, camera_source: str, strict_capture: bool, camera_scope: str) -> tuple[int, dict[str, Any]]:
     print("=== Camera sources ===")
     details: dict[str, Any] = {
+        "scope": camera_scope,
         "discovered_sources": 0,
         "capture_capable_sources": 0,
         "openable_sources": 0,
@@ -137,7 +151,7 @@ def check_cameras(config: dict, camera_source: str, strict_capture: bool) -> tup
         print(f"cv2 import failed: {cv2_error}")
         return 1, details
 
-    camera_sources = collect_camera_sources(camera_source)
+    camera_sources = collect_camera_sources(camera_source, camera_scope=camera_scope)
     details["discovered_sources"] = len(camera_sources)
     by_id_open_count = 0
     if not camera_sources:
@@ -147,9 +161,13 @@ def check_cameras(config: dict, camera_source: str, strict_capture: bool) -> tup
             target = os.path.realpath(path)
         except Exception:
             target = "?"
-        if _source_capture_capable(path):
+        if _source_capture_capable(path, camera_scope=camera_scope):
             details["capture_capable_sources"] += 1
-        ok, tried, opened = try_open_camera_any_backend(path, strict_capture=strict_capture)
+        ok, tried, opened = try_open_camera_any_backend(
+            path,
+            strict_capture=strict_capture,
+            camera_scope=camera_scope,
+        )
         backend = opened[1] if opened is not None else "none"
         if ok:
             by_id_open_count += 1
@@ -169,7 +187,11 @@ def check_cameras(config: dict, camera_source: str, strict_capture: bool) -> tup
         source = idx
         if isinstance(cam, dict):
             source = cam.get("device_path") or cam.get("device_index", idx)
-        ok, tried, opened = try_open_camera_any_backend(source, strict_capture=strict_capture)
+        ok, tried, opened = try_open_camera_any_backend(
+            source,
+            strict_capture=strict_capture,
+            camera_scope=camera_scope,
+        )
         backend = opened[1] if opened is not None else "none"
         if ok:
             config_open_count += 1
@@ -210,6 +232,12 @@ def main() -> int:
     parser.add_argument("--require-cameras", type=int, default=0)
     parser.add_argument("--require-audio-channels", type=int, default=0)
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument(
+        "--camera-scope",
+        choices=["usb", "any"],
+        default=None,
+        help="Camera hardware scope: usb for external UVC cameras only, any for all capture nodes.",
+    )
     args = parser.parse_args()
 
     print("FocusField Pi preflight")
@@ -220,10 +248,21 @@ def main() -> int:
         print(f"Config missing or empty: {args.config}")
 
     rc = 0
+    req_cfg = config.get("runtime", {}).get("requirements", {}) if isinstance(config, dict) else {}
+    configured_scope = req_cfg.get("camera_scope") if isinstance(req_cfg, dict) else None
+    camera_scope = normalize_camera_scope(
+        args.camera_scope or configured_scope or ("usb" if args.strict else "any")
+    )
+
     rc |= check_cv2()
     audio_rc, audio_details = check_audio(config)
     rc |= audio_rc
-    camera_rc, camera_details = check_cameras(config, camera_source=args.camera_source, strict_capture=args.strict)
+    camera_rc, camera_details = check_cameras(
+        config,
+        camera_source=args.camera_source,
+        strict_capture=args.strict,
+        camera_scope=camera_scope,
+    )
     rc |= camera_rc
 
     required_cameras = int(max(0, args.require_cameras))
@@ -240,12 +279,18 @@ def main() -> int:
             f"required cameras={required_cameras} but observed openable cameras={observed_cameras}"
         )
     if required_audio_channels > 0 and observed_audio_channels < required_audio_channels:
+        selected_name = str(audio_details.get("selected_name", ""))
+        hint = ""
+        if "minidsp" in selected_name.lower() and required_audio_channels >= 8:
+            hint = " hint: miniDSP UMA-8 appears in 2ch DSP mode; switch to RAW firmware for 8ch."
         contract_failures.append(
-            f"required audio_channels={required_audio_channels} but selected channels={observed_audio_channels}"
+            f"required audio_channels={required_audio_channels} but selected channels={observed_audio_channels} "
+            f"(index={audio_details.get('selected_index')}, name={selected_name!r}){hint}"
         )
 
     print("=== Contract Summary ===")
     print(f"strict={args.strict}")
+    print(f"camera_scope={camera_scope}")
     print(f"required_cameras={required_cameras} observed_cameras={observed_cameras}")
     print(
         f"required_audio_channels={required_audio_channels} observed_audio_channels={observed_audio_channels}"

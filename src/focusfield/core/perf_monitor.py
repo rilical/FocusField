@@ -52,10 +52,18 @@ def start_perf_monitor(
 
     q_audio = bus.subscribe("audio.frames")
     q_final = bus.subscribe("audio.enhanced.final")
+    q_capture_stats = bus.subscribe("audio.capture.stats")
 
     stats: Dict[str, Any] = {
         "audio_frames": {"last_t_ns": 0, "count": 0},
         "enhanced_final": {"last_t_ns": 0, "count": 0, "last_latency_ms": None},
+        "audio_capture": {
+            "queue_depth": 0,
+            "frames_enqueued": 0,
+            "frames_published": 0,
+            "callback_overflow_drop": 0,
+            "status_input_overflow": 0,
+        },
     }
 
     def _drain_latest(q: queue.Queue) -> Optional[Dict[str, Any]]:
@@ -75,6 +83,8 @@ def start_perf_monitor(
 
             period = 1.0 / emit_hz if emit_hz > 0 else 1.0
             next_emit = time.time() + period
+            prev_drop_counts: Dict[str, int] = {}
+            prev_publish_counts: Dict[str, int] = {}
             while not stop_event.is_set():
                 a = _drain_latest(q_audio)
                 if a is not None:
@@ -88,6 +98,17 @@ def start_perf_monitor(
                     # Approx latency: wall-clock now - message t_ns
                     latency_ms = (now_ns() - t_ns) / 1_000_000.0 if t_ns else None
                     stats["enhanced_final"]["last_latency_ms"] = float(latency_ms) if latency_ms is not None else None
+                cap_stats = _drain_latest(q_capture_stats)
+                if isinstance(cap_stats, dict):
+                    stats["audio_capture"]["queue_depth"] = int(cap_stats.get("queue_depth", 0) or 0)
+                    stats["audio_capture"]["frames_enqueued"] = int(cap_stats.get("frames_enqueued", 0) or 0)
+                    stats["audio_capture"]["frames_published"] = int(cap_stats.get("frames_published", 0) or 0)
+                    stats["audio_capture"]["callback_overflow_drop"] = int(
+                        cap_stats.get("callback_overflow_drop", 0) or 0
+                    )
+                    stats["audio_capture"]["status_input_overflow"] = int(
+                        cap_stats.get("status_input_overflow", 0) or 0
+                    )
 
                 now_s = time.time()
                 if now_s < next_emit:
@@ -95,10 +116,38 @@ def start_perf_monitor(
                     continue
                 next_emit = now_s + period
 
+                bus_summary: Dict[str, Any] = {}
+                if hasattr(bus, "get_drop_counts") and hasattr(bus, "get_publish_counts"):
+                    try:
+                        drop_counts = dict(bus.get_drop_counts())
+                        publish_counts = dict(bus.get_publish_counts())
+                        delta_drop = {
+                            topic: int(drop_counts.get(topic, 0) - prev_drop_counts.get(topic, 0))
+                            for topic in set(drop_counts.keys()) | set(prev_drop_counts.keys())
+                        }
+                        delta_publish = {
+                            topic: int(publish_counts.get(topic, 0) - prev_publish_counts.get(topic, 0))
+                            for topic in set(publish_counts.keys()) | set(prev_publish_counts.keys())
+                        }
+                        prev_drop_counts = drop_counts
+                        prev_publish_counts = publish_counts
+                        bus_summary = {
+                            "total_drops": int(sum(drop_counts.values())),
+                            "audio_drops_total": int(
+                                sum(value for topic, value in drop_counts.items() if str(topic).startswith("audio."))
+                            ),
+                            "drop_delta": delta_drop,
+                            "publish_delta": delta_publish,
+                        }
+                    except Exception:
+                        bus_summary = {}
+
                 snapshot = {
                     "t_ns": now_ns(),
                     "audio_frames": dict(stats["audio_frames"]),
                     "enhanced_final": dict(stats["enhanced_final"]),
+                    "audio_capture": dict(stats["audio_capture"]),
+                    "bus": bus_summary,
                 }
                 bus.publish("runtime.perf", snapshot)
                 if fh is not None:

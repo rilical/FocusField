@@ -274,13 +274,21 @@ def start_face_tracking(
         trackers[camera_id] = CameraTracker(camera_id, config, cam_cfg, logger)
         latest_tracks[camera_id] = []
 
+    def _drain_latest(q: queue.Queue) -> Optional[Dict[str, Any]]:
+        frame_msg: Optional[Dict[str, Any]] = None
+        try:
+            while True:
+                frame_msg = q.get_nowait()
+        except queue.Empty:
+            pass
+        return frame_msg
+
     def _run() -> None:
         while not stop_event.is_set():
             updated = False
             for camera_id, q in queues.items():
-                try:
-                    frame_msg = q.get(timeout=0.01)
-                except queue.Empty:
+                frame_msg = _drain_latest(q)
+                if frame_msg is None:
                     continue
                 try:
                     tracks = trackers[camera_id].process_frame(frame_msg)

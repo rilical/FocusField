@@ -14,6 +14,8 @@ import yaml
 from focusfield.platform.hardware_probe import (
     collect_camera_sources,
     is_capture_node,
+    normalize_camera_scope,
+    source_matches_camera_scope,
     try_open_camera_any_backend,
     video_index_for_source,
 )
@@ -81,7 +83,9 @@ def parse_camera_indices(values: Optional[List[str]]) -> List[int]:
     return result
 
 
-def _camera_capture_capable(source: str) -> bool:
+def _camera_capture_capable(source: str, camera_scope: str) -> bool:
+    if not source_matches_camera_scope(source, camera_scope=camera_scope):
+        return False
     try:
         resolved = os.path.realpath(source)
     except Exception:
@@ -92,19 +96,28 @@ def _camera_capture_capable(source: str) -> bool:
     return capture is not False
 
 
-def detect_cameras(limit: int, camera_source: str, strict_capture: bool) -> tuple[list[tuple[str, object]], dict]:
+def detect_cameras(
+    limit: int,
+    camera_source: str,
+    strict_capture: bool,
+    camera_scope: str,
+) -> tuple[list[tuple[str, object]], dict]:
     cameras: list[tuple[str, object]] = []
-    discovered = collect_camera_sources(camera_source)
+    discovered = collect_camera_sources(camera_source, camera_scope=camera_scope)
     capture_capable = 0
     openable = 0
 
     for source in discovered:
-        if _camera_capture_capable(source):
+        if _camera_capture_capable(source, camera_scope=camera_scope):
             capture_capable += 1
         elif camera_source == "auto" or strict_capture:
             continue
 
-        ok, _, opened = try_open_camera_any_backend(source, strict_capture=strict_capture)
+        ok, _, opened = try_open_camera_any_backend(
+            source,
+            strict_capture=strict_capture,
+            camera_scope=camera_scope,
+        )
         if not ok or opened is None:
             continue
         openable += 1
@@ -120,7 +133,12 @@ def detect_cameras(limit: int, camera_source: str, strict_capture: bool) -> tupl
     return cameras, stats
 
 
-def _camera_paths_from_indices(indices: List[int], limit: int, strict: bool) -> tuple[list[tuple[str, int]], list[str]]:
+def _camera_paths_from_indices(
+    indices: List[int],
+    limit: int,
+    strict: bool,
+    camera_scope: str,
+) -> tuple[list[tuple[str, int]], list[str]]:
     cameras: list[tuple[str, int]] = []
     failures: list[str] = []
     seen: set[int] = set()
@@ -135,7 +153,7 @@ def _camera_paths_from_indices(indices: List[int], limit: int, strict: bool) -> 
             failures.append(f"explicit camera index {idx} does not exist ({path})")
             continue
 
-        ok, _, opened = try_open_camera_any_backend(path, strict_capture=strict)
+        ok, _, opened = try_open_camera_any_backend(path, strict_capture=strict, camera_scope=camera_scope)
         if ok and opened is not None:
             opened_source = opened[0]
             if isinstance(opened_source, int):
@@ -209,7 +227,13 @@ def build_video_entries(base_cameras: List[dict], camera_sources: List[tuple[str
     return result
 
 
-def _apply_runtime_requirements(cfg: Dict[str, Any], strict: bool, min_cameras: int, min_audio_channels: int) -> None:
+def _apply_runtime_requirements(
+    cfg: Dict[str, Any],
+    strict: bool,
+    min_cameras: int,
+    min_audio_channels: int,
+    camera_scope: str,
+) -> None:
     runtime_cfg = cfg.get("runtime", {})
     if not isinstance(runtime_cfg, dict):
         runtime_cfg = {}
@@ -220,9 +244,20 @@ def _apply_runtime_requirements(cfg: Dict[str, Any], strict: bool, min_cameras: 
     req["strict"] = bool(strict)
     req["min_cameras"] = int(max(0, min_cameras))
     req["min_audio_channels"] = int(max(0, min_audio_channels))
+    req["camera_scope"] = normalize_camera_scope(camera_scope)
     runtime_cfg["requirements"] = req
     if strict:
         runtime_cfg["fail_fast"] = True
+
+
+def _uma8_mode_hint(name: str, channels: int, required: int) -> str:
+    if "minidsp" not in str(name).lower():
+        return ""
+    if channels >= required:
+        return ""
+    if required < 8:
+        return ""
+    return " hint: miniDSP UMA-8 appears in 2ch DSP mode; switch to RAW firmware for 8ch."
 
 
 def main() -> int:
@@ -258,7 +293,14 @@ def main() -> int:
         action="store_true",
         help="Enforce contract requirements and fail without writing output when unmet.",
     )
+    parser.add_argument(
+        "--camera-scope",
+        choices=["usb", "any"],
+        default=None,
+        help="Camera hardware scope: usb for external UVC cameras only, any for all capture nodes.",
+    )
     args = parser.parse_args()
+    camera_scope = normalize_camera_scope(args.camera_scope or ("usb" if args.strict else "any"))
 
     repo_root = Path(__file__).resolve().parents[1]
     base_path = repo_root / args.base_config
@@ -280,7 +322,12 @@ def main() -> int:
     discovery_stats = {"discovered_sources": 0, "capture_capable_sources": 0, "openable_sources": 0}
     notices: list[str] = []
     if explicit_indices:
-        cameras, notices = _camera_paths_from_indices(explicit_indices, args.max_cameras, strict=args.strict)
+        cameras, notices = _camera_paths_from_indices(
+            explicit_indices,
+            args.max_cameras,
+            strict=args.strict,
+            camera_scope=camera_scope,
+        )
         discovery_stats["discovered_sources"] = len(explicit_indices)
         discovery_stats["capture_capable_sources"] = len(cameras)
         discovery_stats["openable_sources"] = len(cameras)
@@ -291,6 +338,7 @@ def main() -> int:
             args.max_cameras,
             camera_source=args.camera_source,
             strict_capture=args.strict,
+            camera_scope=camera_scope,
         )
         if not cameras:
             raise SystemExit("No working cameras found via probe.")
@@ -308,9 +356,10 @@ def main() -> int:
             f"(discovered={discovery_stats['discovered_sources']}, capture_capable={discovery_stats['capture_capable_sources']})"
         )
     if req_audio > 0 and audio_channels < req_audio:
+        hint = _uma8_mode_hint(audio_name, audio_channels, req_audio)
         contract_errors.append(
             f"required audio_channels={req_audio} but selected device has channels={audio_channels} "
-            f"(index={audio_index}, name={audio_name!r})"
+            f"(index={audio_index}, name={audio_name!r}){hint}"
         )
     if args.strict and contract_errors:
         joined = "\n".join(f"- {err}" for err in contract_errors)
@@ -353,6 +402,7 @@ def main() -> int:
         strict=args.strict,
         min_cameras=req_cams,
         min_audio_channels=req_audio,
+        camera_scope=camera_scope,
     )
 
     output_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
@@ -364,7 +414,8 @@ def main() -> int:
     print(f"selected_audio={audio_name!r} default_ch={audio_channels}")
     print(
         "camera_probe: "
-        f"source_mode={args.camera_source} discovered={discovery_stats['discovered_sources']} "
+        f"source_mode={args.camera_source} scope={camera_scope} "
+        f"discovered={discovery_stats['discovered_sources']} "
         f"capture_capable={discovery_stats['capture_capable_sources']} openable={discovery_stats['openable_sources']}"
     )
     for notice in notices:

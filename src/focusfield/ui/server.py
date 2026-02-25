@@ -34,6 +34,7 @@ CONTRACT DETAILS (inline from src/focusfield/ui/server.md):
 from __future__ import annotations
 
 import json
+import queue
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -89,16 +90,25 @@ def start_ui_server(
     frame_queues = {cam_id: bus.subscribe(f"vision.frames.{cam_id}") for cam_id in cameras}
 
     def _state_worker() -> None:
+        def _drain_latest(q: queue.Queue) -> Optional[Dict[str, Any]]:
+            item: Optional[Dict[str, Any]] = None
+            try:
+                while True:
+                    item = q.get_nowait()
+            except queue.Empty:
+                pass
+            return item
+
         while not stop_event.is_set():
             try:
-                telemetry = q_telemetry.get(timeout=0.1)
-                state.update_telemetry(telemetry)
+                telemetry_msg = _drain_latest(q_telemetry)
+                if telemetry_msg is not None:
+                    state.update_telemetry(telemetry_msg)
             except Exception:
                 pass
             for cam_id, q in frame_queues.items():
-                try:
-                    frame_msg = q.get_nowait()
-                except Exception:
+                frame_msg = _drain_latest(q)
+                if frame_msg is None:
                     continue
                 frame = frame_msg.get("data")
                 if frame is not None:

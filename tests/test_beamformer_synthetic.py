@@ -3,8 +3,10 @@ import unittest
 
 import numpy as np
 
+from focusfield.audio.beamform.mvdr import _MvdrState  # noqa: PLC2701
 from focusfield.audio.beamform.mvdr import _channel_gains  # noqa: PLC2701
 from focusfield.audio.beamform.mvdr import _compute_mvdr_weights  # noqa: PLC2701
+from focusfield.audio.beamform.mvdr import _mvdr_postfilter_block  # noqa: PLC2701
 
 
 def _circular_positions(count: int, radius_m: float) -> np.ndarray:
@@ -59,7 +61,80 @@ class BeamformerSyntheticTests(unittest.TestCase):
                 max_condition_number=1e3,
             )
 
+    def test_mvdr_postfilter_reduces_residual_noise_energy(self) -> None:
+        sample_rate = 48000
+        nfft = 1024
+        freq_hz = np.fft.rfftfreq(nfft, d=1.0 / sample_rate).astype(np.float32)
+        c = 8
+        state = _MvdrState(
+            positions_xy=np.zeros((c, 2), dtype=np.float32),
+            channel_order=np.arange(c, dtype=np.int64),
+            sample_rate=sample_rate,
+            nfft=nfft,
+            freq_hz=freq_hz,
+            rnn=np.tile(np.eye(c, dtype=np.complex64)[None, :, :], (freq_hz.shape[0], 1, 1)),
+            noise_rms=np.ones((c,), dtype=np.float32) * 1e-3,
+            pf_noise_psd=np.ones((freq_hz.shape[0],), dtype=np.float32) * 1e-2,
+            pf_speech_psd=np.ones((freq_hz.shape[0],), dtype=np.float32) * 1e-3,
+        )
+        y = (np.random.randn(512).astype(np.float32) * 0.2)
+        y_out, gain_mean = _mvdr_postfilter_block(
+            state=state,
+            y=y,
+            speech=True,
+            noise_ema_alpha=0.97,
+            speech_ema_alpha=0.90,
+            over_subtraction=1.15,
+            min_gain=0.08,
+        )
+        self.assertEqual(y_out.shape, y.shape)
+        self.assertLess(float(np.mean(y_out**2)), float(np.mean(y**2)))
+        self.assertLess(gain_mean, 1.0)
+
+    def test_mvdr_diagonal_loading_stabilizes_near_singular_covariance(self) -> None:
+        positions = _circular_positions(8, 0.08)
+        sample_rate = 48000
+        nfft = 512
+        freq_hz = np.fft.rfftfreq(nfft, d=1.0 / sample_rate).astype(np.float32)
+        f_bins = freq_hz.shape[0]
+        rnn = np.zeros((f_bins, 8, 8), dtype=np.complex64)
+        for f in range(f_bins):
+            rnn[f] = np.ones((8, 8), dtype=np.complex64) * np.complex64(1e-6)
+        w = _compute_mvdr_weights(
+            positions_xy=positions,
+            freq_hz=freq_hz,
+            rnn=rnn,
+            target_bearing_deg=0.0,
+            diagonal_loading=1e-3,
+            max_condition_number=1e9,
+        )
+        self.assertEqual(w.shape[1], 8)
+
+    def test_mvdr_respects_frequency_limits(self) -> None:
+        positions = _circular_positions(8, 0.08)
+        sample_rate = 48000
+        nfft = 512
+        freq_hz = np.fft.rfftfreq(nfft, d=1.0 / sample_rate).astype(np.float32)
+        f_bins = freq_hz.shape[0]
+        rnn = np.zeros((f_bins, 8, 8), dtype=np.complex64)
+        for f in range(f_bins):
+            rnn[f] = np.eye(8, dtype=np.complex64) * np.complex64(1e-3)
+        w = _compute_mvdr_weights(
+            positions_xy=positions,
+            freq_hz=freq_hz,
+            rnn=rnn,
+            target_bearing_deg=0.0,
+            diagonal_loading=1e-3,
+            max_condition_number=1e9,
+            freq_low_hz=1000.0,
+            freq_high_hz=2500.0,
+        )
+        c = w.shape[1]
+        low_idx = int(np.argmin(np.abs(freq_hz - 300.0)))
+        high_idx = int(np.argmin(np.abs(freq_hz - 4200.0)))
+        self.assertTrue(np.allclose(w[low_idx], np.ones((c,), dtype=np.complex64) / c))
+        self.assertTrue(np.allclose(w[high_idx], np.ones((c,), dtype=np.complex64) / c))
+
 
 if __name__ == "__main__":
     unittest.main()
-

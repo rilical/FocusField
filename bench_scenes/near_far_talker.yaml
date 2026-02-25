@@ -1,0 +1,10 @@
+scenes:
+  - scene_id: near_far_talker
+    description: Target near-field talker with far-field competing voice.
+    target_angle_deg: 15
+    interferer_angle_deg: 210
+    target_reference_wav: bench_scenes/data/near_far_target.wav
+    interferer_reference_wav: bench_scenes/data/near_far_interferer.wav
+    reference_text: "can you confirm the api schema one more time"
+    baseline_text: ""
+    candidate_text: ""

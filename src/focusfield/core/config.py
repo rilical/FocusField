@@ -76,6 +76,7 @@ def _default_config() -> Dict[str, Any]:
                 "strict": False,
                 "min_cameras": 0,
                 "min_audio_channels": 0,
+                "camera_scope": "any",
             },
             "artifacts": {
                 "dir": "artifacts",
@@ -165,6 +166,7 @@ def _default_config() -> Dict[str, Any]:
         },
         "bus": {
             "max_queue_depth": 8,
+            "topic_queue_depths": {},
         },
         "logging": {
             "level": "info",
@@ -201,6 +203,18 @@ def _default_config() -> Dict[str, Any]:
         "perf": {
             "enabled": True,
             "emit_hz": 1.0,
+        },
+        "bench": {
+            "targets": {
+                "si_sdr_delta_db_min": 2.0,
+                "stoi_delta_min": 0.03,
+                "wer_relative_improvement_min": 0.12,
+                "sir_delta_db_min": 4.0,
+                "latency_p95_ms_max": 150.0,
+                "latency_p99_ms_max": 220.0,
+                "audio_queue_full_max": 25.0,
+                "audio_underrun_rate_max": 0.005,
+            }
         },
     }
 
@@ -271,6 +285,9 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     strict = bool(req_cfg.get("strict", False))
     min_cameras = int(req_cfg.get("min_cameras", 0) or 0)
     min_audio_channels = int(req_cfg.get("min_audio_channels", 0) or 0)
+    camera_scope = str(req_cfg.get("camera_scope", "any") or "any").strip().lower()
+    if camera_scope not in {"any", "usb"}:
+        errors.append("runtime.requirements.camera_scope must be one of: any, usb")
     if min_cameras < 0:
         errors.append("runtime.requirements.min_cameras must be >= 0")
     if min_audio_channels < 0:
@@ -289,6 +306,87 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             errors.append(
                 f"runtime.requirements.min_cameras={min_cameras} but video.cameras has {camera_count} entries"
             )
+
+    bus_cfg = config.get("bus", {})
+    if not isinstance(bus_cfg, dict):
+        bus_cfg = {}
+    topic_queue_depths = bus_cfg.get("topic_queue_depths", {})
+    if topic_queue_depths is not None and not isinstance(topic_queue_depths, dict):
+        errors.append("bus.topic_queue_depths must be a mapping when provided")
+    elif isinstance(topic_queue_depths, dict):
+        for topic, depth in topic_queue_depths.items():
+            try:
+                depth_i = int(depth)
+            except Exception:
+                errors.append(f"bus.topic_queue_depths.{topic} must be integer")
+                continue
+            if depth_i <= 0:
+                errors.append(f"bus.topic_queue_depths.{topic} must be > 0")
+
+    beam_cfg = audio_cfg.get("beamformer", {})
+    if isinstance(beam_cfg, dict):
+        mvdr_cfg = beam_cfg.get("mvdr", {})
+        if not isinstance(mvdr_cfg, dict):
+            mvdr_cfg = {}
+        weight_interp_alpha = float(mvdr_cfg.get("weight_interp_alpha", 0.35) or 0.35)
+        if not 0.0 < weight_interp_alpha <= 1.0:
+            errors.append("audio.beamformer.mvdr.weight_interp_alpha must be in (0, 1]")
+        freeze_cov = mvdr_cfg.get("speech_freeze_covariance", True)
+        if not isinstance(freeze_cov, bool):
+            errors.append("audio.beamformer.mvdr.speech_freeze_covariance must be bool")
+        freq_low_hz = float(mvdr_cfg.get("freq_low_hz", 120.0) or 120.0)
+        freq_high_hz = float(mvdr_cfg.get("freq_high_hz", 4800.0) or 4800.0)
+        if freq_low_hz < 0.0:
+            errors.append("audio.beamformer.mvdr.freq_low_hz must be >= 0")
+        if freq_high_hz <= freq_low_hz:
+            errors.append("audio.beamformer.mvdr.freq_high_hz must be > freq_low_hz")
+
+    denoise_cfg = audio_cfg.get("denoise", {})
+    if isinstance(denoise_cfg, dict):
+        backend = str(denoise_cfg.get("backend", "wiener") or "wiener").lower()
+        if backend not in {"wiener", "rnnoise", "hybrid"}:
+            errors.append("audio.denoise.backend must be one of: wiener, rnnoise, hybrid")
+        rnnoise_cfg = denoise_cfg.get("rnnoise", {})
+        if rnnoise_cfg is not None and not isinstance(rnnoise_cfg, dict):
+            errors.append("audio.denoise.rnnoise must be a dict when provided")
+        elif isinstance(rnnoise_cfg, dict):
+            model_path = rnnoise_cfg.get("model_path", "")
+            if model_path is not None and not isinstance(model_path, str):
+                errors.append("audio.denoise.rnnoise.model_path must be string")
+        hybrid_cfg = denoise_cfg.get("hybrid", {})
+        if hybrid_cfg is not None and not isinstance(hybrid_cfg, dict):
+            errors.append("audio.denoise.hybrid must be a dict when provided")
+        elif isinstance(hybrid_cfg, dict):
+            postfilter_strength = float(hybrid_cfg.get("postfilter_strength", 0.5) or 0.5)
+            if not 0.0 <= postfilter_strength <= 1.0:
+                errors.append("audio.denoise.hybrid.postfilter_strength must be in [0, 1]")
+
+    bench_cfg = config.get("bench", {})
+    if not isinstance(bench_cfg, dict):
+        bench_cfg = {}
+    bench_targets = bench_cfg.get("targets", {})
+    if not isinstance(bench_targets, dict):
+        errors.append("bench.targets must be a mapping")
+        bench_targets = {}
+    for key in (
+        "si_sdr_delta_db_min",
+        "stoi_delta_min",
+        "wer_relative_improvement_min",
+        "sir_delta_db_min",
+        "latency_p95_ms_max",
+        "latency_p99_ms_max",
+        "audio_queue_full_max",
+        "audio_underrun_rate_max",
+    ):
+        if key not in bench_targets:
+            continue
+        try:
+            value = float(bench_targets[key])
+        except Exception:
+            errors.append(f"bench.targets.{key} must be numeric")
+            continue
+        if value < 0:
+            errors.append(f"bench.targets.{key} must be >= 0")
 
     output_cfg = config.get("output", {})
     if not isinstance(output_cfg, dict):

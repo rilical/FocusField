@@ -85,6 +85,11 @@ class SrpPhatDoa:
         self._top_k = int(doa_cfg.get("top_k_peaks", 3))
         self._energy_threshold = float(doa_cfg.get("energy_threshold", 1e-4))
         self._min_confidence = float(doa_cfg.get("min_confidence", 0.2))
+        self._continuity_weight = float(doa_cfg.get("continuity_weight", 0.15))
+        self._continuity_sigma_bins = float(doa_cfg.get("continuity_sigma_bins", max(1.5, self._bins / 18.0)))
+        self._max_jump_deg = float(doa_cfg.get("max_jump_deg", 60.0))
+        self._outlier_hold_confidence = float(doa_cfg.get("outlier_hold_confidence", 0.55))
+        self._pair_weight_alpha = float(doa_cfg.get("pair_weight_alpha", 0.90))
         self._angles_deg = np.linspace(0.0, 360.0, num=self._bins, endpoint=False)
 
         positions, channel_order = load_mic_positions(config)
@@ -93,6 +98,7 @@ class SrpPhatDoa:
         if self._positions.shape[0] < 2:
             raise ValueError("SRP-PHAT requires at least 2 microphones")
         self._pairs = _build_pairs(self._positions.shape[0])
+        self._pair_weights = np.ones((len(self._pairs),), dtype=np.float32)
 
         freqs = np.fft.rfftfreq(self._block_size, d=1.0 / self._sample_rate)
         freq_band = doa_cfg.get("freq_band_hz")
@@ -101,7 +107,9 @@ class SrpPhatDoa:
             f_hi = float(freq_band[1])
             mask = (freqs >= f_lo) & (freqs <= f_hi)
         else:
-            mask = np.ones_like(freqs, dtype=bool)
+            f_lo = float(doa_cfg.get("freq_low_hz", 200.0))
+            f_hi = float(doa_cfg.get("freq_high_hz", 4500.0))
+            mask = (freqs >= f_lo) & (freqs <= f_hi)
         self._freqs = freqs[mask]
         self._freq_idx = np.where(mask)[0]
 
@@ -112,6 +120,7 @@ class SrpPhatDoa:
             self._freqs,
         )
         self._prev = np.zeros(self._bins, dtype=np.float32)
+        self._prev_peak_idx: Optional[int] = None
         self._last_update_ns = 0
         self._seq = 0
 
@@ -144,8 +153,14 @@ class SrpPhatDoa:
             cross = spectrum[:, i] * np.conj(spectrum[:, j])
             denom = np.abs(cross)
             cross = cross / np.maximum(denom, 1e-12)
+            coherence = float(np.abs(np.mean(cross)))
+            self._pair_weights[pair_idx] = (
+                self._pair_weight_alpha * self._pair_weights[pair_idx]
+                + (1.0 - self._pair_weight_alpha) * np.float32(np.clip(coherence, 0.05, 1.0))
+            )
+            pair_weight = float(np.clip(self._pair_weights[pair_idx], 0.05, 1.0))
             table = self._phase_tables[pair_idx]
-            scores += np.real(table @ cross)
+            scores += pair_weight * np.real(table @ cross)
 
         min_val = float(scores.min()) if scores.size else 0.0
         if min_val < 0:
@@ -154,8 +169,20 @@ class SrpPhatDoa:
         if max_val > 0:
             scores = scores / max_val
         scores = self._smoothing_alpha * scores + (1.0 - self._smoothing_alpha) * self._prev
-        self._prev = scores
+        scores = self._apply_peak_continuity(scores)
+
+        current_peak_idx = int(np.argmax(scores)) if scores.size else None
         confidence = _confidence(scores)
+        if self._prev_peak_idx is not None and current_peak_idx is not None:
+            jump_deg = abs(_wrap_deg(float(self._angles_deg[current_peak_idx] - self._angles_deg[self._prev_peak_idx])))
+            if jump_deg > self._max_jump_deg and confidence < self._outlier_hold_confidence:
+                # Reject low-confidence abrupt jumps to reduce steering jitter.
+                scores = 0.75 * self._prev + 0.25 * scores
+                current_peak_idx = int(np.argmax(scores)) if scores.size else None
+                confidence = _confidence(scores)
+
+        self._prev = scores
+        self._prev_peak_idx = current_peak_idx
         self._last_update_ns = t_ns
         msg = self._build_msg(t_ns, scores, confidence=confidence)
         return msg
@@ -178,6 +205,19 @@ class SrpPhatDoa:
     def min_confidence(self) -> float:
         return self._min_confidence
 
+    def _apply_peak_continuity(self, scores: np.ndarray) -> np.ndarray:
+        if self._prev_peak_idx is None or scores.size == 0:
+            return scores
+        bins = np.arange(scores.size, dtype=np.float32)
+        dist = np.abs(bins - float(self._prev_peak_idx))
+        dist = np.minimum(dist, float(scores.size) - dist)
+        kernel = np.exp(-0.5 * (dist / max(1e-3, self._continuity_sigma_bins)) ** 2).astype(np.float32)
+        boosted = scores + self._continuity_weight * kernel
+        peak = float(np.max(boosted)) if boosted.size else 0.0
+        if peak > 0:
+            boosted = boosted / peak
+        return boosted
+
 
 def start_srp_phat(
     bus: Any,
@@ -196,11 +236,19 @@ def start_srp_phat(
         return None
     q = bus.subscribe("audio.frames")
 
+    def _drain_latest(q_in: queue.Queue) -> Optional[Dict[str, Any]]:
+        frame = None
+        try:
+            while True:
+                frame = q_in.get_nowait()
+        except queue.Empty:
+            pass
+        return frame
+
     def _run() -> None:
         while not stop_event.is_set():
-            try:
-                frame = q.get(timeout=0.1)
-            except queue.Empty:
+            frame = _drain_latest(q)
+            if frame is None:
                 continue
             msg = estimator.update(frame)
             if msg is None:
@@ -259,3 +307,7 @@ def _confidence(scores: np.ndarray) -> float:
         return 0.0
     confidence = (peak - mean) / max(peak, 1e-6)
     return float(max(0.0, min(1.0, confidence)))
+
+
+def _wrap_deg(deg: float) -> float:
+    return (deg + 180.0) % 360.0 - 180.0

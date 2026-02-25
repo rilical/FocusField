@@ -1,0 +1,10 @@
+scenes:
+  - scene_id: cafe_noise
+    description: Target speaker with diffuse cafe background chatter.
+    target_angle_deg: 20
+    interferer_angle_deg: 150
+    target_reference_wav: bench_scenes/data/cafe_noise_target.wav
+    interferer_reference_wav: bench_scenes/data/cafe_noise_background.wav
+    reference_text: "let us sync on deliverables after lunch"
+    baseline_text: ""
+    candidate_text: ""

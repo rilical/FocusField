@@ -58,7 +58,7 @@ from focusfield.fusion.av_association import start_av_association
 from focusfield.fusion.lock_state_machine import start_lock_state_machine
 from focusfield.ui.server import start_ui_server
 from focusfield.ui.telemetry import start_telemetry
-from focusfield.platform.hardware_probe import try_open_camera_any_backend
+from focusfield.platform.hardware_probe import normalize_camera_scope, try_open_camera_any_backend
 from focusfield.vision.cameras import start_cameras
 from focusfield.vision.speaker_heatmap import start_speaker_heatmap
 from focusfield.vision.tracking.face_track import start_face_tracking
@@ -90,10 +90,16 @@ def _runtime_requirements(config: Dict[str, Any]) -> Dict[str, Any]:
     req_cfg = runtime_cfg.get("requirements", {})
     if not isinstance(req_cfg, dict):
         req_cfg = {}
+    raw_scope = req_cfg.get("camera_scope", "any")
+    try:
+        camera_scope = normalize_camera_scope(raw_scope)
+    except Exception:
+        camera_scope = "any"
     return {
         "strict": bool(req_cfg.get("strict", False)),
         "min_cameras": int(req_cfg.get("min_cameras", 0) or 0),
         "min_audio_channels": int(req_cfg.get("min_audio_channels", 0) or 0),
+        "camera_scope": camera_scope,
     }
 
 
@@ -114,7 +120,7 @@ def _selected_audio_info(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _configured_camera_status(config: Dict[str, Any], strict_capture: bool) -> Dict[str, Any]:
+def _configured_camera_status(config: Dict[str, Any], strict_capture: bool, camera_scope: str) -> Dict[str, Any]:
     cameras = config.get("video", {}).get("cameras", [])
     if not isinstance(cameras, list):
         cameras = []
@@ -127,7 +133,11 @@ def _configured_camera_status(config: Dict[str, Any], strict_capture: bool) -> D
         if isinstance(cam, dict):
             camera_id = str(cam.get("id", camera_id))
             source = cam.get("device_path") or cam.get("device_index", idx)
-        ok, tried, opened = try_open_camera_any_backend(source, strict_capture=strict_capture)
+        ok, tried, opened = try_open_camera_any_backend(
+            source,
+            strict_capture=strict_capture,
+            camera_scope=camera_scope,
+        )
         if ok:
             openable += 1
         entries.append(
@@ -137,6 +147,7 @@ def _configured_camera_status(config: Dict[str, Any], strict_capture: bool) -> D
                 "open": ok,
                 "backend": opened[1] if opened is not None else "none",
                 "tried": tried,
+                "camera_scope": camera_scope,
             }
         )
     return {
@@ -146,24 +157,38 @@ def _configured_camera_status(config: Dict[str, Any], strict_capture: bool) -> D
     }
 
 
+def _uma8_mode_hint(name: str, channels: int, required: int) -> str:
+    if "minidsp" not in str(name).lower():
+        return ""
+    if channels >= required:
+        return ""
+    if required < 8:
+        return ""
+    return " hint: miniDSP UMA-8 appears in 2ch DSP mode; switch to RAW firmware for 8ch."
+
+
 def _validate_runtime_requirements(config: Dict[str, Any], logger: LogEmitter) -> None:
     req = _runtime_requirements(config)
     if not req["strict"]:
         return
 
     failures: List[str] = []
-    camera_status = _configured_camera_status(config, strict_capture=True)
+    camera_scope = str(req["camera_scope"])
+    camera_status = _configured_camera_status(config, strict_capture=True, camera_scope=camera_scope)
     audio_status = _selected_audio_info(config)
     min_cameras = int(req["min_cameras"])
     min_audio_channels = int(req["min_audio_channels"])
 
     if min_cameras > 0 and camera_status["openable"] < min_cameras:
         failures.append(
-            f"required cameras={min_cameras}, observed openable cameras={camera_status['openable']}"
+            f"required cameras={min_cameras}, observed openable cameras={camera_status['openable']} "
+            f"(camera_scope={camera_scope})"
         )
     if min_audio_channels > 0 and int(audio_status["channels"]) < min_audio_channels:
+        hint = _uma8_mode_hint(str(audio_status.get("device_name", "")), int(audio_status["channels"]), min_audio_channels)
         failures.append(
-            f"required audio_channels={min_audio_channels}, observed channels={audio_status['channels']}"
+            f"required audio_channels={min_audio_channels}, observed channels={audio_status['channels']} "
+            f"(index={audio_status.get('device_index')}, name={audio_status.get('device_name')!r}){hint}"
         )
     if not failures:
         logger.emit(
@@ -227,6 +252,7 @@ def _install_crash_handlers(
         "vision.face_tracks",
         "audio.beamformer.debug",
         "runtime.perf",
+        "audio.capture.stats",
     ]
     queues = {topic: bus.subscribe(topic) for topic in topics}
 
@@ -326,8 +352,43 @@ def main() -> None:
 
     config = load_config(args.config)
     run_dir = _ensure_artifacts(config)
-    bus = Bus(max_queue_depth=int(config.get("bus", {}).get("max_queue_depth", 8)))
+    bus_cfg = config.get("bus", {})
+    if not isinstance(bus_cfg, dict):
+        bus_cfg = {}
+    topic_queue_depths = bus_cfg.get("topic_queue_depths", {})
+    if not isinstance(topic_queue_depths, dict):
+        topic_queue_depths = {}
+    parsed_topic_depths: Dict[str, int] = {}
+    for key, value in topic_queue_depths.items():
+        try:
+            parsed_topic_depths[str(key)] = int(value)
+        except Exception:
+            continue
+    bus = Bus(
+        max_queue_depth=int(bus_cfg.get("max_queue_depth", 8)),
+        topic_queue_depths=parsed_topic_depths,
+    )
     logger = LogEmitter(bus, min_level=config.get("logging", {}).get("level", "info"), run_id=str(config.get("runtime", {}).get("run_id", "")))
+    bus_camera_topics = []
+    cameras_cfg = config.get("video", {}).get("cameras", [])
+    if isinstance(cameras_cfg, list):
+        for idx, cam_cfg in enumerate(cameras_cfg):
+            camera_id = f"cam{idx}"
+            if isinstance(cam_cfg, dict):
+                camera_id = str(cam_cfg.get("id", camera_id))
+            bus_camera_topics.append(f"vision.frames.{camera_id}")
+    resolved_camera_queue_depths = {topic: bus.get_topic_depth(topic) for topic in bus_camera_topics}
+    logger.emit(
+        "info",
+        "main.run",
+        "bus_config",
+        {
+            "max_queue_depth": int(bus_cfg.get("max_queue_depth", 8)),
+            "topic_queue_depths": parsed_topic_depths,
+            "camera_topic_depths": resolved_camera_queue_depths,
+        },
+    )
+
     stop_event = threading.Event()
 
     drop_throttle: Dict[str, float] = {}

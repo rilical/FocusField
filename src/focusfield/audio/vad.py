@@ -109,11 +109,19 @@ def start_audio_vad(
     processor = VadProcessor(sample_rate, frame_ms, mode, min_ratio)
     q = bus.subscribe("audio.frames")
 
+    def _drain_latest(q_in: queue.Queue) -> Optional[Dict[str, Any]]:
+        frame = None
+        try:
+            while True:
+                frame = q_in.get_nowait()
+        except queue.Empty:
+            pass
+        return frame
+
     def _run() -> None:
         while not stop_event.is_set():
-            try:
-                frame = q.get(timeout=0.1)
-            except queue.Empty:
+            frame = _drain_latest(q)
+            if frame is None:
                 continue
             data = frame.get("data")
             if data is None:

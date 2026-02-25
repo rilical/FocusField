@@ -72,6 +72,12 @@ audio:
       diagonal_loading: 1.0e-3
       steering_update_deg: 5.0
       max_condition_number: 1.0e6
+      postfilter:
+        enabled: true
+        noise_ema_alpha: 0.97
+        speech_ema_alpha: 0.90
+        over_subtraction: 1.15
+        min_gain: 0.08
 
   denoise:
     enabled: true
@@ -145,6 +151,17 @@ fusion:
 
 bus:
   max_queue_depth: 12
+  topic_queue_depths:
+    audio.frames: 12
+    audio.vad: 16
+    audio.enhanced.beamformed: 12
+    audio.enhanced.final: 12
+    vision.frames.*: 4
+    vision.frames.cam0: 4
+    vision.frames.cam1: 4
+    vision.frames.cam2: 4
+    vision.face_tracks: 4
+    runtime.perf: 8
 
 logging:
   level: info

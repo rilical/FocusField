@@ -1,0 +1,10 @@
+scenes:
+  - scene_id: quiet_office
+    description: Single speaker in quiet office with low ambient noise.
+    target_angle_deg: 0
+    interferer_angle_deg: 120
+    target_reference_wav: bench_scenes/data/quiet_office_target.wav
+    interferer_reference_wav: bench_scenes/data/quiet_office_interferer.wav
+    reference_text: "please review the quarterly report before end of day"
+    baseline_text: ""
+    candidate_text: ""

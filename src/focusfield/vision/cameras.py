@@ -112,6 +112,9 @@ def _camera_loop(
         if fail_fast:
             stop_event.set()
         return
+
+    fps = max(1.0, float(fps))
+    frame_period_s = 1.0 / fps
     try:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     except Exception:  # noqa: BLE001
@@ -120,6 +123,7 @@ def _camera_loop(
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     cap.set(cv2.CAP_PROP_FPS, fps)
     seq = 0
+    next_deadline_s = time.perf_counter()
     while not stop_event.is_set():
         ok, frame = cap.read()
         if not ok:
@@ -141,6 +145,12 @@ def _camera_loop(
             "device_path": str(device_path) if device_path else None,
         }
         bus.publish(topic, msg)
+        next_deadline_s += frame_period_s
+        sleep_s = next_deadline_s - time.perf_counter()
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+        else:
+            next_deadline_s = time.perf_counter()
     cap.release()
 
 

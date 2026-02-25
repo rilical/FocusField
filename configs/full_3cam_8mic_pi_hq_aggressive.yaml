@@ -23,8 +23,8 @@ trace:
 health:
   enabled: true
   thresholds_ms:
-    audio_frames: 200
-    enhanced_final: 300
+    audio_frames: 180
+    enhanced_final: 220
     face_tracks: 1000
     camera_frame: 1000
 perf:
@@ -43,10 +43,12 @@ bench:
 audio:
   channels: 8
   sample_rate_hz: 48000
-  block_size: 2048
+  block_size: 1024
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
+    queue_depth: 64
+    stats_emit_hz: 1
   device_selector:
     match_substring: miniDSP
     require_input_channels: 8
@@ -59,29 +61,34 @@ audio:
     method: srp_phat
     bins: 72
     update_hz: 10
+    freq_low_hz: 200
+    freq_high_hz: 4500
+    continuity_weight: 0.2
+    continuity_sigma_bins: 5.0
+    max_jump_deg: 55.0
   beamformer:
     method: mvdr
     no_lock_behavior: omni
     use_last_lock_ms: 800
-    steering_smoothing_alpha: 0.85
+    steering_smoothing_alpha: 0.88
     channel_weights:
       enabled: true
-      spatial_exponent: 2.0
+      spatial_exponent: 2.2
       dead_rms_threshold: 1.0e-05
       min_snr_db: 3.0
       max_snr_db: 18.0
       max_clip_fraction: 0.01
     noise_reference:
-      ref_threshold: 0.2
+      ref_threshold: 0.22
       update_when_speaking: true
     mvdr:
       nfft: 1024
-      refresh_ms: 250
-      noise_ema_alpha: 0.95
+      refresh_ms: 180
+      noise_ema_alpha: 0.96
       diagonal_loading: 0.001
-      steering_update_deg: 5.0
+      steering_update_deg: 3.5
       max_condition_number: 1.0e6
-      weight_interp_alpha: 0.35
+      weight_interp_alpha: 0.45
       speech_freeze_covariance: true
       freq_low_hz: 150
       freq_high_hz: 4600
@@ -97,15 +104,16 @@ audio:
     wiener:
       g_min: 0.05
       noise_ema_alpha: 0.98
+      nfft: 1024
     rnnoise:
       model_path: ''
-      strength: 0.65
+      strength: 0.72
       min_gain: 0.08
       noise_ema_alpha: 0.98
-      gain_ema_alpha: 0.85
+      gain_ema_alpha: 0.86
       nfft: 1024
     hybrid:
-      postfilter_strength: 0.5
+      postfilter_strength: 0.65
   sync:
     enabled: true
     drift_check:
@@ -181,18 +189,18 @@ fusion:
   vad_max_age_ms: 500
   require_speaking: true
 bus:
-  max_queue_depth: 32
+  max_queue_depth: 24
   topic_queue_depths:
     audio.frames: 24
     audio.vad: 64
-    audio.enhanced.beamformed: 64
-    audio.enhanced.final: 64
+    audio.enhanced.beamformed: 48
+    audio.enhanced.final: 48
+    runtime.perf: 16
     vision.frames.*: 4
     vision.frames.cam0: 4
     vision.frames.cam1: 4
     vision.frames.cam2: 4
     vision.face_tracks: 4
-    runtime.perf: 16
 logging:
   level: info
   file:

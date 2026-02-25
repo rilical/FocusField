@@ -1,0 +1,10 @@
+scenes:
+  - scene_id: tv_noise
+    description: Target speaker with active TV as directional interferer.
+    target_angle_deg: 340
+    interferer_angle_deg: 100
+    target_reference_wav: bench_scenes/data/tv_noise_target.wav
+    interferer_reference_wav: bench_scenes/data/tv_noise_tv.wav
+    reference_text: "the deployment window starts at nine tonight"
+    baseline_text: ""
+    candidate_text: ""

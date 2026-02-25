@@ -189,18 +189,19 @@ fusion:
   vad_max_age_ms: 500
   require_speaking: true
 bus:
-  max_queue_depth: 32
+  max_queue_depth: 96
   topic_queue_depths:
     audio.frames: 24
     audio.vad: 64
     audio.enhanced.beamformed: 64
     audio.enhanced.final: 64
     runtime.perf: 16
-    vision.frames.*: 4
-    vision.frames.cam0: 4
-    vision.frames.cam1: 4
-    vision.frames.cam2: 4
-    vision.face_tracks: 4
+    vision.frames.*: 16
+    vision.frames.cam0: 16
+    vision.frames.cam1: 16
+    vision.frames.cam2: 16
+    vision.face_tracks: 16
+    fusion.target_lock: 96
 logging:
   level: info
   file:
@@ -213,9 +214,9 @@ output:
     dir: artifacts
     write_raw_multich: true
 uma8_leds:
-  enabled: false
+  enabled: true
   enabled_fallback: true
-  backend: simulate
+  backend: hid
   ring_size: 12
   update_hz: 12
   base_bearing_offset_deg: 0.0
@@ -237,6 +238,6 @@ uma8_leds:
   vendor_id: 10066
   product_id: 28
 ui:
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 8080
   telemetry_hz: 10

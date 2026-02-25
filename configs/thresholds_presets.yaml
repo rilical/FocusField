@@ -11,6 +11,19 @@ aggressive:
   min_switch_interval_ms: 350
   bearing_smoothing_alpha: 0.6
 
+hybrid_low_latency:
+  acquire_threshold: 0.48
+  acquire_timeout_ms: 500
+  hold_ms: 450
+  handoff_min_ms: 300
+  drop_threshold: 0.30
+  speak_on_threshold: 0.45
+  speak_off_threshold: 0.35
+  min_on_frames: 1
+  min_off_frames: 2
+  min_switch_interval_ms: 250
+  bearing_smoothing_alpha: 0.55
+
 balanced:
   acquire_threshold: 0.65
   acquire_timeout_ms: 500

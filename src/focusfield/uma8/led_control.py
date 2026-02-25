@@ -1,7 +1,7 @@
 """UMA-8 LED visualizer service.
 
-This module is intentionally non-fatal. If LED transport cannot initialize,
-the pipeline continues and emits structured warning events.
+By default this module is non-fatal and gracefully falls back to simulation.
+When `uma8_leds.strict_transport=true`, transport failures are fatal.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ _NO_LOCK_STATES = {"NO_LOCK"}
 class LedState:
     enabled: bool
     backend: str
+    preferred_backend: str
     state: str
     source_bearing_deg: Optional[float]
     smoothed_bearing_deg: Optional[float]
@@ -34,6 +35,8 @@ class LedState:
     rgb: Tuple[int, int, int]
     ring_size: int
     base_bearing_offset_deg: float
+    transport_error: str
+    device_count: Optional[int]
 
 
 class Uma8LedTransport:
@@ -311,6 +314,7 @@ def compute_led_state(
     return LedState(
         enabled=True,
         backend=str(cfg.get("backend", "simulate") or "simulate"),
+        preferred_backend=str(cfg.get("backend", "simulate") or "simulate"),
         state=state,
         source_bearing_deg=source_bearing,
         smoothed_bearing_deg=smoothed_bearing_deg,
@@ -321,6 +325,8 @@ def compute_led_state(
         rgb=rgb,
         ring_size=ring_size,
         base_bearing_offset_deg=base_offset,
+        transport_error="",
+        device_count=None,
     )
 
 
@@ -341,6 +347,7 @@ def _state_payload(led_state: LedState) -> Dict[str, Any]:
         "t_ns": now_ns(),
         "enabled": led_state.enabled,
         "backend": led_state.backend,
+        "preferred_backend": led_state.preferred_backend,
         "state": led_state.state,
         "source_bearing_deg": led_state.source_bearing_deg,
         "smoothed_bearing_deg": led_state.smoothed_bearing_deg,
@@ -351,19 +358,26 @@ def _state_payload(led_state: LedState) -> Dict[str, Any]:
         "rgb": list(led_state.rgb),
         "ring_size": led_state.ring_size,
         "base_bearing_offset_deg": led_state.base_bearing_offset_deg,
+        "transport_error": led_state.transport_error,
+        "device_count": led_state.device_count,
     }
 
 
-def _init_transport(cfg: Dict[str, Any], logger: Any) -> Uma8LedTransport:
+def _init_transport(cfg: Dict[str, Any], logger: Any, strict_transport: bool = False) -> Uma8LedTransport:
     preferred = str(cfg.get("backend", "simulate") or "simulate").strip().lower()
     fallback_enabled = bool(cfg.get("enabled_fallback", True))
+    last_error = ""
+    last_device_count: Optional[int] = None
 
-    candidates: List[str] = [preferred]
-    if fallback_enabled:
-        if preferred == "hid":
-            candidates.extend(["simulate", "none"])
-        elif preferred == "simulate":
-            candidates.append("none")
+    if strict_transport:
+        candidates: List[str] = [preferred]
+    else:
+        candidates = [preferred]
+        if fallback_enabled:
+            if preferred == "hid":
+                candidates.extend(["simulate", "none"])
+            elif preferred == "simulate":
+                candidates.append("none")
 
     seen = set()
     ordered_candidates: List[str] = []
@@ -376,6 +390,12 @@ def _init_transport(cfg: Dict[str, Any], logger: Any) -> Uma8LedTransport:
     for backend in ordered_candidates:
         transport = build_transport({**cfg, "backend": backend})
         if transport.open():
+            transport_error = ""
+            if backend != preferred:
+                transport_error = last_error
+            setattr(transport, "_ff_transport_error", transport_error)
+            setattr(transport, "_ff_device_count", last_device_count if last_device_count is not None else getattr(transport, "last_device_count", None))
+            setattr(transport, "_ff_preferred_backend", preferred)
             logger.emit(
                 "info",
                 "uma8_leds",
@@ -386,7 +406,22 @@ def _init_transport(cfg: Dict[str, Any], logger: Any) -> Uma8LedTransport:
                     "product_id": int(cfg.get("product_id", 0x001C) or 0x001C),
                 },
             )
+            if preferred == "hid" and backend == "simulate":
+                logger.emit(
+                    "warning",
+                    "uma8_leds",
+                    "transport_switched",
+                    {
+                        "from_backend": "hid",
+                        "to_backend": "simulate",
+                        "reason": "init_open_failed",
+                        "error": transport_error,
+                        "device_count": getattr(transport, "_ff_device_count", None),
+                    },
+                )
             return transport
+        last_error = str(getattr(transport, "last_error", "") or "")
+        last_device_count = getattr(transport, "last_device_count", None)
         logger.emit(
             "warning",
             "uma8_leds",
@@ -398,9 +433,33 @@ def _init_transport(cfg: Dict[str, Any], logger: Any) -> Uma8LedTransport:
                 "device_count": getattr(transport, "last_device_count", None),
             },
         )
+        if strict_transport and backend == preferred:
+            logger.emit(
+                "error",
+                "uma8_leds",
+                "transport_required_failed",
+                {
+                    "backend": backend,
+                    "reason": "open_failed",
+                    "error": str(getattr(transport, "last_error", "") or ""),
+                    "device_count": getattr(transport, "last_device_count", None),
+                },
+            )
+            raise RuntimeError(
+                f"UMA8 strict transport failed to initialize backend={backend}: "
+                f"{str(getattr(transport, 'last_error', '') or 'open_failed')}"
+            )
 
     fallback = NoopTransport()
     fallback.open()
+    setattr(fallback, "_ff_transport_error", last_error)
+    setattr(fallback, "_ff_device_count", last_device_count)
+    setattr(fallback, "_ff_preferred_backend", preferred)
+    if strict_transport:
+        raise RuntimeError(
+            f"UMA8 strict transport failed; backend={preferred} unavailable: "
+            f"{str(last_error or 'all_backends_failed')}"
+        )
     logger.emit(
         "warning",
         "uma8_leds",
@@ -429,6 +488,7 @@ def start_uma8_led_service(
     update_hz = max(1.0, update_hz)
     period = 1.0 / update_hz
     smoothing_alpha = _clamp01(float(cfg.get("smoothing_alpha", 0.35) or 0.35))
+    strict_transport = bool(cfg.get("strict_transport", False))
 
     q_lock = bus.subscribe("fusion.target_lock")
     q_doa = bus.subscribe("audio.doa_heatmap")
@@ -455,7 +515,7 @@ def start_uma8_led_service(
         },
     )
 
-    transport = _init_transport(cfg, logger)
+    transport = _init_transport(cfg, logger, strict_transport=strict_transport)
     fallback_enabled = bool(cfg.get("enabled_fallback", True))
 
     def _run() -> None:
@@ -468,6 +528,8 @@ def start_uma8_led_service(
         pulse_phase = 0.0
 
         nonlocal transport
+        preferred_backend = str(cfg.get("backend", "simulate") or "simulate").strip().lower()
+        switched_from_hid_warned = False
 
         try:
             while not stop_event.is_set():
@@ -536,15 +598,40 @@ def start_uma8_led_service(
                 )
                 # Report the actual active transport backend (hid/simulate/none) in telemetry.
                 led_state.backend = transport.backend
+                led_state.preferred_backend = str(getattr(transport, "_ff_preferred_backend", preferred_backend))
+                led_state.transport_error = str(getattr(transport, "_ff_transport_error", "") or "")
+                led_state.device_count = getattr(transport, "_ff_device_count", None)
 
                 sent = transport.send(led_state)
                 if not sent:
+                    send_error = str(getattr(transport, "last_error", "") or "send_failed")
+                    send_device_count = getattr(transport, "last_device_count", getattr(transport, "_ff_device_count", None))
                     logger.emit(
                         "warning",
                         "uma8_leds",
                         "transport_unavailable",
-                        {"backend": transport.backend, "reason": "send_failed"},
+                        {
+                            "backend": transport.backend,
+                            "reason": "send_failed",
+                            "error": send_error,
+                            "device_count": send_device_count,
+                        },
                     )
+                    if strict_transport and transport.backend == preferred_backend:
+                        logger.emit(
+                            "error",
+                            "uma8_leds",
+                            "transport_required_failed",
+                            {
+                                "backend": transport.backend,
+                                "reason": "send_failed",
+                                "error": send_error,
+                                "device_count": send_device_count,
+                            },
+                        )
+                        raise RuntimeError(
+                            f"UMA8 strict transport send failed backend={transport.backend}: {send_error}"
+                        )
                     if fallback_enabled and transport.backend == "hid":
                         try:
                             transport.close()
@@ -554,6 +641,23 @@ def start_uma8_led_service(
                         if not transport.open():
                             transport = NoopTransport()
                             transport.open()
+                        setattr(transport, "_ff_transport_error", f"hid_send_failed:{send_error}")
+                        setattr(transport, "_ff_device_count", send_device_count)
+                        setattr(transport, "_ff_preferred_backend", preferred_backend)
+                        if not switched_from_hid_warned:
+                            logger.emit(
+                                "warning",
+                                "uma8_leds",
+                                "transport_switched",
+                                {
+                                    "from_backend": "hid",
+                                    "to_backend": transport.backend,
+                                    "reason": "send_failed",
+                                    "error": send_error,
+                                    "device_count": send_device_count,
+                                },
+                            )
+                            switched_from_hid_warned = True
                         logger.emit("info", "uma8_leds", "transport_init_ok", {"backend": transport.backend})
 
                 payload = _state_payload(led_state)
@@ -561,6 +665,8 @@ def start_uma8_led_service(
                 logger.emit("debug", "uma8_leds", "frame_sent", payload)
         except Exception as exc:  # noqa: BLE001
             logger.emit("warning", "uma8_leds", "disabled", {"reason": "thread_failure", "error": str(exc)})
+            if strict_transport:
+                raise
         finally:
             try:
                 transport.close()

@@ -247,6 +247,9 @@ To tune startup behavior, set these env vars before install so they are written 
 - `FOCUSFIELD_CAMERA_SOURCE` (default `by-path`)
 - `FOCUSFIELD_CAMERA_SCOPE` (default `usb`)
 - `FOCUSFIELD_ENABLE_UMA8_LEDS` (`true`/`false`, optional runtime override)
+- `OMP_NUM_THREADS` (default `1`, recommended on Pi)
+- `OPENBLAS_NUM_THREADS` (default `1`, recommended on Pi)
+- `MKL_NUM_THREADS` (default `1`, recommended on Pi)
 
 Example:
 
@@ -256,8 +259,13 @@ FOCUSFIELD_CAMERA_SCOPE=any \
 FOCUSFIELD_PRECHECK_RETRIES=30 \
 FOCUSFIELD_PRECHECK_DELAY_SECONDS=3 \
 FOCUSFIELD_ENABLE_UMA8_LEDS=true \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
 sudo scripts/install_systemd_service.sh focusfield /home/focus/FocusField/configs/full_3cam_working_local.yaml
 ```
+
+For latency-first Raspberry Pi operation, set `runtime.perf_profile: realtime_pi_max` in your active config.
 
 If strict boot keeps failing, inspect logs and confirm camera/audio contracts first:
 

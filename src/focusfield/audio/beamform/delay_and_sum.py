@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -87,76 +88,99 @@ def start_delay_and_sum(
         except queue.Empty:
             return
 
-    def _drain_latest() -> Optional[Dict[str, Any]]:
-        frame_msg = None
+    def _wait_and_drain_latest(q_in: queue.Queue, timeout_s: float = 0.05) -> Optional[Dict[str, Any]]:
+        try:
+            frame = q_in.get(timeout=timeout_s)
+        except queue.Empty:
+            return None
         try:
             while True:
-                frame_msg = q_frames.get_nowait()
+                frame = q_in.get_nowait()
         except queue.Empty:
             pass
-        return frame_msg
+        return frame
 
     def _run() -> None:
         nonlocal last_target, seq_out, debug_seq, last_debug_ns
+        idle_cycles = 0
+        processed_cycles = 0
+        next_stats_emit = time.time() + 1.0
         while not stop_event.is_set():
             _drain_lock()
-            frame_msg = _drain_latest()
+            frame_msg = _wait_and_drain_latest(q_frames, timeout_s=0.05)
             if frame_msg is None:
-                continue
-            data = frame_msg.get("data")
-            if data is None:
-                continue
-            frame = np.asarray(data)
-            if frame.ndim == 1:
-                frame = frame[:, None]
-            if frame.shape[1] < channel_order_arr.size:
-                continue
-            x = frame[:, channel_order_arr]
-            t_ns = int(frame_msg.get("t_ns", now_ns()))
-
-            target_bearing = _select_target_bearing(last_lock, t_ns, last_target, use_last_lock_ms)
-            if target_bearing is None:
-                y = _no_lock_output(x, behavior=no_lock_behavior)
-                logger.emit("debug", "audio.beamform.delay_and_sum", "no_lock", {"behavior": no_lock_behavior})
-                fallback_active = True
-                used_target = None
+                idle_cycles += 1
             else:
-                if last_target is None:
-                    smoothed = target_bearing
+                data = frame_msg.get("data")
+                if data is None:
+                    idle_cycles += 1
                 else:
-                    smoothed = _smooth_angle(last_target[0], target_bearing, steering_alpha)
-                last_target = (smoothed, t_ns)
-                y = _delay_and_sum(x, pos, smoothed, sample_rate)
-                fallback_active = False
-                used_target = float(smoothed)
+                    frame = np.asarray(data)
+                    if frame.ndim == 1:
+                        frame = frame[:, None]
+                    if frame.shape[1] < channel_order_arr.size:
+                        idle_cycles += 1
+                    else:
+                        x = frame[:, channel_order_arr]
+                        t_ns = int(frame_msg.get("t_ns", now_ns()))
 
-            if debug_period_ns > 0 and (t_ns - last_debug_ns) >= debug_period_ns:
-                debug_seq += 1
-                last_debug_ns = t_ns
+                        target_bearing = _select_target_bearing(last_lock, t_ns, last_target, use_last_lock_ms)
+                        if target_bearing is None:
+                            y = _no_lock_output(x, behavior=no_lock_behavior)
+                            logger.emit("debug", "audio.beamform.delay_and_sum", "no_lock", {"behavior": no_lock_behavior})
+                            fallback_active = True
+                            used_target = None
+                        else:
+                            if last_target is None:
+                                smoothed = target_bearing
+                            else:
+                                smoothed = _smooth_angle(last_target[0], target_bearing, steering_alpha)
+                            last_target = (smoothed, t_ns)
+                            y = _delay_and_sum(x, pos, smoothed, sample_rate)
+                            fallback_active = False
+                            used_target = float(smoothed)
+
+                        if debug_period_ns > 0 and (t_ns - last_debug_ns) >= debug_period_ns:
+                            debug_seq += 1
+                            last_debug_ns = t_ns
+                            bus.publish(
+                                "audio.beamformer.debug",
+                                {
+                                    "t_ns": t_ns,
+                                    "seq": debug_seq,
+                                    "method": "delay_and_sum",
+                                    "target_bearing_deg": used_target,
+                                    "fallback_active": bool(fallback_active),
+                                },
+                            )
+
+                        seq_out += 1
+                        msg = {
+                            "t_ns": t_ns,
+                            "seq": seq_out,
+                            "sample_rate_hz": int(frame_msg.get("sample_rate_hz", sample_rate)),
+                            "frame_samples": int(frame_msg.get("frame_samples", x.shape[0])),
+                            "channels": 1,
+                            "data": y.astype(np.float32),
+                            "stats": {
+                                "rms": float(np.sqrt(np.mean(y**2))) if y.size else 0.0,
+                            },
+                        }
+                        bus.publish("audio.enhanced.beamformed", msg)
+                        processed_cycles += 1
+
+            now_s = time.time()
+            if now_s >= next_stats_emit:
                 bus.publish(
-                    "audio.beamformer.debug",
+                    "runtime.worker_loop",
                     {
-                        "t_ns": t_ns,
-                        "seq": debug_seq,
-                        "method": "delay_and_sum",
-                        "target_bearing_deg": used_target,
-                        "fallback_active": bool(fallback_active),
+                        "t_ns": now_ns(),
+                        "module": "audio.beamform.delay_and_sum",
+                        "idle_cycles": int(idle_cycles),
+                        "processed_cycles": int(processed_cycles),
                     },
                 )
-
-            seq_out += 1
-            msg = {
-                "t_ns": t_ns,
-                "seq": seq_out,
-                "sample_rate_hz": int(frame_msg.get("sample_rate_hz", sample_rate)),
-                "frame_samples": int(frame_msg.get("frame_samples", x.shape[0])),
-                "channels": 1,
-                "data": y.astype(np.float32),
-                "stats": {
-                    "rms": float(np.sqrt(np.mean(y**2))) if y.size else 0.0,
-                },
-            }
-            bus.publish("audio.enhanced.beamformed", msg)
+                next_stats_emit = now_s + 1.0
 
     thread = threading.Thread(target=_run, name="beamform-delay-sum", daemon=True)
     thread.start()

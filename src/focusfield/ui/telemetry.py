@@ -61,6 +61,7 @@ def start_telemetry(
     q_beam = bus.subscribe("audio.beamformer.debug")
     q_health = bus.subscribe("runtime.health")
     q_perf = bus.subscribe("runtime.perf")
+    q_vad = bus.subscribe("audio.vad")
     configured_cameras = [
         cam.get("id", f"cam{idx}")
         for idx, cam in enumerate(config.get("video", {}).get("cameras", []))
@@ -72,6 +73,7 @@ def start_telemetry(
             "device_path": str(cam.get("device_path", "") or ""),
             "device_index": cam.get("device_index"),
             "yaw_offset_deg": float(cam.get("yaw_offset_deg", 0.0) or 0.0),
+            "hfov_deg": float(cam.get("hfov_deg", 0.0) or 0.0),
         }
         for idx, cam in enumerate(config.get("video", {}).get("cameras", []))
         if isinstance(cam, dict)
@@ -87,6 +89,7 @@ def start_telemetry(
         "beam": None,
         "health": None,
         "perf": None,
+        "vad": None,
         "configured_cameras": configured_cameras,
         "configured_camera_map": configured_camera_map,
     }
@@ -130,6 +133,9 @@ def start_telemetry(
             perf_msg = _drain(q_perf)
             if perf_msg is not None:
                 state["perf"] = perf_msg
+            vad_msg = _drain(q_vad)
+            if vad_msg is not None:
+                state["vad"] = vad_msg
             log_event = _drain(q_logs)
             if log_event is not None:
                 logs: List[Dict[str, Any]] = state["logs"]
@@ -155,6 +161,25 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     lock_state = state.get("lock") or {}
     led_state = state.get("uma8_leds") or {}
     faces = state.get("faces") or []
+    vad_state = state.get("vad") or {}
+    logs: List[Dict[str, Any]] = state.get("logs", [])
+    no_candidates: Dict[str, Any] = {}
+    for event in reversed(logs):
+        if not isinstance(event, dict):
+            continue
+        ctx = event.get("context") or {}
+        if not isinstance(ctx, dict):
+            continue
+        if ctx.get("module") == "fusion.av_association" and ctx.get("event") == "no_candidates":
+            details = ctx.get("details") or {}
+            if isinstance(details, dict):
+                no_candidates = details
+            break
+    peaks = heatmap.get("peaks", [])
+    top_peak_score = 0.0
+    if isinstance(peaks, list) and peaks and isinstance(peaks[0], dict):
+        top_peak_score = float(peaks[0].get("score", 0.0) or 0.0)
+    doa_confidence = float(heatmap.get("confidence", 0.0) or 0.0)
     active_face_cameras = sorted({face.get("camera_id") for face in faces if face.get("camera_id")})
     configured_cameras = [str(cam) for cam in (state.get("configured_cameras") or [])]
     cameras = configured_cameras if configured_cameras else active_face_cameras
@@ -192,6 +217,8 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
         "uma8_leds": {
             "enabled": bool(led_state.get("enabled", False)),
             "backend": led_state.get("backend", "none"),
+            "active_backend": led_state.get("backend", "none"),
+            "preferred_backend": led_state.get("preferred_backend", led_state.get("backend", "none")),
             "state": led_state.get("state", "NO_LOCK"),
             "sector": led_state.get("sector"),
             "sectors": led_state.get("sectors", []),
@@ -199,10 +226,20 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "rgb": led_state.get("rgb", [0, 0, 0]),
             "mapped_bearing_deg": led_state.get("mapped_bearing_deg"),
             "base_bearing_offset_deg": led_state.get("base_bearing_offset_deg", 0.0),
+            "transport_error": led_state.get("transport_error", ""),
+            "device_count": led_state.get("device_count"),
+        },
+        "fusion_debug": {
+            "no_candidate_reason": no_candidates.get("reason", lock_state.get("reason", "")),
+            "faces_present": bool(no_candidates.get("faces_present", bool(faces))),
+            "faces_fresh": bool(no_candidates.get("faces_fresh", bool(faces))),
+            "vad_speech": bool(vad_state.get("speech", False)),
+            "doa_confidence": doa_confidence,
+            "doa_peak_score": top_peak_score,
         },
         "health_summary": state.get("health") or {},
         "perf_summary": state.get("perf") or {},
-        "logs": state.get("logs", []),
+        "logs": logs,
         "meta": {
             "cameras": cameras,
             "active_face_cameras": active_face_cameras,

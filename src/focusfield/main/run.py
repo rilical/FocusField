@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import sys
 import threading
@@ -63,6 +64,47 @@ from focusfield.platform.hardware_probe import normalize_camera_scope, try_open_
 from focusfield.vision.cameras import start_cameras
 from focusfield.vision.speaker_heatmap import start_speaker_heatmap
 from focusfield.vision.tracking.face_track import start_face_tracking
+
+
+def _apply_runtime_thread_caps(config: Dict[str, Any], logger: LogEmitter) -> None:
+    runtime_cfg = config.get("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+    perf_profile = str(runtime_cfg.get("perf_profile", "default") or "default").strip().lower()
+    if perf_profile != "realtime_pi_max":
+        return
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    try:
+        import cv2  # type: ignore
+
+        cv2.setNumThreads(1)
+        logger.emit(
+            "info",
+            "main.run",
+            "thread_caps_applied",
+            {
+                "perf_profile": perf_profile,
+                "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS"),
+                "OPENBLAS_NUM_THREADS": os.environ.get("OPENBLAS_NUM_THREADS"),
+                "MKL_NUM_THREADS": os.environ.get("MKL_NUM_THREADS"),
+                "opencv_threads": 1,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.emit(
+            "warning",
+            "main.run",
+            "thread_caps_partial",
+            {
+                "perf_profile": perf_profile,
+                "error": str(exc),
+                "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS"),
+                "OPENBLAS_NUM_THREADS": os.environ.get("OPENBLAS_NUM_THREADS"),
+                "MKL_NUM_THREADS": os.environ.get("MKL_NUM_THREADS"),
+            },
+        )
 
 
 def _start_beamformed_passthrough(bus: Bus, logger: LogEmitter, stop_event: threading.Event) -> threading.Thread:
@@ -441,6 +483,7 @@ def main() -> None:
         logger.emit("warning", "core.bus", "queue_full", {"topic": topic, "depth": depth})
 
     bus.set_drop_handler(_on_drop)
+    _apply_runtime_thread_caps(config, logger)
 
     crash_event, crash_info = _install_crash_handlers(bus, run_dir, config, logger, stop_event)
 

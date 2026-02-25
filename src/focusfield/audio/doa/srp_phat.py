@@ -60,6 +60,7 @@ from __future__ import annotations
 import math
 import queue
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -236,8 +237,11 @@ def start_srp_phat(
         return None
     q = bus.subscribe("audio.frames")
 
-    def _drain_latest(q_in: queue.Queue) -> Optional[Dict[str, Any]]:
-        frame = None
+    def _wait_and_drain_latest(q_in: queue.Queue, timeout_s: float = 0.05) -> Optional[Dict[str, Any]]:
+        try:
+            frame = q_in.get(timeout=timeout_s)
+        except queue.Empty:
+            return None
         try:
             while True:
                 frame = q_in.get_nowait()
@@ -246,16 +250,32 @@ def start_srp_phat(
         return frame
 
     def _run() -> None:
+        idle_cycles = 0
+        processed_cycles = 0
+        next_stats_emit = time.time() + 1.0
         while not stop_event.is_set():
-            frame = _drain_latest(q)
+            frame = _wait_and_drain_latest(q)
             if frame is None:
-                continue
-            msg = estimator.update(frame)
-            if msg is None:
-                continue
-            if msg.get("confidence", 0.0) < estimator.min_confidence:
-                logger.emit("debug", "audio.doa.srp_phat", "doa_low_confidence", {"confidence": msg.get("confidence", 0.0)})
-            bus.publish("audio.doa_heatmap", msg)
+                idle_cycles += 1
+            else:
+                msg = estimator.update(frame)
+                if msg is not None:
+                    if msg.get("confidence", 0.0) < estimator.min_confidence:
+                        logger.emit("debug", "audio.doa.srp_phat", "doa_low_confidence", {"confidence": msg.get("confidence", 0.0)})
+                    bus.publish("audio.doa_heatmap", msg)
+                    processed_cycles += 1
+            now_s = time.time()
+            if now_s >= next_stats_emit:
+                bus.publish(
+                    "runtime.worker_loop",
+                    {
+                        "t_ns": now_ns(),
+                        "module": "audio.doa.srp_phat",
+                        "idle_cycles": int(idle_cycles),
+                        "processed_cycles": int(processed_cycles),
+                    },
+                )
+                next_stats_emit = now_s + 1.0
 
     thread = threading.Thread(target=_run, name="doa-srp-phat", daemon=True)
     thread.start()

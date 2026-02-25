@@ -2,6 +2,7 @@ build: full
 runtime:
   run_id: ''
   fail_fast: true
+  perf_profile: realtime_pi_max
   enable_validation: true
   requirements:
     strict: true
@@ -43,11 +44,11 @@ bench:
 audio:
   channels: 8
   sample_rate_hz: 48000
-  block_size: 1024
+  block_size: 1536
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
-    queue_depth: 12
+    queue_depth: 8
     stats_emit_hz: 1
   device_selector:
     match_substring: miniDSP
@@ -59,8 +60,8 @@ audio:
     min_speech_ratio: 0.3
   doa:
     method: srp_phat
-    bins: 24
-    update_hz: 4
+    bins: 18
+    update_hz: 3
     freq_low_hz: 200
     freq_high_hz: 4500
     continuity_weight: 0.18
@@ -124,9 +125,9 @@ video:
   - id: cam0
     device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.4:1.0-video-index0
     device_index: 0
-    width: 480
-    height: 270
-    fps: 10
+    width: 352
+    height: 198
+    fps: 7
     hfov_deg: 160
     yaw_offset_deg: 0
     bearing_model: linear
@@ -134,9 +135,9 @@ video:
   - id: cam1
     device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.1:1.0-video-index0
     device_index: 1
-    width: 480
-    height: 270
-    fps: 10
+    width: 352
+    height: 198
+    fps: 7
     hfov_deg: 160
     yaw_offset_deg: 120
     bearing_model: linear
@@ -144,26 +145,26 @@ video:
   - id: cam2
     device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.2:1.0-video-index0
     device_index: 2
-    width: 480
-    height: 270
-    fps: 10
+    width: 352
+    height: 198
+    fps: 7
     hfov_deg: 160
     yaw_offset_deg: 240
     bearing_model: linear
     bearing_lut_path: ''
 vision:
   face:
-    min_confidence: 0.6
+    min_confidence: 0.5
     iou_threshold: 0.3
-    max_missing_frames: 10
-    min_area: 520
-    min_neighbors: 3
+    max_missing_frames: 20
+    min_area: 420
+    min_neighbors: 2
     scale_factor: 1.1
-    detect_width: 320
-    detect_every_n: 1
+    detect_width: 256
+    detect_every_n: 2
   track:
     smoothing_alpha: 0.6
-    max_missing_frames: 10
+    max_missing_frames: 20
     min_age_frames: 2
   mouth:
     smoothing_alpha: 0.5
@@ -184,24 +185,32 @@ vision:
     top_k_peaks: 2
     smoothing_alpha: 0.25
 fusion:
-  thresholds_preset: aggressive
+  thresholds_preset: hybrid_low_latency
+  audio_fallback:
+    enabled: true
+    min_doa_confidence: 0.35
+    min_peak_score: 0.22
+    score_mode: max
+    require_vad: false
+    allow_when_faces_missing: true
+    face_staleness_ms: 1200
   require_vad: false
   vad_max_age_ms: 500
   require_speaking: false
 bus:
   max_queue_depth: 24
   topic_queue_depths:
-    audio.frames: 32
-    audio.vad: 32
-    audio.enhanced.beamformed: 16
-    audio.enhanced.final: 16
+    audio.frames: 16
+    audio.vad: 16
+    audio.enhanced.beamformed: 12
+    audio.enhanced.final: 12
     runtime.perf: 8
-    vision.frames.*: 8
-    vision.frames.cam0: 8
-    vision.frames.cam1: 8
-    vision.frames.cam2: 8
+    vision.frames.*: 4
+    vision.frames.cam0: 4
+    vision.frames.cam1: 4
+    vision.frames.cam2: 4
     vision.face_tracks: 4
-    fusion.target_lock: 16
+    fusion.target_lock: 8
 logging:
   level: warning
   file:
@@ -216,6 +225,7 @@ output:
 uma8_leds:
   enabled: true
   enabled_fallback: true
+  strict_transport: false
   backend: hid
   doa_fallback_enabled: true
   doa_min_confidence: 0.05
@@ -243,4 +253,6 @@ uma8_leds:
 ui:
   host: 0.0.0.0
   port: 8080
-  telemetry_hz: 8
+  telemetry_hz: 3
+  frame_jpeg_quality: 65
+  frame_max_hz: 6

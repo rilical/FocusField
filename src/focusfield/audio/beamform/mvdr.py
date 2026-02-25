@@ -48,6 +48,7 @@ from __future__ import annotations
 import math
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -196,135 +197,166 @@ def start_mvdr(
             pass
         return item
 
+    def _wait_and_drain_latest_frame(q_in: queue.Queue, timeout_s: float = 0.05) -> Optional[Dict[str, Any]]:
+        try:
+            frame = q_in.get(timeout=timeout_s)
+        except queue.Empty:
+            return None
+        try:
+            while True:
+                frame = q_in.get_nowait()
+        except queue.Empty:
+            pass
+        return frame
+
     def _run() -> None:
         nonlocal last_lock, last_vad, last_target, last_debug_ns, debug_seq
+        idle_cycles = 0
+        processed_cycles = 0
+        next_stats_emit = time.time() + 1.0
         while not stop_event.is_set():
             last_lock = _drain_latest(q_lock) or last_lock
             last_vad = _drain_latest(q_vad) or last_vad
-            frame_msg = _drain_latest(q_frames)
+            frame_msg = _wait_and_drain_latest_frame(q_frames, timeout_s=0.05)
             if frame_msg is None:
-                continue
-            data = frame_msg.get("data")
-            if data is None:
-                continue
-            frame = np.asarray(data)
-            if frame.ndim == 1:
-                frame = frame[:, None]
-            if frame.shape[1] < state.channel_order.size:
-                continue
-
-            t_ns = int(frame_msg.get("t_ns", now_ns()))
-            x = frame[:, state.channel_order]
-            block_len = int(x.shape[0])
-            speech = bool(last_vad.get("speech")) if last_vad else False
-
-            target_bearing = _select_target_bearing(last_lock, t_ns, last_target, use_last_lock_ms)
-            if target_bearing is None:
-                y = _no_lock_output(x, behavior=no_lock_behavior)
-                state.last_fallback = True
-                gains = np.ones((x.shape[1],), dtype=np.float32)
-                g_spatial = np.ones((x.shape[1],), dtype=np.float32)
+                idle_cycles += 1
             else:
-                if last_target is None:
-                    smoothed = target_bearing
+                data = frame_msg.get("data")
+                if data is None:
+                    idle_cycles += 1
                 else:
-                    smoothed = _smooth_angle(last_target[0], target_bearing, steering_alpha)
-                last_target = (smoothed, t_ns)
+                    frame = np.asarray(data)
+                    if frame.ndim == 1:
+                        frame = frame[:, None]
+                    if frame.shape[1] < state.channel_order.size:
+                        idle_cycles += 1
+                    else:
+                        t_ns = int(frame_msg.get("t_ns", now_ns()))
+                        x = frame[:, state.channel_order]
+                        block_len = int(x.shape[0])
+                        speech = bool(last_vad.get("speech")) if last_vad else False
 
-                gains, g_spatial = _channel_gains(
-                    x,
-                    state.positions_xy,
-                    smoothed,
-                    state.noise_rms,
-                    weights_enabled,
-                    spatial_exponent,
-                    dead_rms_threshold,
-                    min_snr_db,
-                    max_snr_db,
-                    max_clip_fraction,
-                )
-                xw = x * gains[None, :]
+                        target_bearing = _select_target_bearing(last_lock, t_ns, last_target, use_last_lock_ms)
+                        if target_bearing is None:
+                            y = _no_lock_output(x, behavior=no_lock_behavior)
+                            state.last_fallback = True
+                            gains = np.ones((x.shape[1],), dtype=np.float32)
+                            g_spatial = np.ones((x.shape[1],), dtype=np.float32)
+                        else:
+                            if last_target is None:
+                                smoothed = target_bearing
+                            else:
+                                smoothed = _smooth_angle(last_target[0], target_bearing, steering_alpha)
+                            last_target = (smoothed, t_ns)
 
-                # Update per-channel noise rms.
-                _update_noise_rms(state.noise_rms, x, speech, noise_ema_alpha, update_when_speaking, g_spatial, ref_threshold)
+                            gains, g_spatial = _channel_gains(
+                                x,
+                                state.positions_xy,
+                                smoothed,
+                                state.noise_rms,
+                                weights_enabled,
+                                spatial_exponent,
+                                dead_rms_threshold,
+                                min_snr_db,
+                                max_snr_db,
+                                max_clip_fraction,
+                            )
+                            xw = x * gains[None, :]
 
-                # Update noise covariance.
-                x_fft = np.fft.rfft(xw, n=state.nfft, axis=0)
-                if not (speech_freeze_covariance and speech):
-                    _update_noise_covariance(
-                        state,
-                        x_fft,
-                        speech,
-                        noise_ema_alpha,
-                        update_when_speaking,
-                        g_spatial,
-                        ref_threshold,
-                    )
+                            # Update per-channel noise rms.
+                            _update_noise_rms(state.noise_rms, x, speech, noise_ema_alpha, update_when_speaking, g_spatial, ref_threshold)
 
-                y = _mvdr_apply(
-                    state,
-                    x_fft,
-                    smoothed,
-                    block_len,
-                    t_ns,
-                    refresh_ms,
-                    diagonal_loading,
-                    steering_update_deg,
-                    max_cond,
-                    weight_interp_alpha,
-                    logger,
-                )
+                            # Update noise covariance.
+                            x_fft = np.fft.rfft(xw, n=state.nfft, axis=0)
+                            if not (speech_freeze_covariance and speech):
+                                _update_noise_covariance(
+                                    state,
+                                    x_fft,
+                                    speech,
+                                    noise_ema_alpha,
+                                    update_when_speaking,
+                                    g_spatial,
+                                    ref_threshold,
+                                )
 
-            pf_stats = {"enabled": bool(pf_enabled), "gain_mean": 1.0}
-            if pf_enabled and y.size > 0:
-                y, pf_gain_mean = _mvdr_postfilter_block(
-                    state=state,
-                    y=y,
-                    speech=bool(speech),
-                    noise_ema_alpha=pf_noise_ema_alpha,
-                    speech_ema_alpha=pf_speech_ema_alpha,
-                    over_subtraction=pf_over_subtraction,
-                    min_gain=pf_min_gain,
-                )
-                pf_stats["gain_mean"] = float(pf_gain_mean)
+                            y = _mvdr_apply(
+                                state,
+                                x_fft,
+                                smoothed,
+                                block_len,
+                                t_ns,
+                                refresh_ms,
+                                diagonal_loading,
+                                steering_update_deg,
+                                max_cond,
+                                weight_interp_alpha,
+                                logger,
+                            )
 
-            used_target = float(last_target[0]) if (target_bearing is not None and last_target is not None) else None
-            fallback_active = bool(target_bearing is None) or bool(state.last_fallback)
-            weights_age_ms = (t_ns - state.weights_t_ns) / 1_000_000.0 if state.weights_t_ns else None
-            if debug_period_ns > 0 and (t_ns - last_debug_ns) >= debug_period_ns:
-                debug_seq += 1
-                last_debug_ns = t_ns
-                ref_mask = (g_spatial < ref_threshold).astype(bool).tolist() if g_spatial is not None else []
+                        pf_stats = {"enabled": bool(pf_enabled), "gain_mean": 1.0}
+                        if pf_enabled and y.size > 0:
+                            y, pf_gain_mean = _mvdr_postfilter_block(
+                                state=state,
+                                y=y,
+                                speech=bool(speech),
+                                noise_ema_alpha=pf_noise_ema_alpha,
+                                speech_ema_alpha=pf_speech_ema_alpha,
+                                over_subtraction=pf_over_subtraction,
+                                min_gain=pf_min_gain,
+                            )
+                            pf_stats["gain_mean"] = float(pf_gain_mean)
+
+                        used_target = float(last_target[0]) if (target_bearing is not None and last_target is not None) else None
+                        fallback_active = bool(target_bearing is None) or bool(state.last_fallback)
+                        weights_age_ms = (t_ns - state.weights_t_ns) / 1_000_000.0 if state.weights_t_ns else None
+                        if debug_period_ns > 0 and (t_ns - last_debug_ns) >= debug_period_ns:
+                            debug_seq += 1
+                            last_debug_ns = t_ns
+                            ref_mask = (g_spatial < ref_threshold).astype(bool).tolist() if g_spatial is not None else []
+                            bus.publish(
+                                "audio.beamformer.debug",
+                                {
+                                    "t_ns": t_ns,
+                                    "seq": debug_seq,
+                                    "method": "mvdr",
+                                    "target_bearing_deg": used_target,
+                                    "gains": gains.astype(np.float32).tolist() if gains is not None else [],
+                                    "g_spatial": g_spatial.astype(np.float32).tolist() if g_spatial is not None else [],
+                                    "ref_mask": ref_mask,
+                                    "mvdr_condition_number": float(state.weights_cond) if state.weights_cond is not None else None,
+                                    "weights_age_ms": float(weights_age_ms) if weights_age_ms is not None else None,
+                                    "fallback_active": bool(fallback_active),
+                                    "postfilter": pf_stats,
+                                },
+                            )
+
+                        state.seq_out += 1
+                        msg = {
+                            "t_ns": t_ns,
+                            "seq": int(state.seq_out),
+                            "sample_rate_hz": int(frame_msg.get("sample_rate_hz", state.sample_rate)),
+                            "frame_samples": int(y.shape[0]),
+                            "channels": 1,
+                            "data": y.astype(np.float32),
+                            "stats": {
+                                "rms": float(np.sqrt(np.mean(y**2))) if y.size else 0.0,
+                            },
+                        }
+                        bus.publish("audio.enhanced.beamformed", msg)
+                        processed_cycles += 1
+
+            now_s = time.time()
+            if now_s >= next_stats_emit:
                 bus.publish(
-                    "audio.beamformer.debug",
+                    "runtime.worker_loop",
                     {
-                        "t_ns": t_ns,
-                        "seq": debug_seq,
-                        "method": "mvdr",
-                        "target_bearing_deg": used_target,
-                        "gains": gains.astype(np.float32).tolist() if gains is not None else [],
-                        "g_spatial": g_spatial.astype(np.float32).tolist() if g_spatial is not None else [],
-                        "ref_mask": ref_mask,
-                        "mvdr_condition_number": float(state.weights_cond) if state.weights_cond is not None else None,
-                        "weights_age_ms": float(weights_age_ms) if weights_age_ms is not None else None,
-                        "fallback_active": bool(fallback_active),
-                        "postfilter": pf_stats,
+                        "t_ns": now_ns(),
+                        "module": "audio.beamform.mvdr",
+                        "idle_cycles": int(idle_cycles),
+                        "processed_cycles": int(processed_cycles),
                     },
                 )
-
-            state.seq_out += 1
-            msg = {
-                "t_ns": t_ns,
-                "seq": int(state.seq_out),
-                "sample_rate_hz": int(frame_msg.get("sample_rate_hz", state.sample_rate)),
-                "frame_samples": int(y.shape[0]),
-                "channels": 1,
-                "data": y.astype(np.float32),
-                "stats": {
-                    "rms": float(np.sqrt(np.mean(y**2))) if y.size else 0.0,
-                },
-            }
-            bus.publish("audio.enhanced.beamformed", msg)
+                next_stats_emit = now_s + 1.0
 
     thread = threading.Thread(target=_run, name="beamform-mvdr", daemon=True)
     thread.start()

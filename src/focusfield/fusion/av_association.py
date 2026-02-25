@@ -66,6 +66,10 @@ def start_av_association(
         fallback_cfg = {}
     fallback_enabled = bool(fallback_cfg.get("enabled", True))
     min_doa_confidence = float(fallback_cfg.get("min_doa_confidence", 0.35))
+    min_peak_score = float(fallback_cfg.get("min_peak_score", 0.22))
+    score_mode = str(fallback_cfg.get("score_mode", "max") or "max").strip().lower()
+    require_vad = bool(fallback_cfg.get("require_vad", False))
+    allow_when_faces_missing = bool(fallback_cfg.get("allow_when_faces_missing", True))
     face_staleness_ms = float(fallback_cfg.get("face_staleness_ms", 1200.0))
 
     vision_cfg = config.get("vision", {})
@@ -145,11 +149,25 @@ def start_av_association(
 
             # Vision missing/stale: optionally publish an audio-only candidate.
             candidates: List[Dict[str, Any]] = []
-            if fallback_enabled:
-                audio_cand = _build_audio_only_candidate(last_doa, last_vad, min_doa_confidence)
+            if fallback_enabled and allow_when_faces_missing:
+                audio_cand = _build_audio_only_candidate(
+                    last_doa,
+                    last_vad,
+                    min_doa_confidence=min_doa_confidence,
+                    min_peak_score=min_peak_score,
+                    score_mode=score_mode,
+                    require_vad=require_vad,
+                )
                 if audio_cand is not None:
                     candidates = [audio_cand]
             if not candidates:
+                doa_conf = 0.0
+                doa_peak = 0.0
+                if isinstance(last_doa, dict):
+                    doa_conf = float(last_doa.get("confidence", 0.0) or 0.0)
+                    peaks = last_doa.get("peaks") or []
+                    if isinstance(peaks, list) and peaks and isinstance(peaks[0], dict):
+                        doa_peak = float(peaks[0].get("score", 0.0) or 0.0)
                 logger.emit(
                     "debug",
                     "fusion.av_association",
@@ -158,6 +176,10 @@ def start_av_association(
                         "reason": "no_faces_audio_fallback",
                         "faces_fresh": bool(faces_fresh),
                         "faces_present": bool(faces_present),
+                        "vad_speech": bool((last_vad or {}).get("speech")),
+                        "doa_confidence": doa_conf,
+                        "doa_peak_score": doa_peak,
+                        "score_mode": score_mode,
                     },
                 )
             bus.publish("fusion.candidates", candidates)
@@ -244,24 +266,39 @@ def _build_audio_only_candidate(
     doa_heatmap: Optional[Dict[str, Any]],
     vad_state: Optional[Dict[str, Any]],
     min_doa_confidence: float,
+    min_peak_score: float,
+    score_mode: str,
+    require_vad: bool,
 ) -> Optional[Dict[str, Any]]:
     if doa_heatmap is None:
         return None
-    if vad_state is None or not bool(vad_state.get("speech")):
+    if require_vad and (vad_state is None or not bool(vad_state.get("speech"))):
         return None
     conf = float(doa_heatmap.get("confidence", 0.0) or 0.0)
-    if conf < float(min_doa_confidence):
-        return None
     peaks = doa_heatmap.get("peaks") or []
     if not isinstance(peaks, list) or not peaks:
         return None
     peak0 = peaks[0] if isinstance(peaks[0], dict) else {}
+    peak_score = float(peak0.get("score", 0.0) or 0.0)
     angle = peak0.get("angle_deg")
     if angle is None:
         return None
-    doa_peak_score = float(peak0.get("score", 0.0))
+
+    mode = str(score_mode or "max").strip().lower()
+    if mode == "confidence":
+        gate_ok = conf >= float(min_doa_confidence)
+        combined = conf
+    elif mode == "peak":
+        gate_ok = peak_score >= float(min_peak_score)
+        combined = peak_score
+    else:
+        gate_ok = (conf >= float(min_doa_confidence)) or (peak_score >= float(min_peak_score))
+        combined = max(conf, peak_score)
+    if not gate_ok:
+        return None
+
     bearing = float(angle) % 360.0
-    combined = max(0.0, min(1.0, conf))
+    combined = max(0.0, min(1.0, combined))
     return {
         "t_ns": now_ns(),
         "seq": int(doa_heatmap.get("seq", 0) or 0),
@@ -269,9 +306,10 @@ def _build_audio_only_candidate(
         "doa_peak_deg": bearing,
         "angular_distance_deg": 0.0,
         "score_components": {
-            "doa_peak_score": doa_peak_score,
-            "vad_confidence": float(vad_state.get("confidence", 0.0) or 0.0),
+            "doa_peak_score": peak_score,
+            "vad_confidence": float((vad_state or {}).get("confidence", 0.0) or 0.0),
             "doa_confidence": float(conf),
+            "score_mode": mode,
         },
         "combined_score": float(combined),
         "bearing_deg": bearing,

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -284,6 +285,9 @@ def start_face_tracking(
         return frame_msg
 
     def _run() -> None:
+        idle_cycles = 0
+        processed_cycles = 0
+        next_stats_emit = time.time() + 1.0
         while not stop_event.is_set():
             updated = False
             for camera_id, q in queues.items():
@@ -301,6 +305,23 @@ def start_face_tracking(
                 for tracks in latest_tracks.values():
                     merged.extend(tracks)
                 bus.publish("vision.face_tracks", merged)
+                processed_cycles += 1
+            else:
+                idle_cycles += 1
+                time.sleep(0.003)
+
+            now_s = time.time()
+            if now_s >= next_stats_emit:
+                bus.publish(
+                    "runtime.worker_loop",
+                    {
+                        "t_ns": now_ns(),
+                        "module": "vision.face_track",
+                        "idle_cycles": int(idle_cycles),
+                        "processed_cycles": int(processed_cycles),
+                    },
+                )
+                next_stats_emit = now_s + 1.0
 
     thread = threading.Thread(target=_run, name="face-track", daemon=True)
     thread.start()

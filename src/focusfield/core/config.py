@@ -71,6 +71,7 @@ def _default_config() -> Dict[str, Any]:
         "runtime": {
             "run_id": "",
             "fail_fast": True,
+            "perf_profile": "default",
             "enable_validation": False,
             "requirements": {
                 "strict": False,
@@ -89,10 +90,13 @@ def _default_config() -> Dict[str, Any]:
             "host": "0.0.0.0",
             "port": 8080,
             "telemetry_hz": 15,
+            "frame_jpeg_quality": 65,
+            "frame_max_hz": 6.0,
         },
         "uma8_leds": {
             "enabled": False,
             "enabled_fallback": True,
+            "strict_transport": False,
             "backend": "simulate",
             "ring_size": 12,
             "update_hz": 12.0,
@@ -174,6 +178,10 @@ def _default_config() -> Dict[str, Any]:
             "audio_fallback": {
                 "enabled": True,
                 "min_doa_confidence": 0.35,
+                "min_peak_score": 0.22,
+                "score_mode": "max",
+                "require_vad": False,
+                "allow_when_faces_missing": True,
                 "face_staleness_ms": 1200,
             },
             "require_vad": False,
@@ -299,6 +307,9 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     if not isinstance(req_cfg, dict):
         req_cfg = {}
     strict = bool(req_cfg.get("strict", False))
+    perf_profile = str(runtime_cfg.get("perf_profile", "default") or "default").strip().lower()
+    if perf_profile not in {"default", "realtime_pi_max"}:
+        errors.append("runtime.perf_profile must be one of: default, realtime_pi_max")
     min_cameras = int(req_cfg.get("min_cameras", 0) or 0)
     min_audio_channels = int(req_cfg.get("min_audio_channels", 0) or 0)
     camera_scope = str(req_cfg.get("camera_scope", "any") or "any").strip().lower()
@@ -339,6 +350,28 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             if depth_i <= 0:
                 errors.append(f"bus.topic_queue_depths.{topic} must be > 0")
 
+    ui_cfg = config.get("ui", {})
+    if ui_cfg is not None and not isinstance(ui_cfg, dict):
+        errors.append("ui must be a mapping when provided")
+        ui_cfg = {}
+    if isinstance(ui_cfg, dict):
+        if "frame_jpeg_quality" in ui_cfg:
+            try:
+                q = int(ui_cfg.get("frame_jpeg_quality", 65))
+            except Exception:
+                errors.append("ui.frame_jpeg_quality must be integer")
+            else:
+                if q < 1 or q > 100:
+                    errors.append("ui.frame_jpeg_quality must be in [1, 100]")
+        if "frame_max_hz" in ui_cfg:
+            try:
+                hz = float(ui_cfg.get("frame_max_hz", 6.0))
+            except Exception:
+                errors.append("ui.frame_max_hz must be numeric")
+            else:
+                if hz <= 0.0:
+                    errors.append("ui.frame_max_hz must be > 0")
+
     beam_cfg = audio_cfg.get("beamformer", {})
     if isinstance(beam_cfg, dict):
         mvdr_cfg = beam_cfg.get("mvdr", {})
@@ -354,8 +387,42 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         freq_high_hz = float(mvdr_cfg.get("freq_high_hz", 4800.0) or 4800.0)
         if freq_low_hz < 0.0:
             errors.append("audio.beamformer.mvdr.freq_low_hz must be >= 0")
-        if freq_high_hz <= freq_low_hz:
-            errors.append("audio.beamformer.mvdr.freq_high_hz must be > freq_low_hz")
+            if freq_high_hz <= freq_low_hz:
+                errors.append("audio.beamformer.mvdr.freq_high_hz must be > freq_low_hz")
+
+    fusion_cfg = config.get("fusion", {})
+    if fusion_cfg is not None and not isinstance(fusion_cfg, dict):
+        errors.append("fusion must be a mapping when provided")
+        fusion_cfg = {}
+    if isinstance(fusion_cfg, dict):
+        fallback_cfg = fusion_cfg.get("audio_fallback", {})
+        if fallback_cfg is not None and not isinstance(fallback_cfg, dict):
+            errors.append("fusion.audio_fallback must be a mapping when provided")
+            fallback_cfg = {}
+        if isinstance(fallback_cfg, dict):
+            for key in ("enabled", "require_vad", "allow_when_faces_missing"):
+                if key in fallback_cfg and not isinstance(fallback_cfg.get(key), bool):
+                    errors.append(f"fusion.audio_fallback.{key} must be bool")
+            for key in ("min_doa_confidence", "min_peak_score"):
+                if key in fallback_cfg:
+                    try:
+                        value = float(fallback_cfg.get(key))
+                    except Exception:
+                        errors.append(f"fusion.audio_fallback.{key} must be numeric")
+                        continue
+                    if not 0.0 <= value <= 1.0:
+                        errors.append(f"fusion.audio_fallback.{key} must be in [0, 1]")
+            if "face_staleness_ms" in fallback_cfg:
+                try:
+                    staleness = float(fallback_cfg.get("face_staleness_ms"))
+                except Exception:
+                    errors.append("fusion.audio_fallback.face_staleness_ms must be numeric")
+                else:
+                    if staleness <= 0.0:
+                        errors.append("fusion.audio_fallback.face_staleness_ms must be > 0")
+            score_mode = str(fallback_cfg.get("score_mode", "max") or "max").strip().lower()
+            if score_mode not in {"confidence", "peak", "max"}:
+                errors.append("fusion.audio_fallback.score_mode must be one of: confidence, peak, max")
 
     denoise_cfg = audio_cfg.get("denoise", {})
     if isinstance(denoise_cfg, dict):
@@ -430,6 +497,8 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         errors.append("uma8_leds must be a mapping when provided")
         uma8_cfg = {}
     if isinstance(uma8_cfg, dict):
+        if "strict_transport" in uma8_cfg and not isinstance(uma8_cfg.get("strict_transport"), bool):
+            errors.append("uma8_leds.strict_transport must be bool")
         backend = str(uma8_cfg.get("backend", "simulate") or "simulate").strip().lower()
         if backend not in {"hid", "simulate", "none"}:
             errors.append("uma8_leds.backend must be one of: hid, simulate, none")

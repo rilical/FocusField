@@ -24,7 +24,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from focusfield.core.clock import now_ns
 
@@ -53,6 +53,7 @@ def start_perf_monitor(
     q_audio = bus.subscribe("audio.frames")
     q_final = bus.subscribe("audio.enhanced.final")
     q_capture_stats = bus.subscribe("audio.capture.stats")
+    q_worker = bus.subscribe("runtime.worker_loop")
 
     stats: Dict[str, Any] = {
         "audio_frames": {"last_t_ns": 0, "count": 0},
@@ -64,6 +65,7 @@ def start_perf_monitor(
             "callback_overflow_drop": 0,
             "status_input_overflow": 0,
         },
+        "worker_loops": {},
     }
 
     def _drain_latest(q: queue.Queue) -> Optional[Dict[str, Any]]:
@@ -74,6 +76,17 @@ def start_perf_monitor(
         except queue.Empty:
             pass
         return item
+
+    def _drain_all(q: queue.Queue) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        try:
+            while True:
+                item = q.get_nowait()
+                if isinstance(item, dict):
+                    items.append(item)
+        except queue.Empty:
+            pass
+        return items
 
     def _run() -> None:
         fh = None
@@ -109,6 +122,15 @@ def start_perf_monitor(
                     stats["audio_capture"]["status_input_overflow"] = int(
                         cap_stats.get("status_input_overflow", 0) or 0
                     )
+                for worker in _drain_all(q_worker):
+                    module = str(worker.get("module", "") or "").strip()
+                    if not module:
+                        continue
+                    stats["worker_loops"][module] = {
+                        "t_ns": int(worker.get("t_ns", 0) or 0),
+                        "idle_cycles": int(worker.get("idle_cycles", 0) or 0),
+                        "processed_cycles": int(worker.get("processed_cycles", 0) or 0),
+                    }
 
                 now_s = time.time()
                 if now_s < next_emit:
@@ -147,6 +169,7 @@ def start_perf_monitor(
                     "audio_frames": dict(stats["audio_frames"]),
                     "enhanced_final": dict(stats["enhanced_final"]),
                     "audio_capture": dict(stats["audio_capture"]),
+                    "worker_loops": {module: dict(values) for module, values in stats["worker_loops"].items()},
                     "bus": bus_summary,
                 }
                 bus.publish("runtime.perf", snapshot)

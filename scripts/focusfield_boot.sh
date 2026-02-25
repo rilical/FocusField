@@ -9,6 +9,10 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+
 CONFIG_PATH="$1"
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python3"
 if [[ ! -x "$PYTHON_BIN" ]]; then

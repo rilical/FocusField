@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -109,8 +110,11 @@ def start_audio_vad(
     processor = VadProcessor(sample_rate, frame_ms, mode, min_ratio)
     q = bus.subscribe("audio.frames")
 
-    def _drain_latest(q_in: queue.Queue) -> Optional[Dict[str, Any]]:
-        frame = None
+    def _wait_and_drain_latest(q_in: queue.Queue, timeout_s: float = 0.05) -> Optional[Dict[str, Any]]:
+        try:
+            frame = q_in.get(timeout=timeout_s)
+        except queue.Empty:
+            return None
         try:
             while True:
                 frame = q_in.get_nowait()
@@ -119,15 +123,31 @@ def start_audio_vad(
         return frame
 
     def _run() -> None:
+        idle_cycles = 0
+        processed_cycles = 0
+        next_stats_emit = time.time() + 1.0
         while not stop_event.is_set():
-            frame = _drain_latest(q)
+            frame = _wait_and_drain_latest(q)
             if frame is None:
-                continue
-            data = frame.get("data")
-            if data is None:
-                continue
-            msg = processor.process(np.asarray(data))
-            bus.publish("audio.vad", msg)
+                idle_cycles += 1
+            else:
+                data = frame.get("data")
+                if data is not None:
+                    msg = processor.process(np.asarray(data))
+                    bus.publish("audio.vad", msg)
+                    processed_cycles += 1
+            now_s = time.time()
+            if now_s >= next_stats_emit:
+                bus.publish(
+                    "runtime.worker_loop",
+                    {
+                        "t_ns": now_ns(),
+                        "module": "audio.vad",
+                        "idle_cycles": int(idle_cycles),
+                        "processed_cycles": int(processed_cycles),
+                    },
+                )
+                next_stats_emit = now_s + 1.0
 
     thread = threading.Thread(target=_run, name="audio-vad", daemon=True)
     thread.start()

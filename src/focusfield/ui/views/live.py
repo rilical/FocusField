@@ -212,6 +212,9 @@ def live_page() -> str:
       <aside class="side-stack">
         <section class="panel heatmap">
           <canvas id="heatmapCanvas" width="280" height="280"></canvas>
+          <div id="calibrationHint" style="margin-top:8px;font-size:12px;opacity:0.7;text-align:center;">
+            Calibration: USB connector direction = 0° (cam0 reference)
+          </div>
         </section>
         <section class="panel lock-status">
           <h2>Target Lock</h2>
@@ -224,21 +227,26 @@ def live_page() -> str:
           <div class="row"><div>Target</div><div id="beamTarget">n/a</div></div>
           <div class="row"><div>Cond</div><div id="beamCond">n/a</div></div>
           <div class="row"><div>Status</div><div id="beamStatus">n/a</div></div>
+          <div class="row"><div>Fallback reason</div><div id="beamFallback">n/a</div></div>
           <div class="gain-bars" id="gainBars"></div>
         </section>
         <section class="panel health">
           <div class="row"><div>Health</div><div id="healthStatus">n/a</div></div>
           <div class="row"><div>Latency</div><div id="perfLatency">n/a</div></div>
+          <div class="row"><div>LED transport</div><div id="ledBackend">n/a</div></div>
+          <div id="ledError"></div>
           <div id="healthReasons"></div>
         </section>
       </aside>
     </main>
     <script>
-      const cameras = ["cam0", "cam1", "cam2"];
+      let cameras = ["cam0", "cam1", "cam2"];
       const cameraGrid = document.getElementById("cameraGrid");
       const tiles = {};
       const lastFacesByCamera = {};
       const lastFacesTsByCamera = {};
+      const cameraYawById = {};
+      const cameraHfovById = {};
       const FACE_HOLD_MS = 700;
 
       function ensureTile(cameraId) {
@@ -259,6 +267,8 @@ def live_page() -> str:
 
       function drawFrame(cameraId, faces, targetId) {
         const tile = ensureTile(cameraId);
+        const yaw = cameraYawById[cameraId];
+        tile.label.textContent = Number.isFinite(yaw) ? `${cameraId} @ ${Math.round(yaw)}°` : cameraId;
         const img = new Image();
         img.onload = () => {
           tile.canvas.width = img.naturalWidth;
@@ -298,14 +308,26 @@ def live_page() -> str:
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
         ctx.stroke();
         const cameraMap = (meta && meta.camera_map) ? meta.camera_map : [];
+        const targetTrackId = String(lock && lock.target_id ? lock.target_id : "");
+        const activeSourceCam = targetTrackId.startsWith("cam") ? targetTrackId.split("-")[0] : "";
         for (const cam of cameraMap) {
           const yaw = Number(cam.yaw_offset_deg ?? 0);
+          const hfov = Number(cam.hfov_deg ?? 0);
           const a = (yaw / 180.0) * Math.PI + Math.PI / 2;
+          if (Number.isFinite(hfov) && hfov > 0) {
+            const half = (hfov / 180.0) * Math.PI * 0.5;
+            ctx.strokeStyle = "rgba(47,126,126,0.28)";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius + 6, a - half, a + half);
+            ctx.stroke();
+          }
           const ox = cx + Math.cos(a) * (radius + 14);
           const oy = cy + Math.sin(a) * (radius + 14);
-          ctx.fillStyle = "#2f7e7e";
+          const isActiveSource = activeSourceCam && activeSourceCam === String(cam.id);
+          ctx.fillStyle = isActiveSource ? "#e35d2f" : "#2f7e7e";
           ctx.beginPath();
-          ctx.arc(ox, oy, 5, 0, Math.PI * 2);
+          ctx.arc(ox, oy, isActiveSource ? 7 : 5, 0, Math.PI * 2);
           ctx.fill();
           ctx.fillStyle = "#1f1b16";
           ctx.font = "11px IBM Plex Sans";
@@ -344,7 +366,7 @@ def live_page() -> str:
         }
       }
 
-      function renderBeamformer(beam) {
+      function renderBeamformer(beam, lock) {
         const bars = document.getElementById("gainBars");
         bars.innerHTML = "";
         if (!beam) {
@@ -352,6 +374,7 @@ def live_page() -> str:
           document.getElementById("beamTarget").textContent = "n/a";
           document.getElementById("beamCond").textContent = "n/a";
           document.getElementById("beamStatus").textContent = "n/a";
+          document.getElementById("beamFallback").textContent = lock?.reason || "n/a";
           return;
         }
         document.getElementById("beamMethod").textContent = beam.method || "n/a";
@@ -360,6 +383,7 @@ def live_page() -> str:
         const cond = beam.mvdr_condition_number;
         document.getElementById("beamCond").textContent = cond == null ? "n/a" : cond.toExponential(2);
         document.getElementById("beamStatus").textContent = beam.fallback_active ? "fallback" : "ok";
+        document.getElementById("beamFallback").textContent = beam.fallback_active ? (lock?.reason || "fallback") : "none";
         const gains = beam.gains || [];
         for (let i = 0; i < gains.length; i++) {
           const g = Math.max(0, Math.min(1, gains[i]));
@@ -375,11 +399,14 @@ def live_page() -> str:
         }
       }
 
-      function renderHealth(health, perf) {
+      function renderHealth(health, perf, leds) {
         const status = document.getElementById("healthStatus");
         const reasons = document.getElementById("healthReasons");
         const latency = document.getElementById("perfLatency");
+        const ledBackend = document.getElementById("ledBackend");
+        const ledError = document.getElementById("ledError");
         reasons.innerHTML = "";
+        ledError.textContent = "";
         if (!health) {
           status.textContent = "n/a";
         } else {
@@ -398,12 +425,33 @@ def live_page() -> str:
           const l = perf.enhanced_final.last_latency_ms;
           latency.textContent = l == null ? "n/a" : `${Math.round(l)}ms`;
         }
+        if (!leds) {
+          ledBackend.textContent = "n/a";
+        } else {
+          const active = leds.active_backend || leds.backend || "none";
+          const preferred = leds.preferred_backend || active;
+          ledBackend.textContent = `${active}${preferred && preferred !== active ? ` (pref ${preferred})` : ""}`;
+          if (leds.transport_error) {
+            ledError.textContent = `LED error: ${leds.transport_error}`;
+          }
+        }
       }
 
       async function update() {
         const response = await fetch(`/telemetry?ts=${Date.now()}`);
         if (!response.ok) return;
         const data = await response.json();
+        const cameraMap = (data.meta && Array.isArray(data.meta.camera_map)) ? data.meta.camera_map : [];
+        for (const cam of cameraMap) {
+          const id = String(cam.id || "");
+          if (!id) continue;
+          cameraYawById[id] = Number(cam.yaw_offset_deg ?? 0);
+          cameraHfovById[id] = Number(cam.hfov_deg ?? 0);
+        }
+        const metaCams = (data.meta && Array.isArray(data.meta.cameras)) ? data.meta.cameras : [];
+        if (metaCams.length > 0) {
+          cameras = metaCams.map((id) => String(id));
+        }
         const facesByCamera = {};
         for (const face of data.face_summaries || []) {
           const cameraId = face.camera_id || "cam0";
@@ -425,8 +473,8 @@ def live_page() -> str:
           drawFrame(cameraId, faces, targetId);
         }
         drawHeatmap(data.heatmap_summary, data.meta || {}, lock);
-        renderBeamformer(data.beamformer);
-        renderHealth(data.health_summary, data.perf_summary);
+        renderBeamformer(data.beamformer, lock);
+        renderHealth(data.health_summary, data.perf_summary, data.uma8_leds);
         document.getElementById("lockState").textContent = lock.state || "NO_LOCK";
         document.getElementById("lockInfo").textContent =
           lock.state === "NO_LOCK"
@@ -434,7 +482,7 @@ def live_page() -> str:
             : `Mode: ${lock.mode || "n/a"} | Target: ${lock.target_id || "n/a"} | ${lock.target_bearing_deg?.toFixed(1) ?? "?"}° | ${lock.reason || ""}`;
       }
 
-      setInterval(update, 120);
+      setInterval(update, 200);
     </script>
   </body>
 </html>

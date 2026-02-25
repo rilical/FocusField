@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from typing import Any, Dict, Optional
@@ -53,22 +54,37 @@ class UIState:
         self._lock = threading.Lock()
         self._telemetry: Dict[str, Any] = {}
         self._frames: Dict[str, Any] = {}
+        self._frame_jpegs: Dict[str, bytes] = {}
+        self._frame_encode_ns: Dict[str, int] = {}
 
     def update_telemetry(self, telemetry: Dict[str, Any]) -> None:
         with self._lock:
             self._telemetry = telemetry
 
-    def update_frame(self, camera_id: str, frame) -> None:
+    def update_frame(self, camera_id: str, frame, jpeg_quality: int = 65, min_encode_period_s: float = 0.0) -> None:
+        now_ns = time.time_ns()
+        min_period_ns = int(max(0.0, float(min_encode_period_s)) * 1_000_000_000)
+        should_encode = False
         with self._lock:
             self._frames[camera_id] = frame
+            last_ns = int(self._frame_encode_ns.get(camera_id, 0) or 0)
+            if not last_ns or now_ns - last_ns >= min_period_ns:
+                should_encode = True
+        if should_encode:
+            ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)])
+            if ok:
+                jpeg_bytes = encoded.tobytes()
+                with self._lock:
+                    self._frame_jpegs[camera_id] = jpeg_bytes
+                    self._frame_encode_ns[camera_id] = now_ns
 
     def get_telemetry(self) -> Dict[str, Any]:
         with self._lock:
             return dict(self._telemetry)
 
-    def get_frame(self, camera_id: str):
+    def get_frame_jpeg(self, camera_id: str) -> Optional[bytes]:
         with self._lock:
-            return self._frames.get(camera_id)
+            return self._frame_jpegs.get(camera_id)
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -81,8 +97,16 @@ def start_ui_server(
     logger: Any,
     stop_event: threading.Event,
 ) -> threading.Thread:
-    host = config.get("ui", {}).get("host", "0.0.0.0")
-    port = int(config.get("ui", {}).get("port", 8080))
+    ui_cfg = config.get("ui", {})
+    if not isinstance(ui_cfg, dict):
+        ui_cfg = {}
+    host = ui_cfg.get("host", "0.0.0.0")
+    port = int(ui_cfg.get("port", 8080))
+    jpeg_quality = int(ui_cfg.get("frame_jpeg_quality", 65) or 65)
+    jpeg_quality = max(1, min(100, jpeg_quality))
+    frame_max_hz = float(ui_cfg.get("frame_max_hz", 6.0) or 6.0)
+    frame_max_hz = max(0.1, frame_max_hz)
+    frame_min_period_s = 1.0 / frame_max_hz
     cameras = [cam.get("id", f"cam{idx}") for idx, cam in enumerate(config.get("video", {}).get("cameras", []))]
     state = UIState()
 
@@ -112,7 +136,12 @@ def start_ui_server(
                     continue
                 frame = frame_msg.get("data")
                 if frame is not None:
-                    state.update_frame(cam_id, frame)
+                    state.update_frame(
+                        cam_id,
+                        frame,
+                        jpeg_quality=jpeg_quality,
+                        min_encode_period_s=frame_min_period_s,
+                    )
 
     threading.Thread(target=_state_worker, name="ui-state", daemon=True).start()
 
@@ -124,14 +153,9 @@ def start_ui_server(
                 return
             if parsed.path.startswith("/frame/"):
                 camera_id = parsed.path.split("/")[-1].replace(".jpg", "")
-                frame = state.get_frame(camera_id)
-                if frame is None:
+                jpeg = state.get_frame_jpeg(camera_id)
+                if jpeg is None:
                     self.send_response(404)
-                    self.end_headers()
-                    return
-                ok, encoded = cv2.imencode(".jpg", frame)
-                if not ok:
-                    self.send_response(500)
                     self.end_headers()
                     return
                 self.send_response(200)
@@ -139,7 +163,7 @@ def start_ui_server(
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(encoded.tobytes())
+                self.wfile.write(jpeg)
                 return
             if parsed.path == "/telemetry":
                 payload = json.dumps(state.get_telemetry()).encode("utf-8")

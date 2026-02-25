@@ -192,13 +192,22 @@ sudo systemctl status focusfield
 sudo journalctl -u focusfield -f
 ```
 
-To tune startup behavior, override these env vars in
-`scripts/focusfield_boot.sh` or by exporting before launch:
+To tune startup behavior, set these env vars before install so they are written into the service:
 
 - `FOCUSFIELD_PRECHECK_RETRIES` (default `15`)
 - `FOCUSFIELD_PRECHECK_DELAY_SECONDS` (default `5`)
 - `FOCUSFIELD_CAMERA_SOURCE` (default `by-path`)
 - `FOCUSFIELD_CAMERA_SCOPE` (default `usb`)
+
+Example:
+
+```bash
+FOCUSFIELD_CAMERA_SOURCE=auto \
+FOCUSFIELD_CAMERA_SCOPE=any \
+FOCUSFIELD_PRECHECK_RETRIES=30 \
+FOCUSFIELD_PRECHECK_DELAY_SECONDS=3 \
+sudo scripts/install_systemd_service.sh focusfield /home/focus/FocusField/configs/full_3cam_working_local.yaml
+```
 
 If strict boot keeps failing, inspect logs and confirm camera/audio contracts first:
 

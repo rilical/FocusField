@@ -34,11 +34,13 @@ def _unique_tried_sources(tried: list[tuple[object, str]]) -> list[object]:
 
 
 def main() -> None:
-    by_path = sorted(glob.glob("/dev/v4l/by-path/*"))
-    by_id = sorted(glob.glob("/dev/v4l/by-id/*"))
+    by_path = collect_camera_sources("by-path", camera_scope="any")
+    by_id = collect_camera_sources("by-id", camera_scope="any")
     sources = collect_camera_sources("auto")
+    by_path_raw = sorted(glob.glob("/dev/v4l/by-path/*"))
+    by_id_raw = sorted(glob.glob("/dev/v4l/by-id/*"))
 
-    print("=== /dev/v4l/by-path ===")
+    print("=== /dev/v4l/by-path (coalesced) ===")
     if by_path:
         for p in by_path:
             try:
@@ -49,7 +51,7 @@ def main() -> None:
     else:
         print("(none)")
 
-    print("=== /dev/v4l/by-id ===")
+    print("=== /dev/v4l/by-id (coalesced) ===")
     if not by_id:
         print("(none)")
     else:
@@ -63,6 +65,28 @@ def main() -> None:
     if not hasattr(cv2, "VideoCapture"):
         print("OpenCV not available: missing VideoCapture")
         return
+
+    print("\n=== /dev/v4l/by-path (raw) ===")
+    if not by_path_raw:
+        print("(none)")
+    else:
+        for p in by_path_raw:
+            try:
+                target = os.path.realpath(p)
+            except Exception:
+                target = "?"
+            print(f"{p} -> {target}")
+
+    print("\n=== /dev/v4l/by-id (raw) ===")
+    if not by_id_raw:
+        print("(none)")
+    else:
+        for p in by_id_raw:
+            try:
+                target = os.path.realpath(p)
+            except Exception:
+                target = "?"
+            print(f"{p} -> {target}")
 
     print("\n=== OpenCV open test ===")
     for p in sources:

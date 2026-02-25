@@ -117,6 +117,31 @@ def _dedupe_paths(paths: list[str]) -> list[str]:
     return out
 
 
+def _normalize_camera_group_key(source: str) -> tuple[str, int]:
+    name = os.path.basename(source)
+    match = re.search(r"-video-index(\d+)$", name)
+    if match is None:
+        return source, 0
+    idx = int(match.group(1))
+    root = name[: match.start()]
+    root = root.replace("-usbv2", "-usb")
+    return root, idx
+
+
+def _coalesce_multi_interface_sources(sources: list[str]) -> list[str]:
+    groups: dict[str, list[tuple[int, str]]] = {}
+    for source in sources:
+        key, idx = _normalize_camera_group_key(source)
+        groups.setdefault(key, []).append((idx, source))
+
+    kept: list[str] = []
+    for key in sorted(groups):
+        candidates = groups[key]
+        candidates.sort(key=lambda item: item[0])
+        kept.append(candidates[0][1])
+    return kept
+
+
 def collect_camera_sources(camera_source: str = "auto", camera_scope: str = "any") -> list[str]:
     source_mode = str(camera_source or "auto").strip().lower()
     scope_mode = normalize_camera_scope(camera_scope)
@@ -125,8 +150,10 @@ def collect_camera_sources(camera_source: str = "auto", camera_scope: str = "any
     nodes = video_nodes()
 
     if source_mode == "by-path":
+        by_path = _coalesce_multi_interface_sources(by_path)
         return _filter_sources_by_scope(_dedupe_paths(by_path), scope_mode)
     if source_mode == "by-id":
+        by_id = _coalesce_multi_interface_sources(by_id)
         return _filter_sources_by_scope(_dedupe_paths(by_id), scope_mode)
     if source_mode == "index":
         return _filter_sources_by_scope(_dedupe_paths(nodes), scope_mode)

@@ -237,6 +237,9 @@ def live_page() -> str:
       const cameras = ["cam0", "cam1", "cam2"];
       const cameraGrid = document.getElementById("cameraGrid");
       const tiles = {};
+      const lastFacesByCamera = {};
+      const lastFacesTsByCamera = {};
+      const FACE_HOLD_MS = 700;
 
       function ensureTile(cameraId) {
         if (tiles[cameraId]) return tiles[cameraId];
@@ -282,7 +285,7 @@ def live_page() -> str:
         img.src = `/frame/${cameraId}.jpg?ts=${Date.now()}`;
       }
 
-      function drawHeatmap(heatmap) {
+      function drawHeatmap(heatmap, meta, lock) {
         const canvas = document.getElementById("heatmapCanvas");
         const ctx = canvas.getContext("2d");
         const cx = canvas.width / 2;
@@ -294,6 +297,35 @@ def live_page() -> str:
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
         ctx.stroke();
+        const cameraMap = (meta && meta.camera_map) ? meta.camera_map : [];
+        for (const cam of cameraMap) {
+          const yaw = Number(cam.yaw_offset_deg ?? 0);
+          const a = (yaw / 180.0) * Math.PI - Math.PI / 2;
+          const ox = cx + Math.cos(a) * (radius + 14);
+          const oy = cy + Math.sin(a) * (radius + 14);
+          ctx.fillStyle = "#2f7e7e";
+          ctx.beginPath();
+          ctx.arc(ox, oy, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#1f1b16";
+          ctx.font = "11px IBM Plex Sans";
+          ctx.fillText(`${cam.id}@${Math.round(yaw)}°`, ox + 8, oy + 4);
+        }
+        const target = Number(lock && lock.target_bearing_deg);
+        if (Number.isFinite(target)) {
+          const ta = (target / 180.0) * Math.PI - Math.PI / 2;
+          const tx = cx + Math.cos(ta) * (radius - 8);
+          const ty = cy + Math.sin(ta) * (radius - 8);
+          ctx.strokeStyle = "#1fbf6b";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(tx, ty);
+          ctx.stroke();
+          ctx.fillStyle = "#1fbf6b";
+          ctx.font = "11px IBM Plex Sans";
+          ctx.fillText(`target ${target.toFixed(1)}°`, tx + 6, ty - 6);
+        }
         if (!heatmap || !heatmap.heatmap) return;
         const bins = heatmap.heatmap.length;
         for (let i = 0; i < bins; i++) {
@@ -380,10 +412,19 @@ def live_page() -> str:
         }
         const lock = data.lock_state || {};
         const targetId = lock.target_id || null;
+        const nowMs = Date.now();
         for (const cameraId of cameras) {
-          drawFrame(cameraId, facesByCamera[cameraId] || [], targetId);
+          const freshFaces = facesByCamera[cameraId] || [];
+          if (freshFaces.length > 0) {
+            lastFacesByCamera[cameraId] = freshFaces;
+            lastFacesTsByCamera[cameraId] = nowMs;
+          }
+          const cachedFaces = lastFacesByCamera[cameraId] || [];
+          const ageMs = nowMs - (lastFacesTsByCamera[cameraId] || 0);
+          const faces = freshFaces.length > 0 ? freshFaces : (ageMs <= FACE_HOLD_MS ? cachedFaces : []);
+          drawFrame(cameraId, faces, targetId);
         }
-        drawHeatmap(data.heatmap_summary);
+        drawHeatmap(data.heatmap_summary, data.meta || {}, lock);
         renderBeamformer(data.beamformer);
         renderHealth(data.health_summary, data.perf_summary);
         document.getElementById("lockState").textContent = lock.state || "NO_LOCK";

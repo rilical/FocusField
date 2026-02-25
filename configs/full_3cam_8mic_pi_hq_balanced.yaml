@@ -43,11 +43,11 @@ bench:
 audio:
   channels: 8
   sample_rate_hz: 48000
-  block_size: 1024
+  block_size: 512
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
-    queue_depth: 12
+    queue_depth: 4
     stats_emit_hz: 1
   device_selector:
     match_substring: miniDSP
@@ -59,8 +59,8 @@ audio:
     min_speech_ratio: 0.3
   doa:
     method: srp_phat
-    bins: 36
-    update_hz: 6
+    bins: 24
+    update_hz: 4
     freq_low_hz: 200
     freq_high_hz: 4500
     continuity_weight: 0.18
@@ -126,7 +126,7 @@ video:
     device_index: 0
     width: 480
     height: 270
-    fps: 8
+    fps: 10
     hfov_deg: 160
     yaw_offset_deg: 0
     bearing_model: linear
@@ -136,7 +136,7 @@ video:
     device_index: 1
     width: 480
     height: 270
-    fps: 8
+    fps: 10
     hfov_deg: 160
     yaw_offset_deg: 120
     bearing_model: linear
@@ -146,7 +146,7 @@ video:
     device_index: 2
     width: 480
     height: 270
-    fps: 8
+    fps: 10
     hfov_deg: 160
     yaw_offset_deg: 240
     bearing_model: linear
@@ -156,11 +156,11 @@ vision:
     min_confidence: 0.6
     iou_threshold: 0.3
     max_missing_frames: 10
-    min_area: 800
-    min_neighbors: 4
+    min_area: 520
+    min_neighbors: 3
     scale_factor: 1.1
-    detect_width: 256
-    detect_every_n: 3
+    detect_width: 320
+    detect_every_n: 1
   track:
     smoothing_alpha: 0.6
     max_missing_frames: 10
@@ -205,7 +205,7 @@ bus:
 logging:
   level: warning
   file:
-    enabled: true
+    enabled: false
     flush_interval_ms: 200
     rotate_mb: 50
 output:

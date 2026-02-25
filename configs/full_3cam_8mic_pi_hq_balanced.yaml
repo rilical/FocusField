@@ -122,7 +122,7 @@ audio:
 video:
   cameras:
   - id: cam0
-    device_path: ''
+    device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.1:1.0-video-index0
     device_index: 0
     width: 640
     height: 360
@@ -132,7 +132,7 @@ video:
     bearing_model: linear
     bearing_lut_path: ''
   - id: cam1
-    device_path: ''
+    device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.2:1.0-video-index0
     device_index: 1
     width: 640
     height: 360
@@ -142,7 +142,7 @@ video:
     bearing_model: linear
     bearing_lut_path: ''
   - id: cam2
-    device_path: ''
+    device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.4:1.0-video-index0
     device_index: 2
     width: 640
     height: 360

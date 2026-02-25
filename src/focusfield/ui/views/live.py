@@ -300,7 +300,7 @@ def live_page() -> str:
         const cameraMap = (meta && meta.camera_map) ? meta.camera_map : [];
         for (const cam of cameraMap) {
           const yaw = Number(cam.yaw_offset_deg ?? 0);
-          const a = (yaw / 180.0) * Math.PI - Math.PI / 2;
+          const a = (yaw / 180.0) * Math.PI + Math.PI / 2;
           const ox = cx + Math.cos(a) * (radius + 14);
           const oy = cy + Math.sin(a) * (radius + 14);
           ctx.fillStyle = "#2f7e7e";
@@ -313,7 +313,7 @@ def live_page() -> str:
         }
         const target = Number(lock && lock.target_bearing_deg);
         if (Number.isFinite(target)) {
-          const ta = (target / 180.0) * Math.PI - Math.PI / 2;
+          const ta = (target / 180.0) * Math.PI + Math.PI / 2;
           const tx = cx + Math.cos(ta) * (radius - 8);
           const ty = cy + Math.sin(ta) * (radius - 8);
           ctx.strokeStyle = "#1fbf6b";
@@ -330,7 +330,7 @@ def live_page() -> str:
         const bins = heatmap.heatmap.length;
         for (let i = 0; i < bins; i++) {
           const value = heatmap.heatmap[i] || 0;
-          const angle = (i / bins) * Math.PI * 2 - Math.PI / 2;
+          const angle = (i / bins) * Math.PI * 2 + Math.PI / 2;
           const bar = radius * value;
           const x1 = cx + Math.cos(angle) * (radius - bar);
           const y1 = cy + Math.sin(angle) * (radius - bar);

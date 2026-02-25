@@ -98,6 +98,39 @@ def _camera_capture_capable(source: str, camera_scope: str, strict_capture: bool
     return capture is not False
 
 
+def _try_camera_probe(
+    source: object,
+    strict_capture: bool,
+    camera_scope: str,
+) -> tuple[bool, object | None]:
+    if not isinstance(source, str):
+        ok, _, opened = try_open_camera_any_backend(
+            source,
+            strict_capture=strict_capture,
+            camera_scope=camera_scope,
+        )
+        if ok and opened is not None:
+            return True, opened[0]
+        return False, None
+
+    ok, _, opened = try_open_camera_any_backend(
+        source,
+        strict_capture=strict_capture,
+        camera_scope=camera_scope,
+    )
+    if ok and opened is not None:
+        return ok, opened[0]
+    if strict_capture:
+        ok_any, _, opened_any = try_open_camera_any_backend(
+            source,
+            strict_capture=False,
+            camera_scope=camera_scope,
+        )
+        if ok_any and opened_any is not None:
+            return ok_any, opened_any[0]
+    return False, None
+
+
 def detect_cameras(
     limit: int,
     camera_source: str,
@@ -117,15 +150,15 @@ def detect_cameras(
         elif camera_source == "auto" or strict_capture:
             continue
 
-        ok, _, opened = try_open_camera_any_backend(
+        ok, opened_path = _try_camera_probe(
             source,
             strict_capture=strict_capture,
             camera_scope=camera_scope,
         )
-        if not ok or opened is None:
+        if not ok or opened_path is None:
             continue
         openable += 1
-        cameras.append((source, opened[0]))
+        cameras.append((source, opened_path))
         if len(cameras) >= limit:
             break
 

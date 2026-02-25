@@ -81,6 +81,55 @@ def _format_input_channels(config: dict) -> tuple[int | None, int, str]:
     return selected_idx, selected_channels, selected_name
 
 
+def _camera_probe_source(cam: Any) -> tuple[Any, Any]:
+    device_path = None
+    device_index = None
+    if isinstance(cam, dict):
+        path = cam.get("device_path")
+        if isinstance(path, str) and path.strip():
+            device_path = path
+        idx = cam.get("device_index")
+        if isinstance(idx, int):
+            device_index = idx
+        elif isinstance(idx, str):
+            try:
+                device_index = int(idx)
+            except (TypeError, ValueError):
+                device_index = None
+    return device_path, device_index
+
+
+def _try_camera_open_with_fallback(
+    source: Any,
+    strict_capture: bool,
+    camera_scope: str,
+) -> tuple[bool, list[tuple[object, str]], tuple[object, str] | None]:
+    if not isinstance(source, str):
+        return try_open_camera_any_backend(
+            source,
+            strict_capture=strict_capture,
+            camera_scope=camera_scope,
+        )
+
+    ok, tried, opened = try_open_camera_any_backend(
+        source,
+        strict_capture=strict_capture,
+        camera_scope=camera_scope,
+    )
+    if ok or not strict_capture:
+        return ok, tried, opened
+    # Legacy/non-capture nodes can legitimately appear as /dev/videoN symlinks on some boards.
+    # In strict mode, still allow CAP_ANY as a safety fallback and surface success clearly.
+    fallback_ok, fallback_tried, fallback_opened = try_open_camera_any_backend(
+        source,
+        strict_capture=False,
+        camera_scope=camera_scope,
+    )
+    if fallback_ok:
+        return fallback_ok, tried + fallback_tried, fallback_opened
+    return False, tried, opened
+
+
 def check_audio(config: dict) -> tuple[int, dict[str, Any]]:
     print("=== Audio inputs ===")
     details: dict[str, Any] = {
@@ -169,7 +218,7 @@ def check_cameras(config: dict, camera_source: str, strict_capture: bool, camera
             strict_capture=strict_capture,
         ):
             details["capture_capable_sources"] += 1
-        ok, tried, opened = try_open_camera_any_backend(
+        ok, tried, opened = _try_camera_open_with_fallback(
             path,
             strict_capture=strict_capture,
             camera_scope=camera_scope,
@@ -190,10 +239,12 @@ def check_cameras(config: dict, camera_source: str, strict_capture: bool, camera
     details["configured_cameras"] = len(cameras)
     config_open_count = 0
     for idx, cam in enumerate(cameras):
-        source = idx
+        device_path, device_index = _camera_probe_source(cam)
+        source = device_index if device_path is None and device_index is not None else idx
         if isinstance(cam, dict):
-            source = cam.get("device_path") or cam.get("device_index", idx)
-        ok, tried, opened = try_open_camera_any_backend(
+            source = device_path if device_path is not None else source
+
+        ok, tried, opened = _try_camera_open_with_fallback(
             source,
             strict_capture=strict_capture,
             camera_scope=camera_scope,

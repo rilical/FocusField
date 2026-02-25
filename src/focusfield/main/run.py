@@ -128,17 +128,52 @@ def _configured_camera_status(config: Dict[str, Any], strict_capture: bool, came
     total = len(cameras)
     openable = 0
     entries: List[Dict[str, Any]] = []
-    for idx, cam in enumerate(cameras):
-        source: object = idx
-        camera_id = f"cam{idx}"
-        if isinstance(cam, dict):
-            camera_id = str(cam.get("id", camera_id))
-            source = cam.get("device_path") or cam.get("device_index", idx)
+
+    def _camera_source(cam: Any, idx: int) -> Any:
+        if not isinstance(cam, dict):
+            return idx
+        path = cam.get("device_path")
+        if isinstance(path, str) and path.strip():
+            return path
+        cam_index = cam.get("device_index")
+        if isinstance(cam_index, int):
+            return cam_index
+        if isinstance(cam_index, str):
+            try:
+                return int(cam_index)
+            except (TypeError, ValueError):
+                return idx
+        return idx
+
+    def _open_camera(source: Any) -> tuple[bool, list[tuple[object, str]], tuple[object, str] | None]:
+        if not isinstance(source, str):
+            return try_open_camera_any_backend(
+                source,
+                strict_capture=strict_capture,
+                camera_scope=camera_scope,
+            )
         ok, tried, opened = try_open_camera_any_backend(
             source,
             strict_capture=strict_capture,
             camera_scope=camera_scope,
         )
+        if ok or not strict_capture:
+            return ok, tried, opened
+        fallback_ok, fallback_tried, fallback_opened = try_open_camera_any_backend(
+            source,
+            strict_capture=False,
+            camera_scope=camera_scope,
+        )
+        if fallback_ok:
+            return fallback_ok, tried + fallback_tried, fallback_opened
+        return False, tried, opened
+
+    for idx, cam in enumerate(cameras):
+        source: object = _camera_source(cam, idx)
+        camera_id = f"cam{idx}"
+        if isinstance(cam, dict):
+            camera_id = str(cam.get("id", camera_id))
+        ok, tried, opened = _open_camera(source)
         if ok:
             openable += 1
         entries.append(

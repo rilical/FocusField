@@ -217,6 +217,9 @@ uma8_leds:
   enabled: true
   enabled_fallback: true
   backend: hid
+  doa_fallback_enabled: true
+  doa_min_confidence: 0.05
+  doa_use_without_vad: false
   ring_size: 12
   update_hz: 12
   base_bearing_offset_deg: 0.0

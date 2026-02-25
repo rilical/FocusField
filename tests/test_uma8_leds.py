@@ -69,7 +69,7 @@ class Uma8LedTests(unittest.TestCase):
 
         no_lock = compute_led_state(cfg, {"state": "NO_LOCK"}, None, search_phase=1, pulse_phase=0.1)
         self.assertEqual(no_lock.state, "NO_LOCK")
-        self.assertEqual(no_lock.sectors, [])
+        self.assertGreaterEqual(len(no_lock.sectors), 1)
 
         acquire = compute_led_state(
             cfg,

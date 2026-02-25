@@ -202,6 +202,27 @@ def _parse_rgb(cfg: Dict[str, Any], key: str, default: Tuple[int, int, int]) -> 
     return (vals[0], vals[1], vals[2])
 
 
+def _extract_doa_peak_bearing(doa_msg: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not isinstance(doa_msg, dict):
+        return None
+    peaks = doa_msg.get("peaks")
+    if isinstance(peaks, list) and peaks:
+        first = peaks[0]
+        if isinstance(first, dict):
+            angle = _parse_float(first.get("angle_deg"))
+            if angle is not None:
+                return normalize_deg(angle)
+    heatmap = doa_msg.get("heatmap")
+    bin_size = _parse_float(doa_msg.get("bin_size_deg"))
+    if not isinstance(heatmap, list) or not heatmap or bin_size is None or bin_size <= 0:
+        return None
+    try:
+        idx = max(range(len(heatmap)), key=lambda i: float(heatmap[i]))
+    except Exception:  # noqa: BLE001
+        return None
+    return normalize_deg(float(idx) * float(bin_size))
+
+
 def _smooth_angle(prev_deg: Optional[float], new_deg: float, alpha: float) -> float:
     alpha_clamped = _clamp01(alpha)
     if prev_deg is None:
@@ -263,7 +284,6 @@ def compute_led_state(
         brightness = brightness_max
     elif state in _ACQUIRE_STATES:
         center = sector if sector is not None else (search_phase % ring_size)
-        center = (center + search_phase) % ring_size
         width = int(cfg.get("search_width_leds", 1) or 1)
         sectors = _spread(center, ring_size, width)
         pulse = 0.5 * (1.0 + math.sin(2.0 * math.pi * float(pulse_phase)))
@@ -401,6 +421,11 @@ def start_uma8_led_service(
     smoothing_alpha = _clamp01(float(cfg.get("smoothing_alpha", 0.35) or 0.35))
 
     q_lock = bus.subscribe("fusion.target_lock")
+    q_doa = bus.subscribe("audio.doa_heatmap")
+    q_vad = bus.subscribe("audio.vad")
+    doa_fallback_enabled = bool(cfg.get("doa_fallback_enabled", True))
+    doa_min_confidence = float(cfg.get("doa_min_confidence", 0.05) or 0.05)
+    doa_use_without_vad = bool(cfg.get("doa_use_without_vad", False))
 
     if not enabled:
         def _disabled() -> None:
@@ -426,6 +451,8 @@ def start_uma8_led_service(
     def _run() -> None:
         smoothed_bearing: Optional[float] = None
         latest_lock: Dict[str, Any] = {"state": "NO_LOCK", "target_bearing_deg": None}
+        latest_doa: Optional[Dict[str, Any]] = None
+        latest_vad: Optional[Dict[str, Any]] = None
         next_tick = time.monotonic()
         search_phase = 0
         pulse_phase = 0.0
@@ -442,6 +469,20 @@ def start_uma8_led_service(
                             latest_lock = msg
                 except queue.Empty:
                     pass
+                try:
+                    while True:
+                        msg = q_doa.get_nowait()
+                        if isinstance(msg, dict):
+                            latest_doa = msg
+                except queue.Empty:
+                    pass
+                try:
+                    while True:
+                        msg = q_vad.get_nowait()
+                        if isinstance(msg, dict):
+                            latest_vad = msg
+                except queue.Empty:
+                    pass
 
                 now = time.monotonic()
                 if now < next_tick:
@@ -452,8 +493,25 @@ def start_uma8_led_service(
                 search_phase = (search_phase + 1) % 1024
                 pulse_phase = (pulse_phase + period * 1.25) % 1.0
 
-                lock_state = str(latest_lock.get("state", "NO_LOCK") or "NO_LOCK").upper()
-                source_bearing = _parse_float(latest_lock.get("target_bearing_deg"))
+                lock_for_led = latest_lock
+                lock_state = str(lock_for_led.get("state", "NO_LOCK") or "NO_LOCK").upper()
+                source_bearing = _parse_float(lock_for_led.get("target_bearing_deg"))
+                if doa_fallback_enabled and source_bearing is None:
+                    doa_conf = _parse_float((latest_doa or {}).get("confidence"))
+                    doa_bearing = _extract_doa_peak_bearing(latest_doa)
+                    vad_speech = bool((latest_vad or {}).get("speech"))
+                    if (
+                        doa_bearing is not None
+                        and doa_conf is not None
+                        and doa_conf >= doa_min_confidence
+                        and (vad_speech or doa_use_without_vad)
+                    ):
+                        lock_for_led = dict(latest_lock)
+                        lock_for_led["target_bearing_deg"] = doa_bearing
+                        if lock_state in _NO_LOCK_STATES:
+                            lock_for_led["state"] = "ACQUIRE"
+                            lock_state = "ACQUIRE"
+                        source_bearing = doa_bearing
                 if lock_state in _NO_LOCK_STATES or source_bearing is None:
                     smoothed_bearing = None
                 else:
@@ -461,7 +519,7 @@ def start_uma8_led_service(
 
                 led_state = compute_led_state(
                     cfg,
-                    latest_lock,
+                    lock_for_led,
                     smoothed_bearing_deg=smoothed_bearing,
                     search_phase=search_phase,
                     pulse_phase=pulse_phase,

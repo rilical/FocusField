@@ -46,7 +46,7 @@ from typing import Any, Dict, List
 import cv2
 
 from focusfield.core.clock import now_ns
-from focusfield.platform.hardware_probe import candidate_sources, source_to_open_target
+from focusfield.platform.hardware_probe import candidate_sources, is_capture_node, source_to_open_target
 
 
 def start_cameras(
@@ -105,8 +105,8 @@ def _camera_loop(
     height: int,
     fps: int,
     topic: str,
-    strict_capture: bool,
-    camera_scope: str,
+    strict_capture: bool = False,
+    camera_scope: str = "any",
 ) -> None:
     cap = _open_camera(
         device_path,
@@ -181,7 +181,14 @@ def _camera_candidates(
         index_candidate = int(device_index)
     except (TypeError, ValueError):
         index_candidate = None
-    if index_candidate is not None and index_candidate not in candidates:
+    if index_candidate is None:
+        return candidates
+
+    if strict_capture:
+        if is_capture_node(f"/dev/video{index_candidate}") is True:
+            if index_candidate not in candidates:
+                candidates.append(index_candidate)
+    elif index_candidate not in candidates:
         candidates.append(index_candidate)
 
     deduped: list[object] = []
@@ -206,19 +213,16 @@ def _open_camera(
         camera_scope=camera_scope,
     )
 
-    for candidate in candidates:
-        source = source_to_open_target(candidate)
-        cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
-        if cap.isOpened():
-            return cap
-        cap.release()
+    backends = [cv2.CAP_V4L2]
+    if not strict_capture:
+        backends.append(cv2.CAP_ANY)
 
-    # Fallback for environments where CAP_V4L2 is unavailable/unstable.
-    for candidate in candidates:
-        source = source_to_open_target(candidate)
-        cap = cv2.VideoCapture(source, cv2.CAP_ANY)
-        if cap.isOpened():
-            return cap
-        cap.release()
+    for backend in backends:
+        for candidate in candidates:
+            source = source_to_open_target(candidate)
+            cap = cv2.VideoCapture(source, backend)
+            if cap.isOpened():
+                return cap
+            cap.release()
 
     return cv2.VideoCapture()

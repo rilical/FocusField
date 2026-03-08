@@ -33,18 +33,164 @@ CONTRACT DETAILS (inline from src/focusfield/ui/server.md):
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import os
 import queue
+import socket
+import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from socketserver import ThreadingMixIn
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 import cv2
 
 from focusfield.ui.views.live import live_page
+
+_WS_MAGIC = b"258EAFA5-E914-47DA-95CA-5AB5DC69C85E"
+
+_CAMERA_CALIBRATION_FILE = "camera_calibration.json"
+
+
+def _ws_send_text(sock: socket.socket, text: str) -> None:
+    """Send a WebSocket text frame."""
+    data = text.encode("utf-8")
+    frame = bytearray()
+    frame.append(0x81)  # FIN + text opcode
+    length = len(data)
+    if length < 126:
+        frame.append(length)
+    elif length < 65536:
+        frame.append(126)
+        frame.extend(length.to_bytes(2, "big"))
+    else:
+        frame.append(127)
+        frame.extend(length.to_bytes(8, "big"))
+    frame.extend(data)
+    sock.sendall(bytes(frame))
+
+
+def _ws_send_pong(sock: socket.socket, payload: bytes) -> None:
+    """Send a WebSocket pong frame."""
+    frame = bytearray()
+    frame.append(0x8A)  # FIN + pong opcode
+    length = len(payload)
+    if length < 126:
+        frame.append(length)
+    elif length < 65536:
+        frame.append(126)
+        frame.extend(length.to_bytes(2, "big"))
+    else:
+        frame.append(127)
+        frame.extend(length.to_bytes(8, "big"))
+    frame.extend(payload)
+    sock.sendall(bytes(frame))
+
+
+def _ws_send_close(sock: socket.socket, code: int = 1000) -> None:
+    """Send a WebSocket close frame."""
+    frame = bytearray()
+    frame.append(0x88)  # FIN + close opcode
+    payload = code.to_bytes(2, "big")
+    frame.append(len(payload))
+    frame.extend(payload)
+    try:
+        sock.sendall(bytes(frame))
+    except OSError:
+        pass
+
+
+def _ws_read_frame(sock: socket.socket) -> Optional[tuple]:
+    """Read a single WebSocket frame. Returns (opcode, payload) or None on error."""
+    try:
+        header = _recv_exact(sock, 2)
+        if header is None:
+            return None
+    except OSError:
+        return None
+
+    opcode = header[0] & 0x0F
+    masked = bool(header[1] & 0x80)
+    length = header[1] & 0x7F
+
+    if length == 126:
+        raw = _recv_exact(sock, 2)
+        if raw is None:
+            return None
+        length = struct.unpack("!H", raw)[0]
+    elif length == 127:
+        raw = _recv_exact(sock, 8)
+        if raw is None:
+            return None
+        length = struct.unpack("!Q", raw)[0]
+
+    mask_key = b""
+    if masked:
+        mask_key = _recv_exact(sock, 4)
+        if mask_key is None:
+            return None
+
+    payload = _recv_exact(sock, length) if length > 0 else b""
+    if payload is None:
+        return None
+
+    if masked and mask_key:
+        payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+
+    return (opcode, payload)
+
+
+def _recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
+    """Read exactly n bytes from socket, or return None on disconnect."""
+    if n == 0:
+        return b""
+    buf = bytearray()
+    while len(buf) < n:
+        try:
+            chunk = sock.recv(n - len(buf))
+        except OSError:
+            return None
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _get_camera_calibration_path() -> Path:
+    """Return the path to the camera calibration sidecar file."""
+    return Path(os.getcwd()) / _CAMERA_CALIBRATION_FILE
+
+
+def _load_camera_calibration(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Load camera calibration from sidecar file, falling back to config defaults."""
+    cal_path = _get_camera_calibration_path()
+    if cal_path.exists():
+        try:
+            with open(cal_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    # Build defaults from config
+    cameras_cfg = config.get("video", {}).get("cameras", [])
+    cameras: List[Dict[str, Any]] = []
+    for idx, cam in enumerate(cameras_cfg):
+        cameras.append({
+            "id": cam.get("id", f"cam{idx}"),
+            "yaw_offset_deg": cam.get("yaw_offset_deg", 0),
+        })
+    return {"cameras": cameras}
+
+
+def _save_camera_calibration(data: Dict[str, Any]) -> None:
+    """Write camera calibration to the sidecar file."""
+    cal_path = _get_camera_calibration_path()
+    with open(cal_path, "w") as f:
+        json.dump(data, f, indent=2)
 
 
 class UIState:
@@ -56,6 +202,8 @@ class UIState:
         self._frames: Dict[str, Any] = {}
         self._frame_jpegs: Dict[str, bytes] = {}
         self._frame_encode_ns: Dict[str, int] = {}
+        self._ws_clients: Set[socket.socket] = set()
+        self._ws_lock = threading.Lock()
 
     def update_telemetry(self, telemetry: Dict[str, Any]) -> None:
         with self._lock:
@@ -85,6 +233,35 @@ class UIState:
     def get_frame_jpeg(self, camera_id: str) -> Optional[bytes]:
         with self._lock:
             return self._frame_jpegs.get(camera_id)
+
+    def add_ws_client(self, sock: socket.socket) -> None:
+        with self._ws_lock:
+            self._ws_clients.add(sock)
+
+    def remove_ws_client(self, sock: socket.socket) -> None:
+        with self._ws_lock:
+            self._ws_clients.discard(sock)
+
+    def broadcast_telemetry(self, telemetry: Dict[str, Any]) -> None:
+        """Send telemetry JSON to all connected WebSocket clients."""
+        with self._ws_lock:
+            clients = list(self._ws_clients)
+        if not clients:
+            return
+        try:
+            text = json.dumps(telemetry)
+        except (TypeError, ValueError):
+            return
+        dead: List[socket.socket] = []
+        for sock in clients:
+            try:
+                _ws_send_text(sock, text)
+            except OSError:
+                dead.append(sock)
+        if dead:
+            with self._ws_lock:
+                for sock in dead:
+                    self._ws_clients.discard(sock)
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -128,6 +305,7 @@ def start_ui_server(
                 telemetry_msg = _drain_latest(q_telemetry)
                 if telemetry_msg is not None:
                     state.update_telemetry(telemetry_msg)
+                    state.broadcast_telemetry(telemetry_msg)
             except Exception:
                 pass
             for cam_id, q in frame_queues.items():
@@ -145,9 +323,46 @@ def start_ui_server(
 
     threading.Thread(target=_state_worker, name="ui-state", daemon=True).start()
 
+    def _ws_client_reader(sock: socket.socket) -> None:
+        """Read frames from a WS client: handle ping, close, ignore others."""
+        try:
+            while not stop_event.is_set():
+                result = _ws_read_frame(sock)
+                if result is None:
+                    break
+                opcode, payload = result
+                if opcode == 0x9:  # ping
+                    try:
+                        _ws_send_pong(sock, payload)
+                    except OSError:
+                        break
+                elif opcode == 0x8:  # close
+                    _ws_send_close(sock)
+                    break
+                # ignore text/binary/pong frames
+        except Exception:
+            pass
+        finally:
+            state.remove_ws_client(sock)
+            try:
+                sock.close()
+            except OSError:
+                pass
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+
+            # WebSocket upgrade on /ws
+            if parsed.path == "/ws":
+                upgrade = self.headers.get("Upgrade", "").lower()
+                if upgrade == "websocket":
+                    self._handle_ws_upgrade()
+                    return
+                self.send_response(400)
+                self.end_headers()
+                return
+
             if parsed.path == "/":
                 self._send_html(live_page())
                 return
@@ -174,8 +389,95 @@ def start_ui_server(
                 self.end_headers()
                 self.wfile.write(payload)
                 return
+            if parsed.path == "/api/camera-config":
+                cal = _load_camera_calibration(config)
+                payload = json.dumps(cal).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             self.send_response(404)
             self.end_headers()
+
+        def do_POST(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/camera-config":
+                content_length = int(self.headers.get("Content-Length", 0))
+                if content_length > 0:
+                    raw = self.rfile.read(content_length)
+                else:
+                    raw = b"{}"
+                try:
+                    body = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "error", "message": "invalid JSON"}).encode("utf-8"))
+                    return
+                _save_camera_calibration(body)
+                resp = json.dumps({"status": "ok"}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            """Handle CORS preflight for POST endpoints."""
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+
+        def _handle_ws_upgrade(self) -> None:
+            """Perform WebSocket handshake and hand off to reader thread."""
+            ws_key = self.headers.get("Sec-WebSocket-Key", "")
+            if not ws_key:
+                self.send_response(400)
+                self.end_headers()
+                return
+
+            # Compute accept key
+            accept_raw = hashlib.sha1(ws_key.encode("utf-8") + _WS_MAGIC).digest()
+            accept_key = base64.b64encode(accept_raw).decode("utf-8")
+
+            # Send 101 Switching Protocols
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept_key)
+            self.end_headers()
+
+            # Take ownership of the socket
+            sock = self.request
+            # Disable Nagle for low latency
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+
+            state.add_ws_client(sock)
+
+            # Spawn reader thread to handle ping/pong/close from client
+            reader_thread = threading.Thread(
+                target=_ws_client_reader,
+                args=(sock,),
+                name="ws-reader",
+                daemon=True,
+            )
+            reader_thread.start()
+
+            # Block this handler thread so BaseHTTPRequestHandler doesn't close the socket
+            reader_thread.join()
 
         def log_message(self, format: str, *args: Any) -> None:
             return

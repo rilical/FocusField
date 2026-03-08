@@ -48,6 +48,18 @@ import cv2
 from focusfield.core.clock import now_ns
 from focusfield.platform.hardware_probe import candidate_sources, is_capture_node, source_to_open_target
 
+_RECONNECT_INTERVAL_S = 2.0
+_MAX_CONSECUTIVE_FAILURES = 10
+
+
+def _publish_camera_status(bus: Any, camera_id: str, connected: bool) -> None:
+    """Publish camera connection status on the bus."""
+    bus.publish(f"vision.camera_status.{camera_id}", {
+        "camera_id": camera_id,
+        "connected": connected,
+        "t_ns": now_ns(),
+    })
+
 
 def start_cameras(
     bus: Any,
@@ -93,6 +105,53 @@ def start_cameras(
     return threads
 
 
+def _configure_capture(cap: cv2.VideoCapture, width: int, height: int, fps: float) -> None:
+    """Apply capture settings to an opened VideoCapture."""
+    try:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    except Exception:  # noqa: BLE001
+        pass
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FPS, fps)
+
+
+def _attempt_reconnect(
+    bus: Any,
+    logger: Any,
+    stop_event: threading.Event,
+    camera_id: str,
+    device_path: object,
+    device_index: int,
+    width: int,
+    height: int,
+    fps: float,
+    strict_capture: bool,
+    camera_scope: str,
+) -> cv2.VideoCapture | None:
+    """Try to reopen a camera, retrying every 2 seconds until success or stop."""
+    _publish_camera_status(bus, camera_id, False)
+    logger.emit("warning", "vision.cameras", "camera_disconnected", {"camera_id": camera_id})
+
+    while not stop_event.is_set():
+        time.sleep(_RECONNECT_INTERVAL_S)
+        if stop_event.is_set():
+            break
+        cap = _open_camera(
+            device_path,
+            device_index,
+            strict_capture=strict_capture,
+            camera_scope=camera_scope,
+        )
+        if cap.isOpened():
+            _configure_capture(cap, width, height, fps)
+            _publish_camera_status(bus, camera_id, True)
+            logger.emit("info", "vision.cameras", "camera_reconnected", {"camera_id": camera_id})
+            return cap
+        cap.release()
+    return None
+
+
 def _camera_loop(
     bus: Any,
     logger: Any,
@@ -116,27 +175,52 @@ def _camera_loop(
     )
     if not cap.isOpened():
         logger.emit("error", "vision.cameras", "camera_missing", {"camera_id": camera_id})
-        if fail_fast:
+        _publish_camera_status(bus, camera_id, False)
+        if fail_fast and strict_capture:
             stop_event.set()
-        return
+            return
+        # Enter reconnect loop instead of giving up
+        cap.release()
+        cap_new = _attempt_reconnect(
+            bus, logger, stop_event, camera_id,
+            device_path, device_index, width, height, float(max(1.0, float(fps))),
+            strict_capture, camera_scope,
+        )
+        if cap_new is None:
+            return
+        cap = cap_new
+    else:
+        _publish_camera_status(bus, camera_id, True)
 
     fps = max(1.0, float(fps))
     frame_period_s = 1.0 / fps
-    try:
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    except Exception:  # noqa: BLE001
-        pass
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    cap.set(cv2.CAP_PROP_FPS, fps)
+    _configure_capture(cap, width, height, fps)
     seq = 0
+    consecutive_failures = 0
     next_deadline_s = time.perf_counter()
     while not stop_event.is_set():
         ok, frame = cap.read()
         if not ok:
+            consecutive_failures += 1
             logger.emit("warning", "vision.cameras", "frame_drop", {"camera_id": camera_id})
-            time.sleep(0.05)
+            if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                # Camera appears disconnected; release and attempt reconnect
+                cap.release()
+                cap_new = _attempt_reconnect(
+                    bus, logger, stop_event, camera_id,
+                    device_path, device_index, width, height, fps,
+                    strict_capture, camera_scope,
+                )
+                if cap_new is None:
+                    return
+                cap = cap_new
+                consecutive_failures = 0
+                next_deadline_s = time.perf_counter()
+            else:
+                time.sleep(0.05)
             continue
+
+        consecutive_failures = 0
         t_ns = now_ns()
         seq += 1
         height_out, width_out = frame.shape[:2]

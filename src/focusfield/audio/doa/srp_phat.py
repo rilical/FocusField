@@ -65,7 +65,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from focusfield.audio.fft_backend import rfft, rfftfreq
 from focusfield.audio.doa.geometry import load_mic_positions
+from focusfield.audio.mic_health import channel_health_vectors
 from focusfield.core.clock import now_ns
 
 
@@ -99,9 +101,11 @@ class SrpPhatDoa:
         if self._positions.shape[0] < 2:
             raise ValueError("SRP-PHAT requires at least 2 microphones")
         self._pairs = _build_pairs(self._positions.shape[0])
+        self._pair_i = np.asarray([pair[0] for pair in self._pairs], dtype=np.int64)
+        self._pair_j = np.asarray([pair[1] for pair in self._pairs], dtype=np.int64)
         self._pair_weights = np.ones((len(self._pairs),), dtype=np.float32)
 
-        freqs = np.fft.rfftfreq(self._block_size, d=1.0 / self._sample_rate)
+        freqs = rfftfreq(self._block_size, d=1.0 / self._sample_rate)
         freq_band = doa_cfg.get("freq_band_hz")
         if isinstance(freq_band, (list, tuple)) and len(freq_band) == 2:
             f_lo = float(freq_band[0])
@@ -125,7 +129,7 @@ class SrpPhatDoa:
         self._last_update_ns = 0
         self._seq = 0
 
-    def update(self, frame_msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def update(self, frame_msg: Dict[str, Any], mic_health: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         t_ns = int(frame_msg.get("t_ns", now_ns()))
         if self._update_hz > 0:
             min_period_ns = int(1e9 / self._update_hz)
@@ -140,28 +144,40 @@ class SrpPhatDoa:
         if frame.shape[1] < len(self._channel_order):
             return None
         frame = frame[:, self._channel_order]
+        frame_fft = frame_msg.get("data_fft")
+        if frame_fft is not None:
+            spectrum_full = np.asarray(frame_fft)
+            if spectrum_full.ndim == 2 and spectrum_full.shape[1] >= len(self._channel_order):
+                spectrum = spectrum_full[:, self._channel_order]
+                spectrum = spectrum[self._freq_idx, :].astype(np.complex64, copy=False)
+            else:
+                spectrum = rfft(frame, axis=0)[self._freq_idx, :].astype(np.complex64)
+        else:
+            spectrum = rfft(frame, axis=0)[self._freq_idx, :].astype(np.complex64)
         rms = float(np.sqrt(np.mean(frame**2)))
         if rms < self._energy_threshold:
             heatmap = np.zeros(self._bins, dtype=np.float32)
             msg = self._build_msg(t_ns, heatmap, confidence=0.0)
             return msg
-
-        spectrum = np.fft.rfft(frame, axis=0)
-        spectrum = spectrum[self._freq_idx, :]
-        scores = np.zeros(self._bins, dtype=np.float32)
-
-        for pair_idx, (i, j) in enumerate(self._pairs):
-            cross = spectrum[:, i] * np.conj(spectrum[:, j])
-            denom = np.abs(cross)
-            cross = cross / np.maximum(denom, 1e-12)
-            coherence = float(np.abs(np.mean(cross)))
-            self._pair_weights[pair_idx] = (
-                self._pair_weight_alpha * self._pair_weights[pair_idx]
-                + (1.0 - self._pair_weight_alpha) * np.float32(np.clip(coherence, 0.05, 1.0))
+        channel_scores, channel_trust = channel_health_vectors(mic_health, frame.shape[1])
+        cross = (spectrum[:, self._pair_i] * np.conj(spectrum[:, self._pair_j])).T.astype(np.complex64)
+        cross = cross / np.maximum(np.abs(cross), 1e-12)
+        coherence = np.abs(np.mean(cross, axis=1)).astype(np.float32)
+        pair_reliability = np.minimum(channel_scores[self._pair_i], channel_scores[self._pair_j]) * np.sqrt(
+            channel_trust[self._pair_i] * channel_trust[self._pair_j]
+        )
+        target_pair_weights = np.clip(coherence * pair_reliability, 0.05, 1.0).astype(np.float32)
+        self._pair_weights = (
+            self._pair_weight_alpha * self._pair_weights + (1.0 - self._pair_weight_alpha) * target_pair_weights
+        ).astype(np.float32)
+        scores = np.real(
+            np.einsum(
+                "paf,pf->a",
+                self._phase_tables,
+                cross * self._pair_weights[:, None].astype(np.complex64),
+                optimize=True,
             )
-            pair_weight = float(np.clip(self._pair_weights[pair_idx], 0.05, 1.0))
-            table = self._phase_tables[pair_idx]
-            scores += pair_weight * np.real(table @ cross)
+        ).astype(np.float32)
 
         min_val = float(scores.min()) if scores.size else 0.0
         if min_val < 0:
@@ -186,6 +202,8 @@ class SrpPhatDoa:
         self._prev_peak_idx = current_peak_idx
         self._last_update_ns = t_ns
         msg = self._build_msg(t_ns, scores, confidence=confidence)
+        msg["pair_weights_mean"] = float(np.mean(self._pair_weights)) if self._pair_weights.size else 0.0
+        msg["mic_health_mean"] = float(np.mean(channel_scores)) if channel_scores.size else 0.0
         return msg
 
     def _build_msg(self, t_ns: int, scores: np.ndarray, confidence: float) -> Dict[str, Any]:
@@ -236,6 +254,7 @@ def start_srp_phat(
         logger.emit("error", "audio.doa.srp_phat", "doa_failed", {"error": str(exc)})
         return None
     q = bus.subscribe("audio.frames")
+    q_mic_health = bus.subscribe("audio.mic_health")
 
     def _wait_and_drain_latest(q_in: queue.Queue, timeout_s: float = 0.05) -> Optional[Dict[str, Any]]:
         try:
@@ -250,15 +269,21 @@ def start_srp_phat(
         return frame
 
     def _run() -> None:
+        last_mic_health: Optional[Dict[str, Any]] = None
         idle_cycles = 0
         processed_cycles = 0
         next_stats_emit = time.time() + 1.0
         while not stop_event.is_set():
+            try:
+                while True:
+                    last_mic_health = q_mic_health.get_nowait()
+            except queue.Empty:
+                pass
             frame = _wait_and_drain_latest(q)
             if frame is None:
                 idle_cycles += 1
             else:
-                msg = estimator.update(frame)
+                msg = estimator.update(frame, last_mic_health)
                 if msg is not None:
                     if msg.get("confidence", 0.0) < estimator.min_confidence:
                         logger.emit("debug", "audio.doa.srp_phat", "doa_low_confidence", {"confidence": msg.get("confidence", 0.0)})
@@ -295,7 +320,7 @@ def _precompute_phase_tables(
     pairs: List[Tuple[int, int]],
     angles_deg: np.ndarray,
     freqs_hz: np.ndarray,
-) -> List[np.ndarray]:
+) -> np.ndarray:
     tables: List[np.ndarray] = []
     angles_rad = np.deg2rad(angles_deg)
     dir_vectors = np.stack([np.cos(angles_rad), np.sin(angles_rad)], axis=1)
@@ -304,7 +329,7 @@ def _precompute_phase_tables(
         delays = (dir_vectors @ diff) / SPEED_OF_SOUND_M_S
         phase = np.exp(1j * 2.0 * math.pi * delays[:, None] * freqs_hz[None, :])
         tables.append(phase.astype(np.complex64))
-    return tables
+    return np.stack(tables, axis=0)
 
 
 def _top_peaks(scores: np.ndarray, angles_deg: np.ndarray, top_k: int) -> List[Dict[str, float]]:
@@ -331,3 +356,4 @@ def _confidence(scores: np.ndarray) -> float:
 
 def _wrap_deg(deg: float) -> float:
     return (deg + 180.0) % 360.0 - 180.0
+

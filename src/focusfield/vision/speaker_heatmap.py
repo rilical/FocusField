@@ -61,7 +61,7 @@ class SpeakerHeatmap:
         scores = np.zeros(self._bins, dtype=np.float32)
         for track in tracks:
             angle = float(track.get("bearing_deg", 0.0))
-            activity = float(track.get("mouth_activity", 0.0))
+            activity = float(track.get("visual_speaking_prob", track.get("mouth_activity", 0.0)))
             confidence = float(track.get("confidence", 1.0))
             amp = max(0.0, min(1.0, activity * confidence))
             if amp <= 0.0:

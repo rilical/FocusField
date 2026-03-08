@@ -31,6 +31,8 @@ class BeamformerSyntheticTests(unittest.TestCase):
             positions,
             target_bearing_deg=0.0,
             noise_rms=noise_rms,
+            mic_health_scores=np.ones((8,), dtype=np.float32),
+            mic_health_trust=np.ones((8,), dtype=np.float32),
             enabled=True,
             spatial_exponent=2.0,
             dead_rms_threshold=1e-6,

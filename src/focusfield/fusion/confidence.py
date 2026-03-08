@@ -34,28 +34,41 @@ from __future__ import annotations
 
 from typing import Dict
 
+from focusfield.fusion.speaker_posterior import estimate_speaker_posterior
+
 
 def combine_scores(
     mouth_activity: float,
     face_confidence: float,
     doa_peak_score: float,
+    doa_confidence: float,
     angle_error_deg: float,
+    audio_speech_prob: float,
+    track_continuity: float,
+    mic_health_score: float,
     weights: Dict[str, float],
 ) -> float:
-    """Combine component scores into a 0..1 confidence."""
-    w_mouth = float(weights.get("mouth", 0.7))
-    w_face = float(weights.get("face", 0.3))
-    w_doa = float(weights.get("doa", 0.0))
-    w_angle = float(weights.get("angle", 0.0))
-    angle_penalty = max(0.0, min(1.0, angle_error_deg / 180.0))
-    score = (
-        w_mouth * mouth_activity
-        + w_face * face_confidence
-        + w_doa * doa_peak_score
-        - w_angle * angle_penalty
+    """Combine evidence into a calibrated 0..1 active-speaker posterior."""
+    posterior_weights = {
+        "bias": float(weights.get("bias", -0.35)),
+        "visual": float(weights.get("mouth", weights.get("visual", 1.35))),
+        "face": float(weights.get("face", 0.35)),
+        "doa_peak": float(weights.get("doa", weights.get("doa_peak", 1.15))),
+        "doa_confidence": float(weights.get("doa_confidence", 0.75)),
+        "audio": float(weights.get("audio", 1.05)),
+        "angle_match": float(weights.get("angle", weights.get("angle_match", 0.95))),
+        "continuity": float(weights.get("continuity", 0.55)),
+        "mic_health": float(weights.get("mic_health", 0.80)),
+        "agreement_bonus": float(weights.get("agreement_bonus", 0.40)),
+    }
+    return estimate_speaker_posterior(
+        visual_speaking_prob=mouth_activity,
+        face_confidence=face_confidence,
+        doa_peak_score=doa_peak_score,
+        doa_confidence=doa_confidence,
+        angle_error_deg=angle_error_deg,
+        audio_speech_prob=audio_speech_prob,
+        track_continuity=track_continuity,
+        mic_health_score=mic_health_score,
+        weights=posterior_weights,
     )
-    if score < 0.0:
-        return 0.0
-    if score > 1.0:
-        return 1.0
-    return score

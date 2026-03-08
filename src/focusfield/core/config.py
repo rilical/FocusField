@@ -72,7 +72,23 @@ def _default_config() -> Dict[str, Any]:
             "run_id": "",
             "fail_fast": True,
             "perf_profile": "default",
+            "process_mode": "threaded",
             "enable_validation": False,
+            "realtime": {
+                "enabled": False,
+                "allow_best_effort": True,
+                "scheduler": "other",
+                "priority": 0,
+                "cpu_affinity": [],
+                "mlockall": False,
+                "nice": None,
+            },
+            "multiprocess": {
+                "start_method": "spawn",
+                "queue_depth": 32,
+                "shared_memory": True,
+                "workers": {},
+            },
             "requirements": {
                 "strict": False,
                 "min_cameras": 0,
@@ -131,6 +147,7 @@ def _default_config() -> Dict[str, Any]:
         },
         "vision": {
             "face": {
+                "backend": "auto",
                 "min_confidence": 0.6,
                 "iou_threshold": 0.3,
                 "max_missing_frames": 10,
@@ -140,6 +157,10 @@ def _default_config() -> Dict[str, Any]:
                 "scale_factor": 1.1,
                 "detect_width": 360,
                 "detect_every_n": 1,
+                "yunet_score_threshold": 0.6,
+                "yunet_nms_threshold": 0.3,
+                "yunet_top_k": 8,
+                "yunet_model_path": "",
             },
             "track": {
                 "smoothing_alpha": 0.6,
@@ -147,10 +168,11 @@ def _default_config() -> Dict[str, Any]:
                 "min_age_frames": 2,
             },
             "mouth": {
+                "backend": "auto",
                 "smoothing_alpha": 0.6,
                 "min_activity": 0.02,
                 "max_activity": 0.2,
-                "diff_threshold": 6.0,
+                "diff_threshold": 12.0,
                 "use_facemesh": True,
                 "mesh_every_n": 1,
                 "mesh_max_faces": 5,
@@ -159,6 +181,11 @@ def _default_config() -> Dict[str, Any]:
                 "mesh_min_activity": 0.005,
                 "mesh_max_activity": 0.1,
                 "mesh_model_path": "",
+                "tflite_model_path": "",
+                "tflite_model_member": "face_landmarks_detector.tflite",
+                "tflite_threads": 1,
+                "tflite_min_presence": 0.0,
+                "tflite_crop_scale": 1.45,
             },
             "heatmap": {
                 "bin_size_deg": 5.0,
@@ -170,10 +197,16 @@ def _default_config() -> Dict[str, Any]:
         "fusion": {
             "thresholds_preset": "balanced",
             "weights": {
-                "mouth": 0.7,
-                "face": 0.3,
-                "doa": 0.0,
-                "angle": 0.0,
+                "bias": -0.35,
+                "mouth": 1.05,
+                "face": 0.35,
+                "doa": 1.15,
+                "angle": 0.95,
+                "audio": 1.05,
+                "continuity": 0.55,
+                "mic_health": 0.80,
+                "doa_confidence": 0.75,
+                "agreement_bonus": 0.40,
             },
             "audio_fallback": {
                 "enabled": True,
@@ -186,7 +219,7 @@ def _default_config() -> Dict[str, Any]:
             },
             "require_vad": False,
             "vad_max_age_ms": 500,
-            "require_speaking": True,
+            "require_speaking": False,
         },
         "bus": {
             "max_queue_depth": 8,
@@ -205,13 +238,54 @@ def _default_config() -> Dict[str, Any]:
                 # If true, allow audio.capture to fall back to mono when the requested
                 # multichannel input can't be opened (useful for laptop baseline runs).
                 "allow_mono_fallback": True,
+                "publish_fft": True,
+            },
+            "mic_health": {
+                "enabled": True,
+                "score_ema_alpha": 0.8,
+                "noise_ema_alpha": 0.97,
+                "dead_rms_threshold": 1e-5,
+                "max_clip_fraction": 0.01,
+                "max_dc_offset": 0.03,
+                "max_dropout_fraction": 0.98,
+                "min_coherence": 0.12,
+                "max_drift_samples": 8,
+                "min_active_score": 0.35,
+                "drift_every_n": 6,
             },
             "vad": {
                 "enabled": True,
+                "backend": "auto",
                 "mode": 2,
                 "frame_ms": 20,
                 "min_speech_ratio": 0.3,
-            }
+                "silero": {
+                    "threshold": 0.45,
+                    "model_path": "",
+                },
+            },
+            "denoise": {
+                "enabled": False,
+                "backend": "wiener",
+                "wiener": {
+                    "g_min": 0.05,
+                    "noise_ema_alpha": 0.98,
+                },
+                "rnnoise": {
+                    "model_path": "",
+                    "model_url": "",
+                    "frame_size": 480,
+                    "allow_fallback": True,
+                    "strength": 0.65,
+                    "min_gain": 0.08,
+                    "noise_ema_alpha": 0.98,
+                    "gain_ema_alpha": 0.85,
+                    "nfft": 1024,
+                },
+                "hybrid": {
+                    "postfilter_strength": 0.5,
+                },
+            },
         },
         "output": {
             "sink": "file",
@@ -310,6 +384,48 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     perf_profile = str(runtime_cfg.get("perf_profile", "default") or "default").strip().lower()
     if perf_profile not in {"default", "realtime_pi_max"}:
         errors.append("runtime.perf_profile must be one of: default, realtime_pi_max")
+    process_mode = str(runtime_cfg.get("process_mode", "threaded") or "threaded").strip().lower()
+    if process_mode not in {"threaded", "multiprocess"}:
+        errors.append("runtime.process_mode must be one of: threaded, multiprocess")
+    realtime_cfg = runtime_cfg.get("realtime", {})
+    if realtime_cfg is not None and not isinstance(realtime_cfg, dict):
+        errors.append("runtime.realtime must be a mapping when provided")
+        realtime_cfg = {}
+    if isinstance(realtime_cfg, dict):
+        scheduler = str(realtime_cfg.get("scheduler", "other") or "other").strip().lower()
+        if scheduler not in {"other", "fifo", "rr"}:
+            errors.append("runtime.realtime.scheduler must be one of: other, fifo, rr")
+        affinity = realtime_cfg.get("cpu_affinity", [])
+        if affinity is not None and not isinstance(affinity, list):
+            errors.append("runtime.realtime.cpu_affinity must be a list when provided")
+        elif isinstance(affinity, list):
+            for idx, cpu in enumerate(affinity):
+                try:
+                    cpu_i = int(cpu)
+                except Exception:
+                    errors.append(f"runtime.realtime.cpu_affinity[{idx}] must be integer")
+                    continue
+                if cpu_i < 0:
+                    errors.append(f"runtime.realtime.cpu_affinity[{idx}] must be >= 0")
+    mp_cfg = runtime_cfg.get("multiprocess", {})
+    if mp_cfg is not None and not isinstance(mp_cfg, dict):
+        errors.append("runtime.multiprocess must be a mapping when provided")
+        mp_cfg = {}
+    if isinstance(mp_cfg, dict):
+        start_method = str(mp_cfg.get("start_method", "spawn") or "spawn").strip().lower()
+        if start_method not in {"spawn", "fork", "forkserver"}:
+            errors.append("runtime.multiprocess.start_method must be one of: spawn, fork, forkserver")
+        if "queue_depth" in mp_cfg:
+            try:
+                queue_depth = int(mp_cfg.get("queue_depth", 32))
+            except Exception:
+                errors.append("runtime.multiprocess.queue_depth must be integer")
+            else:
+                if queue_depth <= 0:
+                    errors.append("runtime.multiprocess.queue_depth must be > 0")
+        workers_cfg = mp_cfg.get("workers", {})
+        if workers_cfg is not None and not isinstance(workers_cfg, dict):
+            errors.append("runtime.multiprocess.workers must be a mapping when provided")
     min_cameras = int(req_cfg.get("min_cameras", 0) or 0)
     min_audio_channels = int(req_cfg.get("min_audio_channels", 0) or 0)
     camera_scope = str(req_cfg.get("camera_scope", "any") or "any").strip().lower()
@@ -387,8 +503,35 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         freq_high_hz = float(mvdr_cfg.get("freq_high_hz", 4800.0) or 4800.0)
         if freq_low_hz < 0.0:
             errors.append("audio.beamformer.mvdr.freq_low_hz must be >= 0")
-            if freq_high_hz <= freq_low_hz:
-                errors.append("audio.beamformer.mvdr.freq_high_hz must be > freq_low_hz")
+        if freq_high_hz <= freq_low_hz:
+            errors.append("audio.beamformer.mvdr.freq_high_hz must be > freq_low_hz")
+
+    vad_cfg = audio_cfg.get("vad", {})
+    if isinstance(vad_cfg, dict):
+        backend = str(vad_cfg.get("backend", "auto") or "auto").strip().lower()
+        if backend not in {"auto", "silero", "webrtc"}:
+            errors.append("audio.vad.backend must be one of: auto, silero, webrtc")
+
+    vision_cfg = config.get("vision", {})
+    if isinstance(vision_cfg, dict):
+        face_cfg = vision_cfg.get("face", {})
+        if isinstance(face_cfg, dict):
+            backend = str(face_cfg.get("backend", "auto") or "auto").strip().lower()
+            if backend not in {"auto", "yunet", "haar"}:
+                errors.append("vision.face.backend must be one of: auto, yunet, haar")
+        mouth_cfg = vision_cfg.get("mouth", {})
+        if isinstance(mouth_cfg, dict):
+            backend = str(mouth_cfg.get("backend", "auto") or "auto").strip().lower()
+            if backend not in {"auto", "tflite", "facemesh", "diff"}:
+                errors.append("vision.mouth.backend must be one of: auto, tflite, facemesh, diff")
+            if "tflite_threads" in mouth_cfg:
+                try:
+                    threads = int(mouth_cfg.get("tflite_threads", 1))
+                except Exception:
+                    errors.append("vision.mouth.tflite_threads must be integer")
+                else:
+                    if threads <= 0:
+                        errors.append("vision.mouth.tflite_threads must be > 0")
 
     fusion_cfg = config.get("fusion", {})
     if fusion_cfg is not None and not isinstance(fusion_cfg, dict):
@@ -427,8 +570,8 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     denoise_cfg = audio_cfg.get("denoise", {})
     if isinstance(denoise_cfg, dict):
         backend = str(denoise_cfg.get("backend", "wiener") or "wiener").lower()
-        if backend not in {"wiener", "rnnoise", "hybrid"}:
-            errors.append("audio.denoise.backend must be one of: wiener, rnnoise, hybrid")
+        if backend not in {"wiener", "rnnoise", "rnnoise_native", "rnnoise_onnx", "hybrid"}:
+            errors.append("audio.denoise.backend must be one of: wiener, rnnoise, rnnoise_native, rnnoise_onnx, hybrid")
         rnnoise_cfg = denoise_cfg.get("rnnoise", {})
         if rnnoise_cfg is not None and not isinstance(rnnoise_cfg, dict):
             errors.append("audio.denoise.rnnoise must be a dict when provided")
@@ -436,6 +579,9 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             model_path = rnnoise_cfg.get("model_path", "")
             if model_path is not None and not isinstance(model_path, str):
                 errors.append("audio.denoise.rnnoise.model_path must be string")
+            model_url = rnnoise_cfg.get("model_url", "")
+            if model_url is not None and not isinstance(model_url, str):
+                errors.append("audio.denoise.rnnoise.model_url must be string")
         hybrid_cfg = denoise_cfg.get("hybrid", {})
         if hybrid_cfg is not None and not isinstance(hybrid_cfg, dict):
             errors.append("audio.denoise.hybrid must be a dict when provided")

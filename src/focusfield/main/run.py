@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import queue
 import sys
 import threading
@@ -37,7 +36,6 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from focusfield.core.bus import Bus
 from focusfield.core.config import load_config
 from focusfield.core.clock import now_ns
 from focusfield.core.artifacts import create_run_dir, write_run_metadata
@@ -50,6 +48,8 @@ from focusfield.audio.beamform.delay_and_sum import start_delay_and_sum
 from focusfield.audio.beamform.mvdr import start_mvdr
 from focusfield.audio.doa.srp_phat import start_srp_phat
 from focusfield.audio.enhance.denoise import start_denoise
+from focusfield.audio.fft_backend import backend_name as fft_backend_name
+from focusfield.audio.mic_health import start_audio_mic_health
 from focusfield.audio.output.sink import start_output_sink
 from focusfield.audio.vad import start_audio_vad
 from focusfield.bench.replay.recorder import start_trace_recorder
@@ -64,86 +64,16 @@ from focusfield.platform.hardware_probe import normalize_camera_scope, try_open_
 from focusfield.vision.cameras import start_cameras
 from focusfield.vision.speaker_heatmap import start_speaker_heatmap
 from focusfield.vision.tracking.face_track import start_face_tracking
-
-
-def _apply_runtime_thread_caps(config: Dict[str, Any], logger: LogEmitter) -> None:
-    runtime_cfg = config.get("runtime", {})
-    if not isinstance(runtime_cfg, dict):
-        runtime_cfg = {}
-    perf_profile = str(runtime_cfg.get("perf_profile", "default") or "default").strip().lower()
-    if perf_profile != "realtime_pi_max":
-        return
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-    os.environ.setdefault("MKL_NUM_THREADS", "1")
-    try:
-        import cv2  # type: ignore
-
-        cv2.setNumThreads(1)
-        logger.emit(
-            "info",
-            "main.run",
-            "thread_caps_applied",
-            {
-                "perf_profile": perf_profile,
-                "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS"),
-                "OPENBLAS_NUM_THREADS": os.environ.get("OPENBLAS_NUM_THREADS"),
-                "MKL_NUM_THREADS": os.environ.get("MKL_NUM_THREADS"),
-                "opencv_threads": 1,
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.emit(
-            "warning",
-            "main.run",
-            "thread_caps_partial",
-            {
-                "perf_profile": perf_profile,
-                "error": str(exc),
-                "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS"),
-                "OPENBLAS_NUM_THREADS": os.environ.get("OPENBLAS_NUM_THREADS"),
-                "MKL_NUM_THREADS": os.environ.get("MKL_NUM_THREADS"),
-            },
-        )
-
-
-def _start_beamformed_passthrough(bus: Bus, logger: LogEmitter, stop_event: threading.Event) -> threading.Thread:
-    """Republish beamformed audio to the final topic when denoise is disabled."""
-
-    q = bus.subscribe("audio.enhanced.beamformed")
-
-    def _run() -> None:
-        while not stop_event.is_set():
-            try:
-                msg = q.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            bus.publish("audio.enhanced.final", msg)
-
-    thread = threading.Thread(target=_run, name="enhanced-passthrough", daemon=True)
-    thread.start()
-    logger.emit("info", "main.run", "denoise_disabled_passthrough", {})
-    return thread
-
-
-def _runtime_requirements(config: Dict[str, Any]) -> Dict[str, Any]:
-    runtime_cfg = config.get("runtime", {})
-    if not isinstance(runtime_cfg, dict):
-        runtime_cfg = {}
-    req_cfg = runtime_cfg.get("requirements", {})
-    if not isinstance(req_cfg, dict):
-        req_cfg = {}
-    raw_scope = req_cfg.get("camera_scope", "any")
-    try:
-        camera_scope = normalize_camera_scope(raw_scope)
-    except Exception:
-        camera_scope = "any"
-    return {
-        "strict": bool(req_cfg.get("strict", False)),
-        "min_cameras": int(req_cfg.get("min_cameras", 0) or 0),
-        "min_audio_channels": int(req_cfg.get("min_audio_channels", 0) or 0),
-        "camera_scope": camera_scope,
-    }
+from focusfield.main.runtime_multiprocess import start_multiprocess_runtime
+from focusfield.main.runtime_support import (
+    apply_runtime_os_tuning,
+    apply_runtime_thread_caps,
+    build_bus,
+    camera_topics,
+    runtime_process_mode,
+    runtime_requirements,
+    start_beamformed_passthrough,
+)
 
 
 def _selected_audio_info(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -246,7 +176,7 @@ def _uma8_mode_hint(name: str, channels: int, required: int) -> str:
 
 
 def _validate_runtime_requirements(config: Dict[str, Any], logger: LogEmitter) -> None:
-    req = _runtime_requirements(config)
+    req = runtime_requirements(config)
     if not req["strict"]:
         return
 
@@ -326,6 +256,7 @@ def _install_crash_handlers(
         "runtime.health",
         "fusion.target_lock",
         "audio.vad",
+        "audio.mic_health",
         "audio.doa_heatmap",
         "vision.face_tracks",
         "audio.beamformer.debug",
@@ -422,6 +353,96 @@ def _install_crash_handlers(
     return crash_event, crash_info
 
 
+def _start_parent_modules(
+    bus: Any,
+    config: Dict[str, Any],
+    logger: LogEmitter,
+    stop_event: threading.Event,
+) -> List[threading.Thread]:
+    threads: List[threading.Thread] = []
+
+    log_thread = start_log_sink(bus, config, logger, stop_event)
+    if log_thread is not None:
+        threads.append(log_thread)
+
+    health_thread = start_health_monitor(bus, config, logger, stop_event)
+    if health_thread is not None:
+        threads.append(health_thread)
+
+    perf_thread = start_perf_monitor(bus, config, logger, stop_event)
+    if perf_thread is not None:
+        threads.append(perf_thread)
+
+    drift_thread = start_drift_check(bus, config, logger, stop_event)
+    if drift_thread is not None:
+        threads.append(drift_thread)
+
+    threads.append(start_av_association(bus, config, logger, stop_event))
+    threads.append(start_lock_state_machine(bus, config, logger, stop_event))
+    threads.append(start_uma8_led_service(bus, config, logger, stop_event))
+
+    sink_thread = start_output_sink(bus, config, logger, stop_event)
+    if sink_thread is not None:
+        threads.append(sink_thread)
+
+    trace_thread = start_trace_recorder(bus, config, logger, stop_event)
+    if trace_thread is not None:
+        threads.append(trace_thread)
+    threads.append(start_telemetry(bus, config, logger, stop_event))
+    threads.append(start_ui_server(bus, config, logger, stop_event))
+    return threads
+
+
+def _start_threaded_workers(
+    bus: Any,
+    config: Dict[str, Any],
+    logger: LogEmitter,
+    stop_event: threading.Event,
+    req: Dict[str, Any],
+) -> List[threading.Thread]:
+    threads: List[threading.Thread] = []
+
+    audio_thread = start_audio_capture(bus, config, logger, stop_event)
+    if audio_thread is not None:
+        threads.append(audio_thread)
+    mic_health_thread = start_audio_mic_health(bus, config, logger, stop_event)
+    if mic_health_thread is not None:
+        threads.append(mic_health_thread)
+    vad_thread = start_audio_vad(bus, config, logger, stop_event)
+    if vad_thread is not None:
+        threads.append(vad_thread)
+    doa_thread = start_srp_phat(bus, config, logger, stop_event)
+    if doa_thread is not None:
+        threads.append(doa_thread)
+
+    threads.extend(
+        start_cameras(
+            bus,
+            config,
+            logger,
+            stop_event,
+            strict_capture=req["strict"],
+            camera_scope=req["camera_scope"],
+        )
+    )
+    threads.append(start_face_tracking(bus, config, logger, stop_event))
+    threads.append(start_speaker_heatmap(bus, config, logger, stop_event))
+
+    beam_thread = start_mvdr(bus, config, logger, stop_event)
+    if beam_thread is None:
+        beam_thread = start_delay_and_sum(bus, config, logger, stop_event)
+    if beam_thread is not None:
+        threads.append(beam_thread)
+
+    denoise_thread = start_denoise(bus, config, logger, stop_event)
+    if denoise_thread is not None:
+        threads.append(denoise_thread)
+    else:
+        threads.append(start_beamformed_passthrough(bus, logger, stop_event, "main.run"))
+
+    return threads
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="FocusField vision-first runner")
     parser.add_argument("--config", default="configs/mvp_1cam_4mic.yaml", help="Path to YAML config")
@@ -442,19 +463,9 @@ def main() -> None:
             parsed_topic_depths[str(key)] = int(value)
         except Exception:
             continue
-    bus = Bus(
-        max_queue_depth=int(bus_cfg.get("max_queue_depth", 8)),
-        topic_queue_depths=parsed_topic_depths,
-    )
+    bus = build_bus(config)
     logger = LogEmitter(bus, min_level=config.get("logging", {}).get("level", "info"), run_id=str(config.get("runtime", {}).get("run_id", "")))
-    bus_camera_topics = []
-    cameras_cfg = config.get("video", {}).get("cameras", [])
-    if isinstance(cameras_cfg, list):
-        for idx, cam_cfg in enumerate(cameras_cfg):
-            camera_id = f"cam{idx}"
-            if isinstance(cam_cfg, dict):
-                camera_id = str(cam_cfg.get("id", camera_id))
-            bus_camera_topics.append(f"vision.frames.{camera_id}")
+    bus_camera_topics = camera_topics(config)
     resolved_camera_queue_depths = {topic: bus.get_topic_depth(topic) for topic in bus_camera_topics}
     logger.emit(
         "info",
@@ -483,7 +494,18 @@ def main() -> None:
         logger.emit("warning", "core.bus", "queue_full", {"topic": topic, "depth": depth})
 
     bus.set_drop_handler(_on_drop)
-    _apply_runtime_thread_caps(config, logger)
+    tuning_role = "parent" if runtime_process_mode(config) == "multiprocess" else "main"
+    apply_runtime_thread_caps(config, logger, role=tuning_role)
+    apply_runtime_os_tuning(config, logger, role=tuning_role)
+    logger.emit(
+        "info",
+        "main.run",
+        "runtime_backend",
+        {
+            "process_mode": runtime_process_mode(config),
+            "fft_backend": fft_backend_name(),
+        },
+    )
 
     crash_event, crash_info = _install_crash_handlers(bus, run_dir, config, logger, stop_event)
 
@@ -496,71 +518,12 @@ def main() -> None:
     except RuntimeError as exc:
         raise SystemExit(str(exc))
 
-    req = _runtime_requirements(config)
-
-    log_thread = start_log_sink(bus, config, logger, stop_event)
-    if log_thread is not None:
-        threads.append(log_thread)
-
-    health_thread = start_health_monitor(bus, config, logger, stop_event)
-    if health_thread is not None:
-        threads.append(health_thread)
-
-    perf_thread = start_perf_monitor(bus, config, logger, stop_event)
-    if perf_thread is not None:
-        threads.append(perf_thread)
-
-    drift_thread = start_drift_check(bus, config, logger, stop_event)
-    if drift_thread is not None:
-        threads.append(drift_thread)
-
-    audio_thread = start_audio_capture(bus, config, logger, stop_event)
-    if audio_thread is not None:
-        threads.append(audio_thread)
-    vad_thread = start_audio_vad(bus, config, logger, stop_event)
-    if vad_thread is not None:
-        threads.append(vad_thread)
-    doa_thread = start_srp_phat(bus, config, logger, stop_event)
-    if doa_thread is not None:
-        threads.append(doa_thread)
-
-    threads.extend(
-        start_cameras(
-            bus,
-            config,
-            logger,
-            stop_event,
-            strict_capture=req["strict"],
-            camera_scope=req["camera_scope"],
-        )
-    )
-    threads.append(start_face_tracking(bus, config, logger, stop_event))
-    threads.append(start_speaker_heatmap(bus, config, logger, stop_event))
-    threads.append(start_av_association(bus, config, logger, stop_event))
-    threads.append(start_lock_state_machine(bus, config, logger, stop_event))
-    threads.append(start_uma8_led_service(bus, config, logger, stop_event))
-
-    beam_thread = start_mvdr(bus, config, logger, stop_event)
-    if beam_thread is None:
-        beam_thread = start_delay_and_sum(bus, config, logger, stop_event)
-    if beam_thread is not None:
-        threads.append(beam_thread)
-
-    denoise_thread = start_denoise(bus, config, logger, stop_event)
-    if denoise_thread is not None:
-        threads.append(denoise_thread)
+    req = runtime_requirements(config)
+    threads.extend(_start_parent_modules(bus, config, logger, stop_event))
+    if runtime_process_mode(config) == "multiprocess":
+        threads.extend(start_multiprocess_runtime(bus, config, logger, stop_event))
     else:
-        threads.append(_start_beamformed_passthrough(bus, logger, stop_event))
-
-    sink_thread = start_output_sink(bus, config, logger, stop_event)
-    if sink_thread is not None:
-        threads.append(sink_thread)
-
-    trace_thread = start_trace_recorder(bus, config, logger, stop_event)
-    if trace_thread is not None:
-        threads.append(trace_thread)
-    threads.append(start_telemetry(bus, config, logger, stop_event))
-    threads.append(start_ui_server(bus, config, logger, stop_event))
+        threads.extend(_start_threaded_workers(bus, config, logger, stop_event, req))
 
     logger.emit("info", "main.run", "started", {"mode": args.mode})
     try:

@@ -81,6 +81,7 @@ def start_trace_recorder(
     record_heatmap_full = bool(trace_cfg.get("record_heatmap_full", False))
 
     q_vad = bus.subscribe("audio.vad")
+    q_mic_health = bus.subscribe("audio.mic_health")
     q_doa = bus.subscribe("audio.doa_heatmap")
     q_faces = bus.subscribe("vision.face_tracks")
     q_lock = bus.subscribe("fusion.target_lock")
@@ -134,6 +135,7 @@ def start_trace_recorder(
 
     def _run() -> None:
         vad_fh = _open_trace("vad.jsonl")
+        mic_fh = _open_trace("mic_health.jsonl")
         doa_fh = _open_trace("doa.jsonl")
         faces_fh = _open_trace("faces.jsonl")
         lock_fh = _open_trace("lock.jsonl")
@@ -152,6 +154,9 @@ def start_trace_recorder(
                 vad = _drain_latest(q_vad)
                 if vad is not None:
                     _write_jsonl(vad_fh, vad)
+                mic_health = _drain_latest(q_mic_health)
+                if mic_health is not None:
+                    _write_jsonl(mic_fh, mic_health)
                 doa = _drain_latest(q_doa)
                 if doa is not None:
                     if not record_heatmap_full:
@@ -222,7 +227,7 @@ def start_trace_recorder(
                 now_s = time.time()
                 if now_s >= next_fsync_s:
                     next_fsync_s = now_s + 0.5
-                    for fh in (vad_fh, doa_fh, faces_fh, lock_fh, beam_fh):
+                    for fh in (vad_fh, mic_fh, doa_fh, faces_fh, lock_fh, beam_fh):
                         _maybe_fsync(fh)
                     if enhanced_writer is not None:
                         try:
@@ -238,7 +243,7 @@ def start_trace_recorder(
         except Exception as exc:  # noqa: BLE001
             logger.emit("warning", "bench.recorder", "record_failed", {"error": str(exc)})
         finally:
-            for fh in (vad_fh, doa_fh, faces_fh, lock_fh, beam_fh):
+            for fh in (vad_fh, mic_fh, doa_fh, faces_fh, lock_fh, beam_fh):
                 try:
                     fh.close()
                 except Exception:

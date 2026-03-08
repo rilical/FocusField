@@ -285,7 +285,7 @@ class LockStateMachine:
             track_id = cand.get("track_id")
             if track_id is None:
                 continue
-            if cand.get("speaking") or float(cand.get("score_components", {}).get("mouth_activity", 0.0)) >= self._speak_on:
+            if cand.get("speaking") or _candidate_speaking_probability(cand) >= self._speak_on:
                 self._last_speaking_by_track[str(track_id)] = t_ns
 
     def _maybe_handoff(self, best: Dict[str, Any], t_ns: int) -> str:
@@ -354,7 +354,7 @@ def _best_candidate(
     speaking = [
         cand
         for cand in candidates
-        if cand.get("speaking") or float(cand.get("score_components", {}).get("mouth_activity", 0.0)) >= speak_on_threshold
+        if cand.get("speaking") or _candidate_speaking_probability(cand) >= speak_on_threshold
     ]
     if require_speaking and not speaking:
         return None
@@ -411,7 +411,7 @@ def _has_speaking_candidate(candidates: List[Dict[str, Any]], speak_on_threshold
     for cand in candidates:
         if cand.get("speaking"):
             return True
-        if float(cand.get("score_components", {}).get("mouth_activity", 0.0)) >= speak_on_threshold:
+        if _candidate_speaking_probability(cand) >= speak_on_threshold:
             return True
     return False
 
@@ -443,3 +443,25 @@ def _infer_mode(candidate: Dict[str, Any]) -> str:
     if candidate.get("doa_peak_deg") is not None:
         return "AV_LOCK"
     return "VISION_ONLY"
+
+
+def _candidate_speaking_probability(candidate: Dict[str, Any]) -> float:
+    score_components = candidate.get("score_components", {})
+    if not isinstance(score_components, dict):
+        score_components = {}
+    raw = candidate.get(
+        "speaking_probability",
+        score_components.get(
+            "visual_speaking_prob",
+            score_components.get("mouth_activity", 0.0),
+        ),
+    )
+    try:
+        probability = float(raw or 0.0)
+    except Exception:
+        return 0.0
+    if probability < 0.0:
+        return 0.0
+    if probability > 1.0:
+        return 1.0
+    return probability

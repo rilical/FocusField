@@ -62,6 +62,7 @@ def start_telemetry(
     q_health = bus.subscribe("runtime.health")
     q_perf = bus.subscribe("runtime.perf")
     q_vad = bus.subscribe("audio.vad")
+    q_mic_health = bus.subscribe("audio.mic_health")
     configured_cameras = [
         cam.get("id", f"cam{idx}")
         for idx, cam in enumerate(config.get("video", {}).get("cameras", []))
@@ -90,6 +91,7 @@ def start_telemetry(
         "health": None,
         "perf": None,
         "vad": None,
+        "mic_health": None,
         "configured_cameras": configured_cameras,
         "configured_camera_map": configured_camera_map,
     }
@@ -136,6 +138,9 @@ def start_telemetry(
             vad_msg = _drain(q_vad)
             if vad_msg is not None:
                 state["vad"] = vad_msg
+            mic_health_msg = _drain(q_mic_health)
+            if mic_health_msg is not None:
+                state["mic_health"] = mic_health_msg
             log_event = _drain(q_logs)
             if log_event is not None:
                 logs: List[Dict[str, Any]] = state["logs"]
@@ -206,6 +211,7 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
                 "track_id": face.get("track_id"),
                 "bearing_deg": face.get("bearing_deg"),
                 "mouth_activity": face.get("mouth_activity"),
+                "visual_speaking_prob": face.get("visual_speaking_prob", face.get("mouth_activity")),
                 "speaking": face.get("speaking"),
                 "bbox": face.get("bbox"),
                 "camera_id": face.get("camera_id"),
@@ -214,6 +220,7 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             for face in faces
         ],
         "beamformer": state.get("beam"),
+        "mic_health": state.get("mic_health") or {},
         "uma8_leds": {
             "enabled": bool(led_state.get("enabled", False)),
             "backend": led_state.get("backend", "none"),

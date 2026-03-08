@@ -31,6 +31,8 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from focusfield.audio.fft_backend import irfft, rfft
+
 
 def start_drift_check(
     bus: Any,
@@ -104,12 +106,12 @@ def _estimate_offset_samples(x: np.ndarray, y: np.ndarray) -> int:
     if x.size == 0 or y.size == 0:
         return 0
     n = int(2 ** np.ceil(np.log2(max(x.size, y.size) * 2)))
-    X = np.fft.rfft(x, n=n)
-    Y = np.fft.rfft(y, n=n)
+    X = rfft(x, n=n)
+    Y = rfft(y, n=n)
     R = X * np.conj(Y)
     denom = np.abs(R)
     R = R / np.maximum(denom, 1e-12)
-    cc = np.fft.irfft(R, n=n)
+    cc = irfft(R, n=n)
     max_shift = int(min(x.size, y.size) // 2)
     cc = np.concatenate((cc[-max_shift:], cc[: max_shift + 1]))
     shift = int(np.argmax(np.abs(cc)) - max_shift)

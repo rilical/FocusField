@@ -18,41 +18,18 @@ FAILURE MODES:
 
 LOG EVENTS:
   - module=vision.mouth_activity, event=landmarks_missing, payload keys=track_id
-
-TESTS:
-  - n/a
-
-CONTRACT DETAILS (inline from src/focusfield/vision/mouth/mouth_activity.md):
-# Mouth activity
-
-## Definition
-
-- mouth_activity is a stable scalar in [0, 1].
-
-## Inputs
-
-- Face landmarks or mouth ROI per track.
-
-## Output
-
-- mouth_activity per FaceTrack.
-
-## Filtering
-
-- Exponential smoothing with alpha defined in config.
-
-## Speaking trigger rules
-
-- mouth_activity > speak_on_threshold for N frames -> speaking.
-- mouth_activity < speak_off_threshold for M frames -> not speaking.
 """
 
 from __future__ import annotations
 
+import urllib.request
+import zipfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+
 try:
     import mediapipe.tasks as mp_tasks
     from mediapipe.tasks.python.vision.core.image import Image, ImageFormat
@@ -60,8 +37,14 @@ except ImportError:  # pragma: no cover
     mp_tasks = None
     Image = None
     ImageFormat = None
-import urllib.request
-from pathlib import Path
+
+try:
+    from tflite_runtime.interpreter import Interpreter
+except ImportError:  # pragma: no cover
+    try:
+        from ai_edge_litert.interpreter import Interpreter  # type: ignore
+    except ImportError:  # pragma: no cover
+        Interpreter = None
 
 
 BBox = Tuple[int, int, int, int]
@@ -127,7 +110,7 @@ class FaceMeshMouthEstimator:
     ) -> None:
         if mp_tasks is None or Image is None or ImageFormat is None:
             raise RuntimeError("mediapipe tasks API is not available")
-        model_path = _ensure_model_path(model_path)
+        model_path = _ensure_task_model_path(model_path)
         base_options = mp_tasks.BaseOptions(model_asset_path=model_path)
         options = mp_tasks.vision.FaceLandmarkerOptions(
             base_options=base_options,
@@ -163,6 +146,78 @@ class FaceMeshMouthEstimator:
         return outputs
 
 
+class TFLiteMouthEstimator:
+    """Lightweight landmark-based mouth estimator using a standalone TFLite interpreter."""
+
+    def __init__(
+        self,
+        min_activity: float = 0.02,
+        max_activity: float = 0.25,
+        model_path: Optional[str] = None,
+        task_path: Optional[str] = None,
+        model_member: str = "face_landmarks_detector.tflite",
+        num_threads: int = 1,
+        min_presence: float = 0.0,
+        crop_scale: float = 1.45,
+    ) -> None:
+        if Interpreter is None:
+            raise RuntimeError("tflite interpreter is not available")
+        resolved_model = _ensure_tflite_model_path(model_path, task_path, model_member)
+        self._interpreter = Interpreter(model_path=resolved_model, num_threads=max(1, int(num_threads)))
+        self._interpreter.allocate_tensors()
+        self._input_details = self._interpreter.get_input_details()
+        self._output_details = self._interpreter.get_output_details()
+        if not self._input_details:
+            raise RuntimeError("tflite landmark model has no inputs")
+        input_shape = list(self._input_details[0].get("shape", []))
+        if len(input_shape) < 4:
+            raise RuntimeError(f"unsupported landmark model input shape: {input_shape}")
+        self._input_h = int(input_shape[1])
+        self._input_w = int(input_shape[2])
+        self._min_activity = min_activity
+        self._max_activity = max_activity
+        self._min_presence = min_presence
+        self._crop_scale = crop_scale
+        self._landmarks_output_index = _select_landmark_output(self._output_details)
+        self._presence_output_index = _select_presence_output(self._output_details)
+        if self._landmarks_output_index is None:
+            raise RuntimeError("tflite landmark model output layout is unsupported")
+
+    def estimate_activity(self, frame_bgr: np.ndarray, bbox: BBox) -> Optional[float]:
+        crop = _extract_face_crop(frame_bgr, bbox, self._crop_scale)
+        if crop is None:
+            return None
+        face_crop = crop["image"]
+        rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
+        rgb = cv2.resize(rgb, (self._input_w, self._input_h), interpolation=cv2.INTER_LINEAR)
+
+        input_detail = self._input_details[0]
+        tensor = _prepare_input_tensor(rgb, input_detail)
+        self._interpreter.set_tensor(int(input_detail["index"]), tensor)
+        self._interpreter.invoke()
+
+        landmarks_raw = _read_output_tensor(self._interpreter, self._output_details[self._landmarks_output_index])
+        if landmarks_raw is None:
+            return None
+        presence = 1.0
+        if self._presence_output_index is not None:
+            presence_raw = _read_output_tensor(self._interpreter, self._output_details[self._presence_output_index])
+            if presence_raw is not None and presence_raw.size:
+                presence = float(np.ravel(presence_raw)[0])
+        if presence < self._min_presence:
+            return None
+
+        points = _landmarks_to_points(
+            landmarks_raw,
+            crop_width=int(crop["w"]),
+            crop_height=int(crop["h"]),
+            input_width=self._input_w,
+            input_height=self._input_h,
+        )
+        activity = _mouth_aspect_ratio(points)
+        return _scale(activity, self._min_activity, self._max_activity)
+
+
 def _mouth_aspect_ratio(points: List[Tuple[int, int]]) -> float:
     if len(points) < 292:
         return 0.0
@@ -190,6 +245,25 @@ def _extract_mouth_roi(frame: np.ndarray, bbox: BBox) -> Optional[np.ndarray]:
     return frame[y1:y2, x1:x2]
 
 
+def _extract_face_crop(frame: np.ndarray, bbox: BBox, scale: float) -> Optional[Dict[str, Any]]:
+    x, y, w, h = bbox
+    if w <= 0 or h <= 0:
+        return None
+    side = int(max(w, h) * max(1.0, scale))
+    cx = x + w / 2.0
+    cy = y + h / 2.0
+    x1 = max(0, int(round(cx - side / 2.0)))
+    y1 = max(0, int(round(cy - side / 2.0)))
+    x2 = min(frame.shape[1], x1 + side)
+    y2 = min(frame.shape[0], y1 + side)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+    return {"image": crop, "x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}
+
+
 def _scale(value: float, min_value: float, max_value: float) -> float:
     if max_value <= min_value:
         return 0.0
@@ -207,7 +281,7 @@ def _distance(a: Tuple[int, int], b: Tuple[int, int]) -> float:
     return float(np.hypot(dx, dy))
 
 
-def _ensure_model_path(model_path: Optional[str]) -> str:
+def _ensure_task_model_path(model_path: Optional[str]) -> str:
     if model_path:
         path = Path(model_path)
     else:
@@ -224,3 +298,106 @@ def _ensure_model_path(model_path: Optional[str]) -> str:
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"failed to download FaceLandmarker model: {exc}") from exc
     return str(path)
+
+
+def _ensure_tflite_model_path(model_path: Optional[str], task_path: Optional[str], member_name: str) -> str:
+    if model_path:
+        path = Path(model_path).expanduser()
+        if not path.exists():
+            raise RuntimeError(f"tflite model does not exist: {path}")
+        return str(path)
+    task = Path(_ensure_task_model_path(task_path)).expanduser()
+    cache_dir = task.parent
+    target = cache_dir / member_name
+    if target.exists():
+        return str(target)
+    if not zipfile.is_zipfile(task):
+        raise RuntimeError(f"task archive is not a zip bundle: {task}")
+    with zipfile.ZipFile(task) as zf:
+        if member_name not in zf.namelist():
+            raise RuntimeError(f"task bundle missing {member_name}")
+        with zf.open(member_name) as src, open(target, "wb") as dst:
+            dst.write(src.read())
+    return str(target)
+
+
+def _prepare_input_tensor(image_rgb: np.ndarray, detail: Dict[str, Any]) -> np.ndarray:
+    dtype = np.dtype(detail.get("dtype", np.float32))
+    x = np.asarray(image_rgb)
+    if dtype == np.float32:
+        x = x.astype(np.float32) / 255.0
+    else:
+        x = x.astype(np.float32)
+        scale, zero_point = detail.get("quantization", (0.0, 0))
+        if scale and float(scale) > 0:
+            x = np.round(x / float(scale) + float(zero_point))
+        x = np.clip(x, np.iinfo(dtype).min, np.iinfo(dtype).max).astype(dtype)
+    return x[None, ...]
+
+
+def _read_output_tensor(interpreter: Any, detail: Dict[str, Any]) -> Optional[np.ndarray]:
+    try:
+        out = interpreter.get_tensor(int(detail["index"]))
+    except Exception:  # noqa: BLE001
+        return None
+    arr = np.asarray(out)
+    scale, zero_point = detail.get("quantization", (0.0, 0))
+    if scale and float(scale) > 0 and arr.dtype != np.float32:
+        arr = (arr.astype(np.float32) - float(zero_point)) * float(scale)
+    return arr.astype(np.float32, copy=False)
+
+
+def _select_landmark_output(details: List[Dict[str, Any]]) -> Optional[int]:
+    best_idx = None
+    best_size = 0
+    for idx, detail in enumerate(details):
+        shape = detail.get("shape", [])
+        size = int(np.prod(shape)) if shape is not None and len(shape) > 0 else 0
+        if size >= 292 * 3 and size > best_size:
+            best_idx = idx
+            best_size = size
+    return best_idx
+
+
+def _select_presence_output(details: List[Dict[str, Any]]) -> Optional[int]:
+    named: Optional[int] = None
+    smallest: Optional[Tuple[int, int]] = None
+    for idx, detail in enumerate(details):
+        name = str(detail.get("name", "") or "").lower()
+        shape = detail.get("shape", [])
+        size = int(np.prod(shape)) if shape is not None and len(shape) > 0 else 0
+        if size <= 4 and any(token in name for token in ("presence", "confidence", "score")):
+            named = idx
+            break
+        if size <= 4 and (smallest is None or size < smallest[0]):
+            smallest = (size, idx)
+    if named is not None:
+        return named
+    return None if smallest is None else int(smallest[1])
+
+
+def _landmarks_to_points(
+    landmarks_raw: np.ndarray,
+    crop_width: int,
+    crop_height: int,
+    input_width: int,
+    input_height: int,
+) -> List[Tuple[int, int]]:
+    flat = np.asarray(landmarks_raw, dtype=np.float32).reshape(-1)
+    count = flat.size // 3
+    if count <= 0:
+        return []
+    coords = flat[: count * 3].reshape(count, 3)
+    xs = coords[:, 0].copy()
+    ys = coords[:, 1].copy()
+    max_abs = float(max(np.max(np.abs(xs)), np.max(np.abs(ys)))) if coords.size else 0.0
+    if max_abs > 2.0:
+        xs /= max(1.0, float(input_width))
+        ys /= max(1.0, float(input_height))
+    xs = np.clip(xs, 0.0, 1.0)
+    ys = np.clip(ys, 0.0, 1.0)
+    points = [
+        (int(round(float(x) * crop_width)), int(round(float(y) * crop_height)))
+        for x, y in zip(xs.tolist(), ys.tolist())
+    ]
+    return points

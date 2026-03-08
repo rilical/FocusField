@@ -55,6 +55,8 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from focusfield.audio.doa.geometry import load_mic_positions
+from focusfield.audio.fft_backend import irfft, rfft, rfftfreq
+from focusfield.audio.mic_health import channel_health_vectors
 from focusfield.core.clock import now_ns
 
 
@@ -119,7 +121,7 @@ def start_mvdr(
 
     nfft = int(mvdr_cfg.get("nfft", int(audio_cfg.get("block_size", 1024))))
     nfft = max(256, int(2 ** round(math.log2(max(256, nfft)))))
-    freq_hz = np.fft.rfftfreq(nfft, d=1.0 / sample_rate).astype(np.float32)
+    freq_hz = rfftfreq(nfft, d=1.0 / sample_rate).astype(np.float32)
 
     c = len(channel_order)
     if channels and c != channels:
@@ -173,6 +175,13 @@ def start_mvdr(
     max_snr_db = float(weights_cfg.get("max_snr_db", 18.0))
     max_clip_fraction = float(weights_cfg.get("max_clip_fraction", 0.01))
 
+    fallback_cfg = beam_cfg.get("health_fallback", {}) if isinstance(beam_cfg, dict) else {}
+    if not isinstance(fallback_cfg, dict):
+        fallback_cfg = {}
+    min_active_score = float(fallback_cfg.get("min_active_score", 0.35))
+    mvdr_min_channels = int(fallback_cfg.get("mvdr_min_channels", 4))
+    uncertain_trust_threshold = float(fallback_cfg.get("uncertain_trust_threshold", 0.45))
+
     noise_ref_cfg = beam_cfg.get("noise_reference", {}) if isinstance(beam_cfg, dict) else {}
     if not isinstance(noise_ref_cfg, dict):
         noise_ref_cfg = {}
@@ -182,8 +191,10 @@ def start_mvdr(
     q_frames = bus.subscribe("audio.frames")
     q_lock = bus.subscribe("fusion.target_lock")
     q_vad = bus.subscribe("audio.vad")
+    q_mic_health = bus.subscribe("audio.mic_health")
     last_lock: Optional[Dict[str, Any]] = None
     last_vad: Optional[Dict[str, Any]] = None
+    last_mic_health: Optional[Dict[str, Any]] = None
     last_target: Optional[Tuple[float, int]] = None
     last_debug_ns = 0
     debug_seq = 0
@@ -210,13 +221,14 @@ def start_mvdr(
         return frame
 
     def _run() -> None:
-        nonlocal last_lock, last_vad, last_target, last_debug_ns, debug_seq
+        nonlocal last_lock, last_vad, last_mic_health, last_target, last_debug_ns, debug_seq
         idle_cycles = 0
         processed_cycles = 0
         next_stats_emit = time.time() + 1.0
         while not stop_event.is_set():
             last_lock = _drain_latest(q_lock) or last_lock
             last_vad = _drain_latest(q_vad) or last_vad
+            last_mic_health = _drain_latest(q_mic_health) or last_mic_health
             frame_msg = _wait_and_drain_latest_frame(q_frames, timeout_s=0.05)
             if frame_msg is None:
                 idle_cycles += 1
@@ -235,6 +247,10 @@ def start_mvdr(
                         x = frame[:, state.channel_order]
                         block_len = int(x.shape[0])
                         speech = bool(last_vad.get("speech")) if last_vad else False
+                        health_scores, health_trust = channel_health_vectors(last_mic_health, x.shape[1])
+                        active_idx = _active_channels(health_scores, health_trust, min_active_score)
+                        if active_idx.size == 0:
+                            active_idx = np.arange(x.shape[1], dtype=np.int64)
 
                         target_bearing = _select_target_bearing(last_lock, t_ns, last_target, use_last_lock_ms)
                         if target_bearing is None:
@@ -242,6 +258,7 @@ def start_mvdr(
                             state.last_fallback = True
                             gains = np.ones((x.shape[1],), dtype=np.float32)
                             g_spatial = np.ones((x.shape[1],), dtype=np.float32)
+                            beam_mode = "NO_LOCK"
                         else:
                             if last_target is None:
                                 smoothed = target_bearing
@@ -254,6 +271,8 @@ def start_mvdr(
                                 state.positions_xy,
                                 smoothed,
                                 state.noise_rms,
+                                health_scores,
+                                health_trust,
                                 weights_enabled,
                                 spatial_exponent,
                                 dead_rms_threshold,
@@ -261,37 +280,46 @@ def start_mvdr(
                                 max_snr_db,
                                 max_clip_fraction,
                             )
-                            xw = x * gains[None, :]
-
-                            # Update per-channel noise rms.
-                            _update_noise_rms(state.noise_rms, x, speech, noise_ema_alpha, update_when_speaking, g_spatial, ref_threshold)
-
-                            # Update noise covariance.
-                            x_fft = np.fft.rfft(xw, n=state.nfft, axis=0)
-                            if not (speech_freeze_covariance and speech):
-                                _update_noise_covariance(
+                            mean_trust = float(np.mean(health_trust[active_idx])) if active_idx.size else 0.0
+                            if mean_trust < uncertain_trust_threshold:
+                                y = _subset_average(x, active_idx)
+                                state.last_fallback = True
+                                beam_mode = "HEALTH_AVERAGE"
+                            elif active_idx.size == 1:
+                                y = x[:, int(active_idx[0])].astype(np.float32)
+                                state.last_fallback = True
+                                beam_mode = "BEST_MIC"
+                            elif active_idx.size < mvdr_min_channels:
+                                y = _delay_and_sum_subset(x[:, active_idx], state.positions_xy[active_idx], smoothed, sample_rate)
+                                state.last_fallback = True
+                                beam_mode = "DELAY_SUM_SUBSET"
+                            else:
+                                _update_noise_rms(state.noise_rms, x, speech, noise_ema_alpha, update_when_speaking, g_spatial, ref_threshold)
+                                x_fft = _frame_fft_from_msg(frame_msg, x, state.nfft, state.channel_order) * gains[None, :].astype(np.complex64)
+                                if not (speech_freeze_covariance and speech):
+                                    _update_noise_covariance(
+                                        state,
+                                        x_fft,
+                                        speech,
+                                        noise_ema_alpha,
+                                        update_when_speaking,
+                                        g_spatial,
+                                        ref_threshold,
+                                    )
+                                y = _mvdr_apply(
                                     state,
                                     x_fft,
-                                    speech,
-                                    noise_ema_alpha,
-                                    update_when_speaking,
-                                    g_spatial,
-                                    ref_threshold,
+                                    smoothed,
+                                    block_len,
+                                    t_ns,
+                                    refresh_ms,
+                                    diagonal_loading,
+                                    steering_update_deg,
+                                    max_cond,
+                                    weight_interp_alpha,
+                                    logger,
                                 )
-
-                            y = _mvdr_apply(
-                                state,
-                                x_fft,
-                                smoothed,
-                                block_len,
-                                t_ns,
-                                refresh_ms,
-                                diagonal_loading,
-                                steering_update_deg,
-                                max_cond,
-                                weight_interp_alpha,
-                                logger,
-                            )
+                                beam_mode = "MVDR"
 
                         pf_stats = {"enabled": bool(pf_enabled), "gain_mean": 1.0}
                         if pf_enabled and y.size > 0:
@@ -320,8 +348,12 @@ def start_mvdr(
                                     "seq": debug_seq,
                                     "method": "mvdr",
                                     "target_bearing_deg": used_target,
+                                    "beam_mode": beam_mode,
                                     "gains": gains.astype(np.float32).tolist() if gains is not None else [],
                                     "g_spatial": g_spatial.astype(np.float32).tolist() if g_spatial is not None else [],
+                                    "active_channels": active_idx.astype(int).tolist(),
+                                    "mic_health_score_mean": float(np.mean(health_scores)) if health_scores.size else 0.0,
+                                    "mic_health_trust_mean": float(np.mean(health_trust)) if health_trust.size else 0.0,
                                     "ref_mask": ref_mask,
                                     "mvdr_condition_number": float(state.weights_cond) if state.weights_cond is not None else None,
                                     "weights_age_ms": float(weights_age_ms) if weights_age_ms is not None else None,
@@ -389,6 +421,8 @@ def _channel_gains(
     positions_xy: np.ndarray,
     target_bearing_deg: float,
     noise_rms: Optional[np.ndarray],
+    mic_health_scores: Optional[np.ndarray],
+    mic_health_trust: Optional[np.ndarray],
     enabled: bool,
     spatial_exponent: float,
     dead_rms_threshold: float,
@@ -425,6 +459,10 @@ def _channel_gains(
         snr_norm = (snr_db - min_snr_db) / max(1e-6, (max_snr_db - min_snr_db))
         snr_norm = np.clip(snr_norm, 0.0, 1.0).astype(np.float32)
         quality *= snr_norm
+    if mic_health_scores is not None:
+        quality *= np.clip(mic_health_scores, 0.0, 1.0).astype(np.float32)
+    if mic_health_trust is not None:
+        quality *= np.clip(0.35 + 0.65 * mic_health_trust, 0.0, 1.0).astype(np.float32)
 
     gains = spatial * quality
     return gains.astype(np.float32), spatial.astype(np.float32)
@@ -479,11 +517,9 @@ def _update_noise_covariance(
     idx = np.where(ref_mask)[0]
     xf_ref = x_fft[:, idx].astype(np.complex64)
     r_ref = xf_ref[:, :, None] * np.conj(xf_ref[:, None, :])
-    for i_local, i_global in enumerate(idx):
-        for j_local, j_global in enumerate(idx):
-            state.rnn[:, i_global, j_global] = (
-                ema_alpha * state.rnn[:, i_global, j_global] + (1.0 - ema_alpha) * r_ref[:, i_local, j_local]
-            )
+    state.rnn[:, idx[:, None], idx[None, :]] = (
+        ema_alpha * state.rnn[:, idx[:, None], idx[None, :]] + (1.0 - ema_alpha) * r_ref
+    )
 
 
 def _mvdr_apply(
@@ -531,17 +567,17 @@ def _mvdr_apply(
         except Exception as exc:  # noqa: BLE001
             logger.emit("warning", "audio.beamform.mvdr", "mvdr_unstable", {"reason": str(exc)})
             state.last_fallback = True
-            y_omni = np.mean(np.fft.irfft(x_fft, n=state.nfft, axis=0), axis=1).astype(np.float32)
+            y_omni = np.mean(irfft(x_fft, n=state.nfft, axis=0), axis=1).astype(np.float32)
             return y_omni[:block_len]
 
     w = state.weights
     if w is None:
         state.last_fallback = True
-        y_omni = np.mean(np.fft.irfft(x_fft, n=state.nfft, axis=0), axis=1).astype(np.float32)
+        y_omni = np.mean(irfft(x_fft, n=state.nfft, axis=0), axis=1).astype(np.float32)
         return y_omni[:block_len]
 
     y_fft = np.sum(np.conj(w) * x_fft.astype(np.complex64), axis=1)
-    y = np.fft.irfft(y_fft, n=state.nfft).astype(np.float32)
+    y = irfft(y_fft, n=state.nfft).astype(np.float32)
     return y[:block_len]
 
 
@@ -583,45 +619,36 @@ def _compute_mvdr_weights_with_stats(
     direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
     delays_s = (positions_xy @ direction) / SPEED_OF_SOUND_M_S
 
-    w_out = np.zeros((freq_hz.shape[0], c), dtype=np.complex64)
+    w_out = np.ones((freq_hz.shape[0], c), dtype=np.complex64) / np.complex64(float(c))
     eye = np.eye(c, dtype=np.complex64)
-    cond_max = 0.0
-    for f, freq in enumerate(freq_hz):
-        if freq <= 1.0:
-            # DC/near-DC: omni
-            w_out[f, :] = (1.0 / float(c))
-            continue
-        if freq < 80.0:
-            # Sub-speech band steering is unstable on small arrays; keep low-end neutral.
-            w_out[f, :] = (1.0 / float(c))
-            continue
-        if freq < freq_low_hz or freq > freq_high_hz:
-            w_out[f, :] = (1.0 / float(c))
-            continue
-        d = np.exp(-1j * 2.0 * math.pi * float(freq) * delays_s).astype(np.complex64)  # (C,)
-        trace_mean = float(np.real(np.trace(rnn[f])) / max(1, c))
-        if diagonal_loading <= 0.0:
-            adaptive_load = np.float32(0.0)
-        else:
-            edge_weight = 1.0
-            if freq < max(300.0, freq_low_hz + 120.0):
-                edge_weight += 0.55
-            if freq > min(freq_high_hz - 120.0, 3800.0):
-                edge_weight += 0.35
-            adaptive_load = np.float32(max(1e-9, diagonal_loading * edge_weight * max(trace_mean, 1e-6)))
-        r_loaded = rnn[f] + eye * np.complex64(adaptive_load)
-        if not np.all(np.isfinite(r_loaded)):
-            raise ValueError("covariance contains non-finite values")
-        cond = float(np.linalg.cond(r_loaded))
-        if cond > cond_max:
-            cond_max = cond
-        if not np.isfinite(cond) or cond > max_condition_number:
-            raise ValueError(f"covariance ill-conditioned cond={cond:.2e}")
-        numerator = np.linalg.solve(r_loaded, d)
-        denom = np.vdot(d, numerator) + np.complex64(1e-12)
-        w = numerator / denom
-        w_out[f, :] = w
-    return w_out, float(cond_max)
+    solve_mask = (freq_hz > max(80.0, 1.0)) & (freq_hz >= freq_low_hz) & (freq_hz <= freq_high_hz)
+    active_idx = np.where(solve_mask)[0]
+    if active_idx.size == 0:
+        return w_out, 0.0
+
+    freq_active = freq_hz[active_idx].astype(np.float32)
+    d_active = np.exp(-1j * 2.0 * math.pi * freq_active[:, None] * delays_s[None, :]).astype(np.complex64)
+    trace_mean = np.real(np.trace(rnn[active_idx], axis1=1, axis2=2)).astype(np.float32) / max(1, c)
+    if diagonal_loading <= 0.0:
+        adaptive_load = np.zeros((active_idx.size,), dtype=np.float32)
+    else:
+        edge_weight = np.ones((active_idx.size,), dtype=np.float32)
+        edge_weight = np.where(freq_active < max(300.0, freq_low_hz + 120.0), edge_weight + 0.55, edge_weight)
+        edge_weight = np.where(freq_active > min(freq_high_hz - 120.0, 3800.0), edge_weight + 0.35, edge_weight)
+        adaptive_load = np.maximum(1e-9, diagonal_loading * edge_weight * np.maximum(trace_mean, 1e-6)).astype(np.float32)
+
+    r_loaded = rnn[active_idx] + eye[None, :, :] * adaptive_load[:, None, None].astype(np.complex64)
+    if not np.all(np.isfinite(r_loaded)):
+        raise ValueError("covariance contains non-finite values")
+    cond = np.asarray(np.linalg.cond(r_loaded), dtype=np.float64).reshape(-1)
+    cond_max = float(np.max(cond)) if cond.size else 0.0
+    if not np.all(np.isfinite(cond)) or cond_max > max_condition_number:
+        raise ValueError(f"covariance ill-conditioned cond={cond_max:.2e}")
+
+    numerator = np.linalg.solve(r_loaded, d_active[..., None]).squeeze(-1)
+    denom = np.sum(np.conj(d_active) * numerator, axis=1).astype(np.complex64) + np.complex64(1e-12)
+    w_out[active_idx] = (numerator / denom[:, None]).astype(np.complex64)
+    return w_out, cond_max
 
 
 def _mvdr_postfilter_block(
@@ -638,7 +665,7 @@ def _mvdr_postfilter_block(
     if state.pf_noise_psd is None or state.pf_speech_psd is None:
         return y, 1.0
 
-    y_fft = np.fft.rfft(y, n=state.nfft).astype(np.complex64)
+    y_fft = rfft(y, n=state.nfft).astype(np.complex64)
     y_psd = (np.abs(y_fft) ** 2).astype(np.float32)
 
     if speech:
@@ -651,7 +678,7 @@ def _mvdr_postfilter_block(
     power_gain = np.clip(1.0 - float(over_subtraction) * noise_ratio, float(min_gain) ** 2, 1.0)
     amp_gain = np.sqrt(power_gain).astype(np.float32)
     y_fft_filtered = y_fft * amp_gain.astype(np.complex64)
-    y_filtered = np.fft.irfft(y_fft_filtered, n=state.nfft).astype(np.float32)[: y.shape[0]]
+    y_filtered = irfft(y_fft_filtered, n=state.nfft).astype(np.float32)[: y.shape[0]]
     return y_filtered, float(np.mean(amp_gain))
 
 
@@ -678,3 +705,53 @@ def _wrap_rad(rad: np.ndarray) -> np.ndarray:
 
 def _wrap_deg(deg: float) -> float:
     return (deg + 180.0) % 360.0 - 180.0
+
+
+def _frame_fft_from_msg(frame_msg: Dict[str, Any], x: np.ndarray, nfft: int, channel_order: np.ndarray) -> np.ndarray:
+    data_fft = frame_msg.get("data_fft")
+    fft_n = int(frame_msg.get("fft_n", 0) or 0)
+    if data_fft is not None and fft_n == nfft:
+        spectrum = np.asarray(data_fft)
+        if spectrum.ndim == 2 and spectrum.shape[1] >= channel_order.size:
+            return spectrum[:, channel_order].astype(np.complex64, copy=False)
+    return rfft(x, n=nfft, axis=0).astype(np.complex64)
+
+
+
+def _active_channels(scores: np.ndarray, trust: np.ndarray, min_active_score: float) -> np.ndarray:
+    active = np.where((scores >= float(min_active_score)) & (trust >= 0.2))[0]
+    return np.asarray(active, dtype=np.int64)
+
+
+def _subset_average(x: np.ndarray, active_idx: np.ndarray) -> np.ndarray:
+    if active_idx.size == 0:
+        return np.mean(x, axis=1).astype(np.float32)
+    return np.mean(x[:, active_idx], axis=1).astype(np.float32)
+
+
+def _delay_and_sum_subset(x: np.ndarray, positions_xy: np.ndarray, bearing_deg: float, sample_rate: int) -> np.ndarray:
+    if x.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    if x.ndim == 1:
+        x = x[:, None]
+    theta = np.deg2rad(bearing_deg)
+    direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
+    delays_s = (positions_xy @ direction) / SPEED_OF_SOUND_M_S
+    n = int(x.shape[0])
+    x_fft = rfft(x, axis=0).astype(np.complex64)
+    freqs = rfftfreq(n, d=1.0 / sample_rate).astype(np.float32)
+    phase = np.exp(-1j * 2.0 * np.pi * freqs[:, None] * delays_s[None, :]).astype(np.complex64)
+    y_fft = np.sum(x_fft * phase, axis=1) / float(max(1, x.shape[1]))
+    return irfft(y_fft, n=n).astype(np.float32)[: x.shape[0]]
+
+
+def _shift_samples(samples: np.ndarray, shift: int) -> np.ndarray:
+    if shift == 0:
+        return samples.astype(np.float32, copy=False)
+    out = np.zeros_like(samples, dtype=np.float32)
+    if shift > 0:
+        out[shift:] = samples[:-shift]
+        return out
+    neg = -shift
+    out[:-neg] = samples[neg:]
+    return out

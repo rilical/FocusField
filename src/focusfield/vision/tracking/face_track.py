@@ -38,16 +38,18 @@ from __future__ import annotations
 import queue
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import json
 
 import cv2
+import numpy as np
 
 from focusfield.core.clock import now_ns
 from focusfield.vision.calibration.bearing import bearing_from_bbox
-from focusfield.vision.mouth.mouth_activity import FaceMeshMouthEstimator, MouthActivityEstimator
+from focusfield.vision.mouth.mouth_activity import FaceMeshMouthEstimator, MouthActivityEstimator, TFLiteMouthEstimator
 from focusfield.vision.mouth.thresholds import SpeakingHysteresis
 from focusfield.vision.tracking.track_smoothing import TrackSmoother
 
@@ -84,21 +86,16 @@ class CameraTracker:
         )
         self._logger = logger
         self._mesh = None
+        self._tflite = None
+        self._mouth_backend = str(mouth_cfg.get("backend", "auto") or "auto").strip().lower()
         self._mesh_step = max(1, int(mouth_cfg.get("mesh_every_n", 1)))
         self._mesh_edge_margin = float(mouth_cfg.get("mesh_edge_margin", 0.08))
-        if mouth_cfg.get("use_facemesh", True):
-            try:
-                self._mesh = FaceMeshMouthEstimator(
-                    max_faces=int(mouth_cfg.get("mesh_max_faces", 5)),
-                    min_detection_confidence=float(mouth_cfg.get("mesh_min_detection_confidence", 0.5)),
-                    min_tracking_confidence=float(mouth_cfg.get("mesh_min_tracking_confidence", 0.5)),
-                    min_activity=float(mouth_cfg.get("mesh_min_activity", 0.005)),
-                    max_activity=float(mouth_cfg.get("mesh_max_activity", 0.1)),
-                    model_path=mouth_cfg.get("mesh_model_path"),
-                )
-            except Exception as exc:  # noqa: BLE001
-                self._mesh = None
-                self._logger.emit("warning", "vision.mouth_activity", "facemesh_unavailable", {"error": str(exc)})
+        self._face_backend = str(face_cfg.get("backend", "auto") or "auto").strip().lower()
+        self._yunet_score_threshold = float(face_cfg.get("yunet_score_threshold", face_cfg.get("min_confidence", 0.6)))
+        self._yunet_nms_threshold = float(face_cfg.get("yunet_nms_threshold", 0.3))
+        self._yunet_top_k = int(face_cfg.get("yunet_top_k", 8))
+        self._yunet_model_path = face_cfg.get("yunet_model_path")
+        self._init_mouth_model(mouth_cfg)
         self._mesh_frame_count = 0
         speak_on = float(thresholds.get("speak_on_threshold", 0.5))
         speak_off = float(thresholds.get("speak_off_threshold", 0.4))
@@ -108,7 +105,8 @@ class CameraTracker:
         self._speak_off_frames = int(thresholds.get("min_off_frames", 3))
         self._speaking: Dict[int, SpeakingHysteresis] = {}
         self._camera_cfg = camera_cfg
-        self._cascade = self._load_face_cascade()
+        self._detector_kind, self._detector = self._load_face_detector()
+        self._yunet_input_size: Optional[Tuple[int, int]] = None
         self._frame_count = 0
         self._last_detections: List[Tuple[BBox, float]] = []
         self._bearing_model = str(camera_cfg.get("bearing_model", "linear")).lower()
@@ -117,10 +115,9 @@ class CameraTracker:
     def process_frame(self, frame_msg: Dict[str, Any]) -> List[Dict[str, Any]]:
         frame = frame_msg["data"]
         height, width = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self._frame_count += 1
         if self._frame_count % self._detect_every_n == 0 or not self._last_detections:
-            detections = self._detect_faces(gray)
+            detections = self._detect_faces(frame)
             self._last_detections = detections
         else:
             detections = self._last_detections
@@ -148,11 +145,7 @@ class CameraTracker:
             if _bbox_area(bbox) < self._min_area:
                 continue
             track_key = f"{self._camera_id}-{track.track_id}"
-            mesh_match = _match_mesh_face(bbox, mesh_faces)
-            if mesh_match is not None and not _near_frame_edge(bbox, width, height, self._mesh_edge_margin):
-                activity = self._mouth.smooth(track_key, float(mesh_match.get("activity", 0.0)))
-            else:
-                activity = self._mouth.compute(track_key, frame, bbox)
+            activity = self._estimate_activity(track_key, frame, bbox, width, height, mesh_faces)
             speaking_tracker = self._speaking.get(track.track_id)
             if speaking_tracker is None:
                 speaking_tracker = SpeakingHysteresis(
@@ -178,14 +171,121 @@ class CameraTracker:
                     "seq": frame_msg.get("seq", 0),
                     "track_id": track_key,
                     "bbox": {"x": bbox[0], "y": bbox[1], "w": bbox[2], "h": bbox[3]},
-                    "confidence": float(track.confidence),
-                    "bearing_deg": bearing,
-                    "mouth_activity": activity,
-                    "speaking": speaking,
-                    "camera_id": self._camera_id,
-                }
-            )
+                        "confidence": float(track.confidence),
+                        "bearing_deg": bearing,
+                        "mouth_activity": activity,
+                        "visual_speaking_prob": activity,
+                        "speaking": speaking,
+                        "track_age_frames": int(track.age_frames),
+                        "detector_backend": self._detector_kind,
+                        "camera_id": self._camera_id,
+                    }
+                )
         return output_tracks
+
+    def _load_face_detector(self):
+        if self._face_backend in {"auto", "yunet"}:
+            detector = self._load_yunet_detector()
+            if detector is not None:
+                return "yunet", detector
+            if self._face_backend == "yunet":
+                self._logger.emit(
+                    "warning",
+                    "vision.face_track",
+                    "yunet_unavailable",
+                    {"camera_id": self._camera_id, "note": "Falling back to Haar cascade."},
+                )
+        return "haar", self._load_face_cascade()
+
+    def _init_mouth_model(self, mouth_cfg: Dict[str, Any]) -> None:
+        use_facemesh = bool(mouth_cfg.get("use_facemesh", True))
+        backend = self._mouth_backend
+        if backend not in {"auto", "tflite", "facemesh", "diff"}:
+            backend = "auto"
+
+        if backend in {"auto", "tflite"} and use_facemesh:
+            try:
+                self._tflite = TFLiteMouthEstimator(
+                    min_activity=float(mouth_cfg.get("mesh_min_activity", 0.005)),
+                    max_activity=float(mouth_cfg.get("mesh_max_activity", 0.1)),
+                    model_path=mouth_cfg.get("tflite_model_path"),
+                    task_path=mouth_cfg.get("mesh_model_path"),
+                    model_member=str(mouth_cfg.get("tflite_model_member", "face_landmarks_detector.tflite") or "face_landmarks_detector.tflite"),
+                    num_threads=int(mouth_cfg.get("tflite_threads", 1) or 1),
+                    min_presence=float(mouth_cfg.get("tflite_min_presence", 0.0) or 0.0),
+                    crop_scale=float(mouth_cfg.get("tflite_crop_scale", 1.45) or 1.45),
+                )
+                self._logger.emit("info", "vision.mouth_activity", "tflite_ready", {"camera_id": self._camera_id})
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._tflite = None
+                self._logger.emit("warning", "vision.mouth_activity", "tflite_unavailable", {"error": str(exc)})
+                if backend == "tflite":
+                    return
+
+        if backend in {"auto", "facemesh"} and use_facemesh:
+            try:
+                self._mesh = FaceMeshMouthEstimator(
+                    max_faces=int(mouth_cfg.get("mesh_max_faces", 5)),
+                    min_detection_confidence=float(mouth_cfg.get("mesh_min_detection_confidence", 0.5)),
+                    min_tracking_confidence=float(mouth_cfg.get("mesh_min_tracking_confidence", 0.5)),
+                    min_activity=float(mouth_cfg.get("mesh_min_activity", 0.005)),
+                    max_activity=float(mouth_cfg.get("mesh_max_activity", 0.1)),
+                    model_path=mouth_cfg.get("mesh_model_path"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._mesh = None
+                self._logger.emit("warning", "vision.mouth_activity", "facemesh_unavailable", {"error": str(exc)})
+
+    def _estimate_activity(
+        self,
+        track_key: str,
+        frame: np.ndarray,
+        bbox: BBox,
+        width: int,
+        height: int,
+        mesh_faces: List[Dict[str, Any]],
+    ) -> float:
+        if self._tflite is not None and not _near_frame_edge(bbox, width, height, self._mesh_edge_margin):
+            try:
+                tflite_activity = self._tflite.estimate_activity(frame, bbox)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.emit("warning", "vision.mouth_activity", "tflite_failed", {"error": str(exc)})
+                tflite_activity = None
+            if tflite_activity is not None:
+                return self._mouth.smooth(track_key, float(tflite_activity))
+        mesh_match = _match_mesh_face(bbox, mesh_faces)
+        if mesh_match is not None and not _near_frame_edge(bbox, width, height, self._mesh_edge_margin):
+            return self._mouth.smooth(track_key, float(mesh_match.get("activity", 0.0)))
+        return self._mouth.compute(track_key, frame, bbox)
+
+    def _load_yunet_detector(self):
+        if not hasattr(cv2, "FaceDetectorYN"):
+            return None
+        try:
+            model_path = _ensure_yunet_model(self._yunet_model_path)
+            if hasattr(cv2.FaceDetectorYN, "create"):
+                detector = cv2.FaceDetectorYN.create(
+                    model_path,
+                    "",
+                    (self._detect_width or 320, self._detect_width or 320),
+                    self._yunet_score_threshold,
+                    self._yunet_nms_threshold,
+                    self._yunet_top_k,
+                )
+            else:
+                detector = cv2.FaceDetectorYN_create(
+                    model_path,
+                    "",
+                    (self._detect_width or 320, self._detect_width or 320),
+                    self._yunet_score_threshold,
+                    self._yunet_nms_threshold,
+                    self._yunet_top_k,
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.emit("warning", "vision.face_track", "yunet_unavailable", {"camera_id": self._camera_id, "error": str(exc)})
+            return None
+        return detector
 
     def _load_face_cascade(self):
         candidates = []
@@ -228,18 +328,28 @@ class CameraTracker:
         )
         return None
 
-    def _detect_faces(self, gray_frame) -> List[Tuple[BBox, float]]:
-        if self._cascade is None:
+    def _detect_faces(self, frame_bgr) -> List[Tuple[BBox, float]]:
+        if self._detector is None:
             return []
-        height, width = gray_frame.shape[:2]
+        height, width = frame_bgr.shape[:2]
         scale = 1.0
-        resized = gray_frame
+        resized = frame_bgr
         if self._detect_width > 0 and width > self._detect_width:
             scale = self._detect_width / float(width)
-            resized = cv2.resize(gray_frame, (self._detect_width, int(height * scale)), interpolation=cv2.INTER_AREA)
+            resized = cv2.resize(frame_bgr, (self._detect_width, int(height * scale)), interpolation=cv2.INTER_AREA)
         min_size = max(20, int((self._min_area ** 0.5) * scale))
-        detections = self._cascade.detectMultiScale(
-            resized,
+        if self._detector_kind == "yunet":
+            detections = self._detect_faces_yunet(resized, scale)
+        else:
+            detections = self._detect_faces_haar(resized, scale, min_size)
+        return [item for item in detections if _bbox_area(item[0]) >= self._min_area]
+
+    def _detect_faces_haar(self, resized_frame, scale: float, min_size: int) -> List[Tuple[BBox, float]]:
+        if self._detector is None:
+            return []
+        gray_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2GRAY)
+        detections = self._detector.detectMultiScale(
+            gray_frame,
             scaleFactor=self._scale_factor,
             minNeighbors=self._min_neighbors,
             minSize=(min_size, min_size),
@@ -252,9 +362,31 @@ class CameraTracker:
                 w = int(w / scale)
                 h = int(h / scale)
             bbox = (int(x), int(y), int(w), int(h))
-            if _bbox_area(bbox) < self._min_area:
-                continue
             results.append((bbox, 1.0))
+        return results
+
+    def _detect_faces_yunet(self, resized_frame, scale: float) -> List[Tuple[BBox, float]]:
+        if self._detector is None:
+            return []
+        height, width = resized_frame.shape[:2]
+        input_size = (int(width), int(height))
+        if self._yunet_input_size != input_size:
+            self._detector.setInputSize(input_size)
+            self._yunet_input_size = input_size
+        _retval, faces = self._detector.detect(resized_frame)
+        results: List[Tuple[BBox, float]] = []
+        if faces is None:
+            return results
+        for row in np.asarray(faces):
+            x, y, w, h = row[:4]
+            score = float(row[-1]) if row.shape[0] > 14 else self._yunet_score_threshold
+            if scale != 1.0:
+                x = float(x / scale)
+                y = float(y / scale)
+                w = float(w / scale)
+                h = float(h / scale)
+            bbox = (int(round(x)), int(round(y)), int(round(w)), int(round(h)))
+            results.append((bbox, score))
         return results
 
 
@@ -386,24 +518,20 @@ def _load_bearing_lut(path: Optional[str], camera_id: str, logger: Any) -> Optio
     return None
 
 
-def _iou(box_a: BBox, box_b: BBox) -> float:
-    ax, ay, aw, ah = box_a
-    bx, by, bw, bh = box_b
-    a_x2 = ax + aw
-    a_y2 = ay + ah
-    b_x2 = bx + bw
-    b_y2 = by + bh
-
-    inter_x1 = max(ax, bx)
-    inter_y1 = max(ay, by)
-    inter_x2 = min(a_x2, b_x2)
-    inter_y2 = min(a_y2, b_y2)
-    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
-        return 0.0
-    inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
-    area_a = aw * ah
-    area_b = bw * bh
-    union = area_a + area_b - inter_area
-    if union <= 0:
-        return 0.0
-    return inter_area / union
+def _ensure_yunet_model(model_path: Optional[str]) -> str:
+    if model_path:
+        path = Path(model_path)
+    else:
+        cache_dir = Path.home() / ".cache" / "focusfield"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / "face_detection_yunet_2023mar.onnx"
+    if not path.exists():
+        url = (
+            "https://github.com/opencv/opencv_zoo/raw/main/models/"
+            "face_detection_yunet/face_detection_yunet_2023mar.onnx"
+        )
+        try:
+            urllib.request.urlretrieve(url, path)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"failed to download YuNet model: {exc}") from exc
+    return str(path)

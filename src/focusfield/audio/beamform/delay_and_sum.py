@@ -40,6 +40,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from focusfield.audio.doa.geometry import load_mic_positions
+from focusfield.audio.fft_backend import irfft, rfft, rfftfreq
 from focusfield.core.clock import now_ns
 
 
@@ -219,15 +220,18 @@ def _no_lock_output(x: np.ndarray, behavior: str) -> np.ndarray:
 def _delay_and_sum(x: np.ndarray, positions_xy: np.ndarray, bearing_deg: float, sample_rate: int) -> np.ndarray:
     if x.size == 0:
         return np.zeros((0,), dtype=np.float32)
+    if x.ndim == 1:
+        x = x[:, None]
     theta = np.deg2rad(bearing_deg)
     direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
     delays_s = (positions_xy @ direction) / SPEED_OF_SOUND_M_S
-    y = np.zeros((x.shape[0],), dtype=np.float32)
-    for ch in range(x.shape[1]):
-        shift = int(round(delays_s[ch] * sample_rate))
-        y += _shift_samples(x[:, ch], -shift)
-    y /= float(max(1, x.shape[1]))
-    return y
+    n = int(x.shape[0])
+    x_fft = rfft(x, axis=0).astype(np.complex64)
+    freqs = rfftfreq(n, d=1.0 / sample_rate).astype(np.float32)
+    phase = np.exp(-1j * 2.0 * np.pi * freqs[:, None] * delays_s[None, :]).astype(np.complex64)
+    y_fft = np.sum(x_fft * phase, axis=1) / float(max(1, x.shape[1]))
+    y = irfft(y_fft, n=n).astype(np.float32)
+    return y[: x.shape[0]]
 
 
 def _shift_samples(samples: np.ndarray, shift: int) -> np.ndarray:

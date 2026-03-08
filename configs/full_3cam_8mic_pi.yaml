@@ -2,7 +2,38 @@ build: full
 runtime:
   run_id: ''
   fail_fast: true
+  perf_profile: realtime_pi_max
+  process_mode: multiprocess
   enable_validation: true
+  realtime:
+    enabled: true
+    allow_best_effort: true
+    scheduler: fifo
+    priority: 8
+    cpu_affinity:
+    - 0
+    mlockall: false
+  multiprocess:
+    start_method: spawn
+    queue_depth: 24
+    shared_memory: true
+    workers:
+      parent:
+        cpu_affinity:
+        - 0
+        scheduler: rr
+        priority: 2
+      audio:
+        cpu_affinity:
+        - 2
+        - 3
+        scheduler: fifo
+        priority: 10
+      vision:
+        cpu_affinity:
+        - 1
+        scheduler: rr
+        priority: 4
   requirements:
     strict: true
     min_cameras: 3
@@ -47,13 +78,20 @@ audio:
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
+    publish_fft: true
     queue_depth: 64
     stats_emit_hz: 1
+  mic_health:
+    enabled: true
+    min_active_score: 0.35
+    min_coherence: 0.12
+    max_drift_samples: 8
   device_selector:
     match_substring: miniDSP
     require_input_channels: 8
   vad:
     enabled: true
+    backend: auto
     mode: 1
     frame_ms: 30
     min_speech_ratio: 0.3
@@ -73,6 +111,10 @@ audio:
       min_snr_db: 3.0
       max_snr_db: 18.0
       max_clip_fraction: 0.01
+    health_fallback:
+      min_active_score: 0.35
+      mvdr_min_channels: 4
+      uncertain_trust_threshold: 0.45
     noise_reference:
       ref_threshold: 0.2
       update_when_speaking: true
@@ -147,12 +189,13 @@ video:
     bearing_lut_path: ''
 vision:
   face:
+    backend: auto
     min_confidence: 0.6
     iou_threshold: 0.3
     max_missing_frames: 10
     min_area: 800
-    min_neighbors: 4
-    scale_factor: 1.1
+    min_neighbors: 6
+    scale_factor: 1.15
     detect_width: 320
     detect_every_n: 2
   track:
@@ -160,11 +203,12 @@ vision:
     max_missing_frames: 10
     min_age_frames: 2
   mouth:
-    smoothing_alpha: 0.5
-    min_activity: 0.02
+    backend: auto
+    smoothing_alpha: 0.7
+    min_activity: 0.06
     max_activity: 0.2
-    diff_threshold: 4
-    use_facemesh: false
+    diff_threshold: 15
+    use_facemesh: true
     mesh_every_n: 2
     mesh_max_faces: 3
     mesh_min_detection_confidence: 0.5
@@ -172,6 +216,11 @@ vision:
     mesh_min_activity: 0.005
     mesh_max_activity: 0.1
     mesh_model_path: ''
+    tflite_model_path: ''
+    tflite_model_member: face_landmarks_detector.tflite
+    tflite_threads: 2
+    tflite_min_presence: 0.0
+    tflite_crop_scale: 1.45
   heatmap:
     bin_size_deg: 10
     sigma_deg: 18
@@ -179,9 +228,20 @@ vision:
     smoothing_alpha: 0.25
 fusion:
   thresholds_preset: balanced
-  require_vad: true
+  weights:
+    bias: -0.35
+    mouth: 1.05
+    face: 0.35
+    doa: 1.15
+    angle: 0.95
+    audio: 1.05
+    continuity: 0.55
+    mic_health: 0.8
+    doa_confidence: 0.75
+    agreement_bonus: 0.4
+  require_vad: false
   vad_max_age_ms: 500
-  require_speaking: true
+  require_speaking: false
 bus:
   max_queue_depth: 64
   topic_queue_depths:

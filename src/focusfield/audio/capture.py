@@ -47,8 +47,11 @@ try:
 except ImportError:  # pragma: no cover
     sd = None
 
+import math
+
 import numpy as np
 
+from focusfield.audio.fft_backend import rfft
 from focusfield.core.clock import now_ns
 from focusfield.audio.devices import resolve_input_device_index
 
@@ -72,6 +75,9 @@ def start_audio_capture(
     if not isinstance(capture_cfg, dict):
         capture_cfg = {}
     allow_mono_fallback = bool(capture_cfg.get("allow_mono_fallback", True))
+    publish_fft = bool(capture_cfg.get("publish_fft", True))
+    # Use power-of-2 FFT size so downstream consumers (MVDR) can reuse it.
+    fft_n = max(256, int(2 ** round(math.log2(max(256, block_size)))))
     capture_queue_depth = int(capture_cfg.get("queue_depth", 16) or 16)
     capture_queue_depth = max(4, min(256, capture_queue_depth))
     fail_fast = bool(config.get("runtime", {}).get("fail_fast", True))
@@ -122,6 +128,9 @@ def start_audio_capture(
                         "channels": frame.shape[1] if frame.ndim > 1 else 1,
                         "data": frame,
                     }
+                    if publish_fft:
+                        msg["fft_n"] = fft_n
+                        msg["data_fft"] = rfft(frame, n=fft_n, axis=0).astype(np.complex64)
                     bus.publish("audio.frames", msg)
                     with stats_lock:
                         stats["frames_published"] += 1

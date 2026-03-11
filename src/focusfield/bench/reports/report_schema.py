@@ -21,6 +21,7 @@ def create_report(
     latency_summary: dict[str, Any],
     drop_summary: dict[str, Any],
     lock_jitter: dict[str, Any],
+    conversation: dict[str, Any],
     gates: dict[str, Any],
     plots: Optional[dict[str, str]] = None,
 ) -> Dict[str, Any]:
@@ -39,6 +40,7 @@ def create_report(
             "latency": latency_summary,
             "drops": drop_summary,
             "lock_jitter": lock_jitter,
+            "conversation": conversation,
             "gates": gates,
         },
         "scene_metrics": scene_metrics,

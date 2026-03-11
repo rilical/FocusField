@@ -7,12 +7,13 @@ What it does:
   - Runs the full pipeline for ~10s and writes enhanced.wav via file sink.
 
 Run:
-  python3 scripts/pi_smoke.py --config configs/full_3cam_8mic_pi.yaml
+  python3 scripts/pi_smoke.py --config configs/full_3cam_8mic_pi_prod.yaml
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 import threading
 import time
 
@@ -39,6 +40,11 @@ from focusfield.bench.replay.recorder import start_trace_recorder
 from focusfield.fusion.av_association import start_av_association
 from focusfield.fusion.lock_state_machine import start_lock_state_machine
 from focusfield.uma8.led_control import start_uma8_led_service
+from focusfield.main.run import (
+    _validate_face_detector_requirements,
+    _validate_led_hid_runtime,
+    _validate_runtime_requirements,
+)
 from focusfield.platform.hardware_probe import normalize_camera_scope
 from focusfield.vision.cameras import start_cameras
 from focusfield.vision.speaker_heatmap import start_speaker_heatmap
@@ -56,15 +62,20 @@ def _runtime_requirements(config: dict) -> dict[str, object]:
         camera_scope = normalize_camera_scope(req_cfg.get("camera_scope", "any"))
     except Exception:
         camera_scope = "any"
+    require_led_hid = bool(req_cfg.get("require_led_hid", False))
+    runtime_check_raw = req_cfg.get("require_led_hid_runtime_check")
+    require_led_hid_runtime_check = require_led_hid if runtime_check_raw is None else bool(runtime_check_raw)
     return {
         "strict": bool(req_cfg.get("strict", False)),
         "camera_scope": camera_scope,
+        "require_led_hid": require_led_hid,
+        "require_led_hid_runtime_check": require_led_hid_runtime_check,
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="FocusField Pi smoke")
-    parser.add_argument("--config", default="configs/full_3cam_8mic_pi.yaml")
+    parser.add_argument("--config", default="configs/full_3cam_8mic_pi_prod.yaml")
     parser.add_argument("--run-seconds", type=float, default=10.0)
     parser.add_argument("--strict", action="store_true", help="Require strict camera/audio requirements while running.")
     parser.add_argument(
@@ -117,6 +128,15 @@ def main() -> None:
     )
     logger = LogEmitter(bus, min_level=config.get("logging", {}).get("level", "info"), run_id=str(runtime.get("run_id", "")))
     stop_event = threading.Event()
+    if strict:
+        try:
+            _validate_runtime_requirements(config, logger)
+            _validate_led_hid_runtime(config, logger, req)
+            _validate_face_detector_requirements(config, logger, req)
+        except RuntimeError as exc:
+            print(str(exc), flush=True)
+            raise SystemExit(2)
+        runtime["requirements_passed"] = True
 
     threads = []
 
@@ -151,7 +171,11 @@ def main() -> None:
             camera_scope=camera_scope,
         )
     )
-    threads.append(start_face_tracking(bus, config, logger, stop_event))
+    face_tracking_threads = start_face_tracking(bus, config, logger, stop_event)
+    if isinstance(face_tracking_threads, list):
+        threads.extend(face_tracking_threads)
+    elif face_tracking_threads is not None:
+        threads.append(face_tracking_threads)
     threads.append(start_speaker_heatmap(bus, config, logger, stop_event))
     threads.append(start_av_association(bus, config, logger, stop_event))
     threads.append(start_lock_state_machine(bus, config, logger, stop_event))
@@ -214,11 +238,32 @@ def main() -> None:
                 continue
 
     stop_event.set()
+    current = threading.current_thread()
+    for thread in threads:
+        if thread is None or thread is current:
+            continue
+        try:
+            thread.join(timeout=1.0)
+        except Exception:
+            continue
     print(f"Raw audio seen: {raw_seen}")
     print(f"Final audio seen: {final_seen}")
     if cam_seen:
         print(f"Camera frames seen: {cam_seen}")
     print(f"Artifacts: {run_dir}")
+    failures = []
+    if not raw_seen:
+        failures.append("raw audio not observed on audio.frames")
+    if not final_seen:
+        failures.append("enhanced audio not observed on audio.enhanced.final")
+    missing_cameras = [cam_id for cam_id, seen in cam_seen.items() if not seen]
+    if missing_cameras:
+        failures.append(f"no frames observed for cameras: {', '.join(missing_cameras)}")
+    if failures:
+        for item in failures:
+            print(f"FAIL {item}")
+        raise SystemExit(1)
+    print("PASS smoke checks")
 
 
 if __name__ == "__main__":

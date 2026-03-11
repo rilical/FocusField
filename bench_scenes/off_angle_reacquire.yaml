@@ -1,0 +1,10 @@
+scenes:
+  - scene_id: off_angle_reacquire
+    description: Primary speaker turns off-angle then re-enters frontal view.
+    target_angle_deg: 240
+    interferer_angle_deg: 120
+    target_reference_wav: bench_scenes/data/off_angle_target.wav
+    interferer_reference_wav: bench_scenes/data/off_angle_interferer.wav
+    reference_text: "the model should reacquire quickly after head turn"
+    baseline_text: ""
+    candidate_text: ""

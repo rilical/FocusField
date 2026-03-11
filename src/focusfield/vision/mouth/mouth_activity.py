@@ -157,9 +157,18 @@ class FaceMeshMouthEstimator:
             x1, x2 = max(0, min(x_coords)), min(width - 1, max(x_coords))
             y1, y2 = max(0, min(y_coords)), min(height - 1, max(y_coords))
             bbox = (x1, y1, max(1, x2 - x1), max(1, y2 - y1))
-            activity = _mouth_aspect_ratio(pts)
-            scaled = _scale(activity, self._min_activity, self._max_activity)
-            outputs.append({"bbox": bbox, "activity": scaled})
+            mouth_aperture_ratio = _mouth_aspect_ratio(pts)
+            mouth_aperture_score = _scale(mouth_aperture_ratio, self._min_activity, self._max_activity)
+            face_yaw_deg = _face_yaw_proxy_deg(pts)
+            outputs.append(
+                {
+                    "bbox": bbox,
+                    "activity": mouth_aperture_score,
+                    "mouth_aperture_ratio": mouth_aperture_ratio,
+                    "mouth_aperture_score": mouth_aperture_score,
+                    "face_yaw_deg": face_yaw_deg,
+                }
+            )
         return outputs
 
 
@@ -175,6 +184,20 @@ def _mouth_aspect_ratio(points: List[Tuple[int, int]]) -> float:
     if horizontal <= 1e-6:
         return 0.0
     return vertical / horizontal
+
+
+def _face_yaw_proxy_deg(points: List[Tuple[int, int]]) -> float:
+    """Approximate signed face yaw from eye-nose geometry (right-positive)."""
+    if len(points) < 264:
+        return 0.0
+    nose = points[1]
+    eye_left = points[33]
+    eye_right = points[263]
+    eye_mid_x = 0.5 * (float(eye_left[0]) + float(eye_right[0]))
+    eye_half_span = max(6.0, 0.5 * abs(float(eye_right[0]) - float(eye_left[0])))
+    normalized = (float(nose[0]) - eye_mid_x) / eye_half_span
+    normalized = max(-1.0, min(1.0, normalized))
+    return float(normalized * 65.0)
 
 
 def _extract_mouth_roi(frame: np.ndarray, bbox: BBox) -> Optional[np.ndarray]:

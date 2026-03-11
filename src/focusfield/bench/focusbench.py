@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 import yaml
 
 from focusfield.bench.metrics.metrics import (
+    compute_conversation_metrics,
     compute_drop_stats,
     compute_latency_stats,
     compute_lock_jitter,
@@ -52,6 +53,11 @@ def run_focusbench(
         Path(candidate_run) / "logs" / "perf.jsonl",
     )
     lock_summary = compute_lock_jitter(Path(candidate_run) / "traces" / "lock.jsonl")
+    conversation_summary = compute_conversation_metrics(
+        Path(candidate_run) / "traces" / "lock.jsonl",
+        Path(candidate_run) / "traces" / "faces.jsonl",
+        Path(candidate_run) / "logs" / "events.jsonl",
+    )
     gates = evaluate_gates(
         quality_summary=quality_summary,
         latency_summary=latency_summary,
@@ -68,6 +74,7 @@ def run_focusbench(
         latency_summary=latency_summary,
         drop_summary=drop_summary,
         lock_jitter=lock_summary,
+        conversation=conversation_summary,
         gates=gates,
     )
 

@@ -83,6 +83,10 @@ class LockStateMachine:
         self._hold_ms = float(thresholds.get("hold_ms", 800))
         self._handoff_min_ms = float(thresholds.get("handoff_min_ms", 700))
         self._drop = float(thresholds.get("drop_threshold", self._acquire * 0.6))
+        self._acquire_audio = float(thresholds.get("acquire_threshold_audio_only", self._acquire))
+        self._drop_audio = float(thresholds.get("drop_threshold_audio_only", self._drop))
+        self._hold_ms_audio = float(thresholds.get("hold_ms_audio_only", self._hold_ms))
+        self._handoff_min_ms_audio = float(thresholds.get("handoff_min_ms_audio_only", self._handoff_min_ms))
         self._speak_on = float(thresholds.get("speak_on_threshold", 0.5))
         self._min_switch_interval_ms = float(thresholds.get("min_switch_interval_ms", 500))
         self._bearing_alpha = float(thresholds.get("bearing_smoothing_alpha", 0.7))
@@ -92,6 +96,16 @@ class LockStateMachine:
         self._priority_policy = str(config.get("fusion", {}).get("priority_policy", "confidence_then_recency"))
         self._preferred_track_id = config.get("fusion", {}).get("preferred_track_id")
         self._recency_decay_ms = float(config.get("fusion", {}).get("recency_decay_ms", 1200))
+        interruption_cfg = config.get("fusion", {}).get("interruption", {})
+        if not isinstance(interruption_cfg, dict):
+            interruption_cfg = {}
+        self._handoff_margin = float(interruption_cfg.get("handoff_margin", thresholds.get("handoff_margin", 0.06)))
+        self._interrupt_min_delta = float(
+            interruption_cfg.get("interrupt_min_delta", thresholds.get("interrupt_min_delta", 0.04))
+        )
+        self._interrupt_hold_ms = float(
+            interruption_cfg.get("interrupt_hold_ms", thresholds.get("interrupt_hold_ms", 300.0))
+        )
         self._state = "NO_LOCK"
         self._target_id: Optional[str] = None
         self._target_bearing: Optional[float] = None
@@ -109,13 +123,16 @@ class LockStateMachine:
     def update(self, candidates: List[Dict[str, Any]], vad_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         t_ns = now_ns()
         self._update_speaking_history(candidates, t_ns)
+        candidate_count = len(candidates)
+        best_mode = "NO_CANDIDATE"
+        current_hold_ms = self._active_thresholds(None)["hold_ms"]
         has_speaking = _has_speaking_candidate(candidates, self._speak_on)
         vad_speech = bool(vad_state.get("speech")) if _vad_is_fresh(vad_state, t_ns, self._vad_max_age_ms) and vad_state is not None else False
         if has_speaking:
             self._last_speaking_ns = t_ns
         if self._require_vad and _vad_is_fresh(vad_state, t_ns, self._vad_max_age_ms):
             if not bool(vad_state.get("speech")) and not has_speaking:
-                if self._state in {"LOCKED", "HOLD", "HANDOFF"} and self._within_hold(t_ns):
+                if self._state in {"LOCKED", "HOLD", "HANDOFF"} and self._within_hold(t_ns, hold_ms=current_hold_ms):
                     self._state = "HOLD"
                     reason = "vad_hold"
                 else:
@@ -131,13 +148,18 @@ class LockStateMachine:
                     "target_bearing_deg": self._target_bearing,
                     "confidence": float(self._last_score) if self._state != "NO_LOCK" else 0.0,
                     "reason": reason,
+                    "candidate_count": int(candidate_count),
+                    "best_candidate_mode": best_mode,
+                    "handoff_margin": float(self._handoff_margin),
+                    "current_mode": self._target_mode if self._state != "NO_LOCK" else "NO_LOCK",
+                    "active_thresholds": self._active_thresholds(None),
                     "stability": {
-                        "hold_ms": self._hold_ms,
-                        "handoff_ms": self._handoff_min_ms,
+                        "hold_ms": self._active_thresholds(None)["hold_ms"],
+                        "handoff_ms": self._active_thresholds(None)["handoff_min_ms"],
                     },
                 }
         if self._require_speaking and not (has_speaking or vad_speech):
-            if self._state in {"LOCKED", "HOLD", "HANDOFF"} and self._within_speech_hold(t_ns):
+            if self._state in {"LOCKED", "HOLD", "HANDOFF"} and self._within_speech_hold(t_ns, hold_ms=current_hold_ms):
                 reason = "silence_hold"
                 self._state = "HOLD"
             else:
@@ -153,9 +175,14 @@ class LockStateMachine:
                 "target_bearing_deg": self._target_bearing,
                 "confidence": float(self._last_score) if self._state != "NO_LOCK" else 0.0,
                 "reason": reason,
+                "candidate_count": int(candidate_count),
+                "best_candidate_mode": best_mode,
+                "handoff_margin": float(self._handoff_margin),
+                "current_mode": self._target_mode if self._state != "NO_LOCK" else "NO_LOCK",
+                "active_thresholds": self._active_thresholds(None),
                 "stability": {
-                    "hold_ms": self._hold_ms,
-                    "handoff_ms": self._handoff_min_ms,
+                    "hold_ms": self._active_thresholds(None)["hold_ms"],
+                    "handoff_ms": self._active_thresholds(None)["handoff_min_ms"],
                 },
             }
 
@@ -168,6 +195,12 @@ class LockStateMachine:
             self._last_speaking_by_track,
             self._recency_decay_ms,
         )
+        best_mode = _infer_mode(best) if best is not None else "NO_CANDIDATE"
+        active_thresholds = self._active_thresholds(best)
+        active_acquire = float(active_thresholds["acquire"])
+        active_drop = float(active_thresholds["drop"])
+        active_hold_ms = float(active_thresholds["hold_ms"])
+        active_handoff_min_ms = float(active_thresholds["handoff_min_ms"])
         reason = "no_candidates"
 
         if self._state == "NO_LOCK":
@@ -175,7 +208,7 @@ class LockStateMachine:
                 self._clear()
             else:
                 score = float(best.get("combined_score", 0.0))
-                if score >= self._acquire:
+                if score >= active_acquire:
                     if self._lock_to(best, t_ns):
                         reason = "acquired"
                     else:
@@ -199,7 +232,7 @@ class LockStateMachine:
                     reason = "acquire_timeout"
                 else:
                     score = float(best.get("combined_score", 0.0))
-                    if score >= self._acquire:
+                    if score >= active_acquire:
                         if self._lock_to(best, t_ns):
                             reason = "acquired"
                         else:
@@ -214,7 +247,7 @@ class LockStateMachine:
                         reason = "acquire_wait"
         else:
             if not best:
-                if self._within_hold(t_ns):
+                if self._within_hold(t_ns, hold_ms=active_hold_ms):
                     self._state = "HOLD"
                     reason = "hold_no_candidates"
                 else:
@@ -228,8 +261,17 @@ class LockStateMachine:
                 self._target_mode = _infer_mode(best)
                 reason = "maintain"
             else:
-                reason = self._maybe_handoff(best, t_ns)
+                reason = self._maybe_handoff(
+                    best,
+                    t_ns,
+                    acquire_threshold=active_acquire,
+                    drop_threshold=active_drop,
+                    hold_ms=active_hold_ms,
+                    handoff_min_ms=active_handoff_min_ms,
+                    current_score=float(self._last_score),
+                )
 
+        final_thresholds = self._active_thresholds(best)
         self._seq += 1
         return {
             "t_ns": t_ns,
@@ -240,9 +282,14 @@ class LockStateMachine:
             "target_bearing_deg": self._target_bearing,
             "confidence": float(self._last_score) if self._state != "NO_LOCK" else 0.0,
             "reason": reason,
+            "candidate_count": int(candidate_count),
+            "best_candidate_mode": best_mode,
+            "handoff_margin": float(self._handoff_margin),
+            "current_mode": self._target_mode if self._state != "NO_LOCK" else "NO_LOCK",
+            "active_thresholds": final_thresholds,
             "stability": {
-                "hold_ms": self._hold_ms,
-                "handoff_ms": self._handoff_min_ms,
+                "hold_ms": final_thresholds["hold_ms"],
+                "handoff_ms": final_thresholds["handoff_min_ms"],
             },
         }
 
@@ -274,11 +321,25 @@ class LockStateMachine:
         self._handoff_start_ns = 0
         self._acquire_start_ns = 0
 
-    def _within_hold(self, t_ns: int) -> bool:
-        return self._last_seen_ns and (t_ns - self._last_seen_ns) <= int(self._hold_ms * 1_000_000)
+    def _within_hold(self, t_ns: int, hold_ms: Optional[float] = None) -> bool:
+        use_hold_ms = float(self._hold_ms if hold_ms is None else hold_ms)
+        return self._last_seen_ns and (t_ns - self._last_seen_ns) <= int(use_hold_ms * 1_000_000)
 
-    def _within_speech_hold(self, t_ns: int) -> bool:
-        return self._last_speaking_ns and (t_ns - self._last_speaking_ns) <= int(self._hold_ms * 1_000_000)
+    def _within_speech_hold(self, t_ns: int, hold_ms: Optional[float] = None) -> bool:
+        use_hold_ms = float(self._hold_ms if hold_ms is None else hold_ms)
+        return self._last_speaking_ns and (t_ns - self._last_speaking_ns) <= int(use_hold_ms * 1_000_000)
+
+    def _active_thresholds(self, candidate: Optional[Dict[str, Any]]) -> Dict[str, float]:
+        mode = self._target_mode
+        if candidate is not None:
+            mode = _infer_mode(candidate)
+        is_audio_only = mode == "AUDIO_ONLY"
+        return {
+            "acquire": float(self._acquire_audio if is_audio_only else self._acquire),
+            "drop": float(self._drop_audio if is_audio_only else self._drop),
+            "hold_ms": float(self._hold_ms_audio if is_audio_only else self._hold_ms),
+            "handoff_min_ms": float(self._handoff_min_ms_audio if is_audio_only else self._handoff_min_ms),
+        }
 
     def _update_speaking_history(self, candidates: List[Dict[str, Any]], t_ns: int) -> None:
         for cand in candidates:
@@ -288,17 +349,35 @@ class LockStateMachine:
             if cand.get("speaking") or float(cand.get("score_components", {}).get("mouth_activity", 0.0)) >= self._speak_on:
                 self._last_speaking_by_track[str(track_id)] = t_ns
 
-    def _maybe_handoff(self, best: Dict[str, Any], t_ns: int) -> str:
+    def _maybe_handoff(
+        self,
+        best: Dict[str, Any],
+        t_ns: int,
+        acquire_threshold: float,
+        drop_threshold: float,
+        hold_ms: float,
+        handoff_min_ms: float,
+        current_score: float,
+    ) -> str:
         score = float(best["combined_score"])
-        if score < self._drop and not self._within_hold(t_ns):
+        if score < float(drop_threshold) and not self._within_hold(t_ns, hold_ms=hold_ms):
             self._clear()
             return "drop_low_confidence"
+        if self._last_switch_ns and (t_ns - self._last_switch_ns) < int(self._interrupt_hold_ms * 1_000_000):
+            self._state = "LOCKED"
+            return "interrupt_hold"
+        margin_required = max(float(self._handoff_margin), float(self._interrupt_min_delta))
+        if score < float(current_score) + margin_required:
+            self._handoff_id = None
+            self._handoff_start_ns = 0
+            self._state = "LOCKED"
+            return "handoff_margin"
         if self._handoff_id != best["track_id"]:
             self._handoff_id = best["track_id"]
             self._handoff_start_ns = t_ns
             self._state = "HANDOFF"
             return "handoff_start"
-        if (t_ns - self._handoff_start_ns) >= int(self._handoff_min_ms * 1_000_000) and score >= self._acquire:
+        if (t_ns - self._handoff_start_ns) >= int(float(handoff_min_ms) * 1_000_000) and score >= float(acquire_threshold):
             if self._lock_to(best, t_ns):
                 return "handoff_commit"
             self._state = "LOCKED"
@@ -434,6 +513,9 @@ def _vad_is_fresh(vad_state: Optional[Dict[str, Any]], t_ns: int, max_age_ms: fl
 
 def _infer_mode(candidate: Dict[str, Any]) -> str:
     """Infer TargetLock.mode from candidate evidence."""
+    mode = str(candidate.get("mode", "") or "").strip().upper()
+    if mode in {"AV_LOCK", "VISION_ONLY", "AUDIO_ONLY"}:
+        return mode
     try:
         track_id = str(candidate.get("track_id", "") or "")
     except Exception:  # noqa: BLE001

@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from focusfield.audio.devices import AudioDeviceInfo
-from focusfield.core.config import validate_config
+from focusfield.core.config import load_config, validate_config
 from focusfield.main.run import _validate_runtime_requirements
 from focusfield.platform import hardware_probe
 from focusfield.vision.cameras import _camera_loop
@@ -31,6 +31,17 @@ class _FakeClosedCapture:
 
 
 class PiContractTests(unittest.TestCase):
+    def test_prod_config_loads_with_expected_realtime_settings(self) -> None:
+        cfg = load_config("configs/full_3cam_8mic_pi_prod.yaml")
+        self.assertEqual(str(cfg["runtime"]["perf_profile"]), "realtime_pi_max")
+        self.assertFalse(bool(cfg["trace"]["enabled"]))
+        self.assertEqual(int(cfg["audio"]["block_size"]), 1024)
+        self.assertEqual(int(cfg["audio"]["capture"]["queue_depth"]), 16)
+        self.assertEqual(str(cfg["audio"]["beamformer"]["method"]), "mvdr")
+        self.assertEqual(str(cfg["fusion"]["thresholds_preset"]), "mvdr_low_latency_reliable")
+        self.assertEqual(int(cfg["bus"]["topic_queue_depths"]["audio.frames"]), 16)
+        self.assertEqual(int(cfg["bus"]["topic_queue_depths"]["audio.enhanced.final"]), 24)
+
     def test_config_validation_rejects_strict_mismatch(self) -> None:
         cfg = {
             "runtime": {
@@ -309,6 +320,7 @@ class PiContractTests(unittest.TestCase):
                 640,
                 360,
                 15,
+                {},
                 "vision.frames.cam0",
             )
         self.assertTrue(stop_event.is_set())

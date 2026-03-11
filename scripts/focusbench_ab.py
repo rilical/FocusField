@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from focusfield.bench.focusbench import run_focusbench
+from focusfield.bench.profile_loader import default_pi_nightly_profile_path, load_focusbench_thresholds
 from focusfield.core.config import load_config
 
 
@@ -20,13 +21,19 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, help="Output folder for BenchReport.")
     parser.add_argument(
         "--config",
-        default="configs/full_3cam_8mic_pi.yaml",
+        default="configs/full_3cam_8mic_pi_prod.yaml",
         help="Config path used to resolve bench.targets thresholds.",
+    )
+    parser.add_argument(
+        "--profile",
+        default=str(default_pi_nightly_profile_path()),
+        help="Shared benchmark profile YAML path.",
     )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     thresholds = _bench_thresholds(cfg)
+    thresholds.update(load_focusbench_thresholds(args.profile))
     report = run_focusbench(
         baseline_run=args.baseline_run,
         candidate_run=args.candidate_run,
@@ -37,6 +44,7 @@ def main() -> int:
     gates = report.get("summary", {}).get("gates", {})
     passed = bool(gates.get("passed", False)) if isinstance(gates, dict) else False
     print(f"report={report.get('output_path')}")
+    print(f"profile={args.profile}")
     print(f"verdict={'PASS' if passed else 'FAIL'}")
     if isinstance(gates, dict):
         print(json.dumps(gates, indent=2, sort_keys=True))

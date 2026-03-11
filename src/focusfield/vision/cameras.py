@@ -67,6 +67,7 @@ def start_cameras(
         width = cam_cfg.get("width", 640)
         height = cam_cfg.get("height", 480)
         fps = cam_cfg.get("fps", 30)
+        controls = cam_cfg.get("controls", {}) if isinstance(cam_cfg, dict) else {}
         topic = f"vision.frames.{camera_id}"
         thread = threading.Thread(
             target=_camera_loop,
@@ -82,6 +83,7 @@ def start_cameras(
                 width,
                 height,
                 fps,
+                controls,
                 topic,
                 strict_capture,
                 camera_scope,
@@ -104,6 +106,7 @@ def _camera_loop(
     width: int,
     height: int,
     fps: int,
+    controls: Dict[str, Any],
     topic: str,
     strict_capture: bool = False,
     camera_scope: str = "any",
@@ -129,6 +132,7 @@ def _camera_loop(
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     cap.set(cv2.CAP_PROP_FPS, fps)
+    _apply_camera_controls(cap, camera_id, controls, logger)
     seq = 0
     next_deadline_s = time.perf_counter()
     while not stop_event.is_set():
@@ -159,6 +163,50 @@ def _camera_loop(
         else:
             next_deadline_s = time.perf_counter()
     cap.release()
+
+
+def _apply_camera_controls(cap: cv2.VideoCapture, camera_id: str, controls: Dict[str, Any], logger: Any) -> None:
+    if not isinstance(controls, dict) or not controls:
+        return
+    control_map = {
+        "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE,
+        "exposure": cv2.CAP_PROP_EXPOSURE,
+        "gain": cv2.CAP_PROP_GAIN,
+        "brightness": cv2.CAP_PROP_BRIGHTNESS,
+        "contrast": cv2.CAP_PROP_CONTRAST,
+    }
+    for key, prop in control_map.items():
+        if key not in controls:
+            continue
+        try:
+            value = float(controls.get(key))
+        except Exception:  # noqa: BLE001
+            logger.emit(
+                "warning",
+                "vision.cameras",
+                "camera_control_invalid",
+                {"camera_id": camera_id, "control": key, "value": controls.get(key)},
+            )
+            continue
+        try:
+            applied = bool(cap.set(prop, value))
+            observed = float(cap.get(prop))
+        except Exception as exc:  # noqa: BLE001
+            logger.emit(
+                "warning",
+                "vision.cameras",
+                "camera_control_unsupported",
+                {"camera_id": camera_id, "control": key, "value": value, "error": str(exc)},
+            )
+            continue
+        event = "camera_control_applied" if applied else "camera_control_unsupported"
+        level = "info" if applied else "warning"
+        logger.emit(
+            level,
+            "vision.cameras",
+            event,
+            {"camera_id": camera_id, "control": key, "value": value, "observed": observed},
+        )
 
 
 def _camera_candidates(

@@ -1,0 +1,10 @@
+scenes:
+  - scene_id: interruption_dual_speaker
+    description: Two speakers with frequent interruptions and overlap.
+    target_angle_deg: 0
+    interferer_angle_deg: 120
+    target_reference_wav: bench_scenes/data/interruption_target.wav
+    interferer_reference_wav: bench_scenes/data/interruption_interferer.wav
+    reference_text: "let us switch to the budget discussion now"
+    baseline_text: ""
+    candidate_text: ""

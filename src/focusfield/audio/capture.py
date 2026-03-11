@@ -72,6 +72,19 @@ def start_audio_capture(
     if not isinstance(capture_cfg, dict):
         capture_cfg = {}
     allow_mono_fallback = bool(capture_cfg.get("allow_mono_fallback", True))
+    portaudio_latency_cfg = capture_cfg.get("portaudio_latency", "high")
+    if isinstance(portaudio_latency_cfg, str):
+        portaudio_latency = str(portaudio_latency_cfg).strip().lower()
+        if portaudio_latency not in {"low", "high"}:
+            portaudio_latency = "high"
+    else:
+        try:
+            portaudio_latency = float(portaudio_latency_cfg)
+        except Exception:
+            portaudio_latency = "high"
+        else:
+            if portaudio_latency <= 0.0:
+                portaudio_latency = "high"
     capture_queue_depth = int(capture_cfg.get("queue_depth", 16) or 16)
     capture_queue_depth = max(4, min(256, capture_queue_depth))
     fail_fast = bool(config.get("runtime", {}).get("fail_fast", True))
@@ -88,7 +101,9 @@ def start_audio_capture(
         "frames_published": 0,
         "callback_overflow_drop": 0,
         "status_input_overflow": 0,
+        "status_input_overflow_total": 0,
         "status_other": 0,
+        "status_other_total": 0,
     }
 
     status_counts = {"input_overflow": 0}
@@ -157,10 +172,12 @@ def start_audio_capture(
             if "input overflow" in status_text.lower():
                 with stats_lock:
                     stats["status_input_overflow"] += 1
+                    stats["status_input_overflow_total"] += 1
                     status_counts["input_overflow"] += 1
             else:
                 with stats_lock:
                     stats["status_other"] += 1
+                    stats["status_other_total"] += 1
             if _throttle_status_log():
                 logger.emit(
                     "warning",
@@ -200,6 +217,7 @@ def start_audio_capture(
                 channels=requested_channels,
                 dtype="float32",
                 device=device,
+                latency=portaudio_latency,
                 callback=_callback,
             )
         except Exception as exc:  # noqa: BLE001
@@ -227,6 +245,7 @@ def start_audio_capture(
                         channels=1,
                         dtype="float32",
                         device=device,
+                        latency=portaudio_latency,
                         callback=_callback,
                     )
                 except Exception as exc2:  # noqa: BLE001

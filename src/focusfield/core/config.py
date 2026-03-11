@@ -73,11 +73,22 @@ def _default_config() -> Dict[str, Any]:
             "fail_fast": True,
             "perf_profile": "default",
             "enable_validation": False,
+            "scheduling": {
+                "niceness": 0,
+                "enable_rt": False,
+                "rt_priority": 70,
+            },
+            "alignment": {
+                "zero_deg_reference": "cam0_usb",
+                "require_calibrated_mic_yaw": False,
+            },
             "requirements": {
                 "strict": False,
                 "min_cameras": 0,
                 "min_audio_channels": 0,
                 "camera_scope": "any",
+                "require_led_hid": False,
+                "require_led_hid_runtime_check": True,
             },
             "artifacts": {
                 "dir": "artifacts",
@@ -131,6 +142,7 @@ def _default_config() -> Dict[str, Any]:
         },
         "vision": {
             "face": {
+                "detector_backend": "haar",
                 "min_confidence": 0.6,
                 "iou_threshold": 0.3,
                 "max_missing_frames": 10,
@@ -140,6 +152,31 @@ def _default_config() -> Dict[str, Any]:
                 "scale_factor": 1.1,
                 "detect_width": 360,
                 "detect_every_n": 1,
+                "full_frame_every_n": 4,
+                "roi_margin_ratio": 0.2,
+                "max_rois_per_frame": 4,
+                "yunet": {
+                    "model_path": "",
+                    "auto_download": True,
+                    "score_threshold": 0.75,
+                    "nms_threshold": 0.3,
+                    "top_k": 5000,
+                    "input_width": 320,
+                    "input_height": 320,
+                },
+                "preprocess": {
+                    "enabled": False,
+                    "clahe_clip_limit": 2.0,
+                    "clahe_tile": 8,
+                    "gamma": 1.0,
+                    "blur_kernel": 0,
+                },
+                "pose": {
+                    "disconnect_angle_deg": 55.0,
+                    "reconnect_angle_deg": 42.0,
+                    "off_angle_drop_ms": 1200.0,
+                    "decay_alpha": 0.35,
+                },
             },
             "track": {
                 "smoothing_alpha": 0.6,
@@ -170,10 +207,16 @@ def _default_config() -> Dict[str, Any]:
         "fusion": {
             "thresholds_preset": "balanced",
             "weights": {
-                "mouth": 0.7,
-                "face": 0.3,
-                "doa": 0.0,
-                "angle": 0.0,
+                "mouth": 0.42,
+                "face": 0.18,
+                "doa": 0.28,
+                "angle": 0.12,
+            },
+            "interruption": {
+                "handoff_margin": 0.06,
+                "interrupt_min_delta": 0.04,
+                "interrupt_hold_ms": 300.0,
+                "score_smoothing_alpha": 0.45,
             },
             "audio_fallback": {
                 "enabled": True,
@@ -205,6 +248,8 @@ def _default_config() -> Dict[str, Any]:
                 # If true, allow audio.capture to fall back to mono when the requested
                 # multichannel input can't be opened (useful for laptop baseline runs).
                 "allow_mono_fallback": True,
+                "portaudio_latency": "high",
+                "status_log_interval_s": 1.0,
             },
             "vad": {
                 "enabled": True,
@@ -315,10 +360,48 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     camera_scope = str(req_cfg.get("camera_scope", "any") or "any").strip().lower()
     if camera_scope not in {"any", "usb"}:
         errors.append("runtime.requirements.camera_scope must be one of: any, usb")
+    if "require_led_hid" in req_cfg and not isinstance(req_cfg.get("require_led_hid"), bool):
+        errors.append("runtime.requirements.require_led_hid must be bool")
+    if "require_led_hid_runtime_check" in req_cfg and not isinstance(req_cfg.get("require_led_hid_runtime_check"), bool):
+        errors.append("runtime.requirements.require_led_hid_runtime_check must be bool")
     if min_cameras < 0:
         errors.append("runtime.requirements.min_cameras must be >= 0")
     if min_audio_channels < 0:
         errors.append("runtime.requirements.min_audio_channels must be >= 0")
+    scheduling_cfg = runtime_cfg.get("scheduling", {})
+    if scheduling_cfg is not None and not isinstance(scheduling_cfg, dict):
+        errors.append("runtime.scheduling must be a mapping when provided")
+        scheduling_cfg = {}
+    if isinstance(scheduling_cfg, dict) and "niceness" in scheduling_cfg:
+        try:
+            _ = int(scheduling_cfg.get("niceness"))
+        except Exception:
+            errors.append("runtime.scheduling.niceness must be integer")
+    if isinstance(scheduling_cfg, dict) and "enable_rt" in scheduling_cfg and not isinstance(scheduling_cfg.get("enable_rt"), bool):
+        errors.append("runtime.scheduling.enable_rt must be bool")
+    if isinstance(scheduling_cfg, dict) and "rt_priority" in scheduling_cfg:
+        try:
+            rt_priority = int(scheduling_cfg.get("rt_priority"))
+        except Exception:
+            errors.append("runtime.scheduling.rt_priority must be integer")
+        else:
+            if rt_priority < 1 or rt_priority > 99:
+                errors.append("runtime.scheduling.rt_priority must be in [1, 99]")
+    alignment_cfg = runtime_cfg.get("alignment", {})
+    if alignment_cfg is not None and not isinstance(alignment_cfg, dict):
+        errors.append("runtime.alignment must be a mapping when provided")
+        alignment_cfg = {}
+    if isinstance(alignment_cfg, dict):
+        if "zero_deg_reference" in alignment_cfg:
+            zero_ref = str(alignment_cfg.get("zero_deg_reference", "") or "").strip().lower()
+            if zero_ref not in {"cam0_usb", "front_center", "manual_calibration"}:
+                errors.append(
+                    "runtime.alignment.zero_deg_reference must be one of: cam0_usb, front_center, manual_calibration"
+                )
+        if "require_calibrated_mic_yaw" in alignment_cfg and not isinstance(
+            alignment_cfg.get("require_calibrated_mic_yaw"), bool
+        ):
+            errors.append("runtime.alignment.require_calibrated_mic_yaw must be bool")
     if strict:
         if channels <= 0:
             errors.append("runtime.requirements.strict=true requires audio.channels > 0")
@@ -373,6 +456,177 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
                     errors.append("ui.frame_max_hz must be > 0")
 
     beam_cfg = audio_cfg.get("beamformer", {})
+    capture_cfg = audio_cfg.get("capture", {})
+    if capture_cfg is not None and not isinstance(capture_cfg, dict):
+        errors.append("audio.capture must be a mapping when provided")
+        capture_cfg = {}
+    if isinstance(capture_cfg, dict):
+        latency_value = capture_cfg.get("portaudio_latency")
+        if latency_value is not None:
+            if isinstance(latency_value, str):
+                if latency_value.strip().lower() not in {"low", "high"}:
+                    errors.append("audio.capture.portaudio_latency must be 'low', 'high', or numeric seconds")
+            else:
+                try:
+                    latency_num = float(latency_value)
+                except Exception:
+                    errors.append("audio.capture.portaudio_latency must be 'low', 'high', or numeric seconds")
+                else:
+                    if latency_num <= 0.0:
+                        errors.append("audio.capture.portaudio_latency numeric value must be > 0")
+        if "status_log_interval_s" in capture_cfg:
+            try:
+                status_interval = float(capture_cfg.get("status_log_interval_s"))
+            except Exception:
+                errors.append("audio.capture.status_log_interval_s must be numeric")
+            else:
+                if status_interval <= 0.0:
+                    errors.append("audio.capture.status_log_interval_s must be > 0")
+
+    vision_cfg = config.get("vision", {})
+    if vision_cfg is not None and not isinstance(vision_cfg, dict):
+        errors.append("vision must be a mapping when provided")
+        vision_cfg = {}
+    if isinstance(vision_cfg, dict):
+        face_cfg = vision_cfg.get("face", {})
+        if face_cfg is not None and not isinstance(face_cfg, dict):
+            errors.append("vision.face must be a mapping when provided")
+            face_cfg = {}
+        if isinstance(face_cfg, dict):
+            detector_backend = str(face_cfg.get("detector_backend", "haar") or "haar").strip().lower()
+            if detector_backend not in {"haar", "yunet", "blazeface"}:
+                errors.append("vision.face.detector_backend must be one of: haar, yunet, blazeface")
+
+            for key in ("full_frame_every_n", "max_rois_per_frame"):
+                if key in face_cfg:
+                    try:
+                        value = int(face_cfg.get(key))
+                    except Exception:
+                        errors.append(f"vision.face.{key} must be integer")
+                        continue
+                    if value < 1:
+                        errors.append(f"vision.face.{key} must be >= 1")
+            if "roi_margin_ratio" in face_cfg:
+                try:
+                    value = float(face_cfg.get("roi_margin_ratio"))
+                except Exception:
+                    errors.append("vision.face.roi_margin_ratio must be numeric")
+                else:
+                    if value < 0.0 or value > 1.0:
+                        errors.append("vision.face.roi_margin_ratio must be in [0, 1]")
+
+            yunet_cfg = face_cfg.get("yunet", {})
+            if yunet_cfg is not None and not isinstance(yunet_cfg, dict):
+                errors.append("vision.face.yunet must be a mapping when provided")
+                yunet_cfg = {}
+            if isinstance(yunet_cfg, dict):
+                if "model_path" in yunet_cfg and not isinstance(yunet_cfg.get("model_path"), str):
+                    errors.append("vision.face.yunet.model_path must be string")
+                if "auto_download" in yunet_cfg and not isinstance(yunet_cfg.get("auto_download"), bool):
+                    errors.append("vision.face.yunet.auto_download must be bool")
+                for key in ("score_threshold", "nms_threshold"):
+                    if key in yunet_cfg:
+                        try:
+                            value = float(yunet_cfg.get(key))
+                        except Exception:
+                            errors.append(f"vision.face.yunet.{key} must be numeric")
+                            continue
+                        if value <= 0.0 or value > 1.0:
+                            errors.append(f"vision.face.yunet.{key} must be in (0, 1]")
+                for key in ("top_k", "input_width", "input_height"):
+                    if key in yunet_cfg:
+                        try:
+                            value = int(yunet_cfg.get(key))
+                        except Exception:
+                            errors.append(f"vision.face.yunet.{key} must be integer")
+                            continue
+                        if value < 1:
+                            errors.append(f"vision.face.yunet.{key} must be >= 1")
+
+            preprocess_cfg = face_cfg.get("preprocess", {})
+            if preprocess_cfg is not None and not isinstance(preprocess_cfg, dict):
+                errors.append("vision.face.preprocess must be a mapping when provided")
+                preprocess_cfg = {}
+            if isinstance(preprocess_cfg, dict):
+                if "enabled" in preprocess_cfg and not isinstance(preprocess_cfg.get("enabled"), bool):
+                    errors.append("vision.face.preprocess.enabled must be bool")
+                if "clahe_clip_limit" in preprocess_cfg:
+                    try:
+                        value = float(preprocess_cfg.get("clahe_clip_limit"))
+                    except Exception:
+                        errors.append("vision.face.preprocess.clahe_clip_limit must be numeric")
+                    else:
+                        if value <= 0.0:
+                            errors.append("vision.face.preprocess.clahe_clip_limit must be > 0")
+                for key in ("clahe_tile", "blur_kernel"):
+                    if key in preprocess_cfg:
+                        try:
+                            value = int(preprocess_cfg.get(key))
+                        except Exception:
+                            errors.append(f"vision.face.preprocess.{key} must be integer")
+                            continue
+                        if key == "clahe_tile" and value < 1:
+                            errors.append("vision.face.preprocess.clahe_tile must be >= 1")
+                        if key == "blur_kernel":
+                            if value < 0:
+                                errors.append("vision.face.preprocess.blur_kernel must be >= 0")
+                            elif value > 0 and value % 2 == 0:
+                                errors.append("vision.face.preprocess.blur_kernel must be odd when > 0")
+                if "gamma" in preprocess_cfg:
+                    try:
+                        value = float(preprocess_cfg.get("gamma"))
+                    except Exception:
+                        errors.append("vision.face.preprocess.gamma must be numeric")
+                    else:
+                        if value <= 0.0:
+                            errors.append("vision.face.preprocess.gamma must be > 0")
+            pose_cfg = face_cfg.get("pose", {})
+            if pose_cfg is not None and not isinstance(pose_cfg, dict):
+                errors.append("vision.face.pose must be a mapping when provided")
+                pose_cfg = {}
+            if isinstance(pose_cfg, dict):
+                for key in ("disconnect_angle_deg", "reconnect_angle_deg", "off_angle_drop_ms"):
+                    if key in pose_cfg:
+                        try:
+                            value = float(pose_cfg.get(key))
+                        except Exception:
+                            errors.append(f"vision.face.pose.{key} must be numeric")
+                            continue
+                        if value <= 0.0:
+                            errors.append(f"vision.face.pose.{key} must be > 0")
+                if "decay_alpha" in pose_cfg:
+                    try:
+                        value = float(pose_cfg.get("decay_alpha"))
+                    except Exception:
+                        errors.append("vision.face.pose.decay_alpha must be numeric")
+                    else:
+                        if value < 0.0 or value > 1.0:
+                            errors.append("vision.face.pose.decay_alpha must be in [0, 1]")
+                disconnect = float(pose_cfg.get("disconnect_angle_deg", 55.0) or 55.0)
+                reconnect = float(pose_cfg.get("reconnect_angle_deg", 42.0) or 42.0)
+                if reconnect >= disconnect:
+                    errors.append("vision.face.pose.reconnect_angle_deg must be < disconnect_angle_deg")
+
+    video_cfg = config.get("video", {})
+    if isinstance(video_cfg, dict):
+        cameras_cfg = video_cfg.get("cameras", [])
+        if isinstance(cameras_cfg, list):
+            for idx, camera_cfg in enumerate(cameras_cfg):
+                if not isinstance(camera_cfg, dict):
+                    continue
+                controls_cfg = camera_cfg.get("controls")
+                if controls_cfg is None:
+                    continue
+                if not isinstance(controls_cfg, dict):
+                    errors.append(f"video.cameras[{idx}].controls must be a mapping when provided")
+                    continue
+                for key in ("auto_exposure", "exposure", "gain", "brightness", "contrast"):
+                    if key in controls_cfg:
+                        try:
+                            float(controls_cfg.get(key))
+                        except Exception:
+                            errors.append(f"video.cameras[{idx}].controls.{key} must be numeric")
+
     if isinstance(beam_cfg, dict):
         mvdr_cfg = beam_cfg.get("mvdr", {})
         if not isinstance(mvdr_cfg, dict):
@@ -387,14 +641,38 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         freq_high_hz = float(mvdr_cfg.get("freq_high_hz", 4800.0) or 4800.0)
         if freq_low_hz < 0.0:
             errors.append("audio.beamformer.mvdr.freq_low_hz must be >= 0")
-            if freq_high_hz <= freq_low_hz:
-                errors.append("audio.beamformer.mvdr.freq_high_hz must be > freq_low_hz")
+        if freq_high_hz <= freq_low_hz:
+            errors.append("audio.beamformer.mvdr.freq_high_hz must be > freq_low_hz")
 
     fusion_cfg = config.get("fusion", {})
     if fusion_cfg is not None and not isinstance(fusion_cfg, dict):
         errors.append("fusion must be a mapping when provided")
         fusion_cfg = {}
     if isinstance(fusion_cfg, dict):
+        thresholds_cfg = fusion_cfg.get("thresholds", {})
+        if thresholds_cfg is not None and not isinstance(thresholds_cfg, dict):
+            errors.append("fusion.thresholds must be a mapping when provided")
+            thresholds_cfg = {}
+        if isinstance(thresholds_cfg, dict):
+            for key in ("acquire_threshold_audio_only", "drop_threshold_audio_only"):
+                if key in thresholds_cfg:
+                    try:
+                        value = float(thresholds_cfg.get(key))
+                    except Exception:
+                        errors.append(f"fusion.thresholds.{key} must be numeric")
+                        continue
+                    if value < 0.0 or value > 1.0:
+                        errors.append(f"fusion.thresholds.{key} must be in [0, 1]")
+            for key in ("hold_ms_audio_only", "handoff_min_ms_audio_only"):
+                if key in thresholds_cfg:
+                    try:
+                        value = float(thresholds_cfg.get(key))
+                    except Exception:
+                        errors.append(f"fusion.thresholds.{key} must be numeric")
+                        continue
+                    if value <= 0.0:
+                        errors.append(f"fusion.thresholds.{key} must be > 0")
+
         fallback_cfg = fusion_cfg.get("audio_fallback", {})
         if fallback_cfg is not None and not isinstance(fallback_cfg, dict):
             errors.append("fusion.audio_fallback must be a mapping when provided")
@@ -423,6 +701,31 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             score_mode = str(fallback_cfg.get("score_mode", "max") or "max").strip().lower()
             if score_mode not in {"confidence", "peak", "max"}:
                 errors.append("fusion.audio_fallback.score_mode must be one of: confidence, peak, max")
+        interruption_cfg = fusion_cfg.get("interruption", {})
+        if interruption_cfg is not None and not isinstance(interruption_cfg, dict):
+            errors.append("fusion.interruption must be a mapping when provided")
+            interruption_cfg = {}
+        if isinstance(interruption_cfg, dict):
+            for key in ("handoff_margin", "interrupt_min_delta", "score_smoothing_alpha"):
+                if key in interruption_cfg:
+                    try:
+                        value = float(interruption_cfg.get(key))
+                    except Exception:
+                        errors.append(f"fusion.interruption.{key} must be numeric")
+                        continue
+                    if key == "score_smoothing_alpha":
+                        if value < 0.0 or value > 1.0:
+                            errors.append("fusion.interruption.score_smoothing_alpha must be in [0, 1]")
+                    elif value < 0.0 or value > 1.0:
+                        errors.append(f"fusion.interruption.{key} must be in [0, 1]")
+            if "interrupt_hold_ms" in interruption_cfg:
+                try:
+                    value = float(interruption_cfg.get("interrupt_hold_ms"))
+                except Exception:
+                    errors.append("fusion.interruption.interrupt_hold_ms must be numeric")
+                else:
+                    if value <= 0.0:
+                        errors.append("fusion.interruption.interrupt_hold_ms must be > 0")
 
     denoise_cfg = audio_cfg.get("denoise", {})
     if isinstance(denoise_cfg, dict):

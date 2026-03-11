@@ -9,6 +9,8 @@ sudo apt install -y \
   python3-dev \
   build-essential \
   portaudio19-dev \
+  libhidapi-hidraw0 \
+  libhidapi-dev \
   v4l-utils \
   libatlas-base-dev
 
@@ -18,6 +20,6 @@ fi
 
 source .venv/bin/activate
 pip install -U pip
-pip install -e .
+pip install -e ".[leds]"
 
 echo "Done. Activate env with: source .venv/bin/activate"

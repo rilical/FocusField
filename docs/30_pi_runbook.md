@@ -23,6 +23,8 @@ sudo apt update
 sudo apt install -y \
   python3-pip python3-venv \
   portaudio19-dev \
+  libhidapi-hidraw0 \
+  libhidapi-dev \
   v4l-utils \
   libatlas3-base \
   libopenblas-dev \
@@ -39,8 +41,9 @@ rm -rf .venv
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -U pip
-pip install --no-deps -e .
+pip install -e ".[leds]"
 pip install -U "PyYAML>=6.0" "numpy>=1.23" "sounddevice>=0.4.6" "webrtcvad>=2.0.10"
+python3 -c "import hid; print('hid ok')"
 ```
 
 > FocusField on Raspberry Pi uses Debian's `python3-opencv` for `cv2`. `opencv-python`
@@ -81,14 +84,17 @@ Switch UMA-8 to RAW firmware first.
 
 ### Strict full-target config generation (recommended for production)
 
-Use one of these base configs:
-- `configs/full_3cam_8mic_pi_hq_aggressive.yaml` for latency-first production
-- `configs/full_3cam_8mic_pi_hq_balanced.yaml` for safer sustained operation
+Use this base config for production:
+- `configs/full_3cam_8mic_pi_prod.yaml` is the blessed low-latency production runtime
+
+Keep these only for debug or bench work:
+- `configs/full_3cam_8mic_pi_hq_aggressive.yaml`
+- `configs/full_3cam_8mic_pi_hq_balanced.yaml`
 
 ```bash
 set -euo pipefail
 python3 scripts/prepare_pi_local_config.py \
-  --base-config configs/full_3cam_8mic_pi_hq_aggressive.yaml \
+  --base-config configs/full_3cam_8mic_pi_prod.yaml \
   --output configs/full_3cam_working_local.yaml \
   --camera-source by-path \
   --camera-scope usb \
@@ -102,6 +108,7 @@ python3 scripts/pi_preflight.py \
   --camera-scope usb \
   --require-cameras 3 \
   --require-audio-channels 8 \
+  --require-led-hid \
   --strict && \
 python3 scripts/list_cameras.py
 ```
@@ -138,6 +145,7 @@ python3 scripts/pi_preflight.py \
   --camera-scope usb \
   --require-cameras 3 \
   --require-audio-channels 8 \
+  --require-led-hid \
   --strict
 
 python3 scripts/pi_smoke.py \
@@ -154,6 +162,38 @@ python3 scripts/pi_smoke.py \
 6. Tune alignment:
 - Rotate LED ring mapping with `uma8_leds.base_bearing_offset_deg`.
 - If visual direction is correct but face direction is off, tune each `video.cameras[].yaw_offset_deg`.
+
+### Production calibration checklist
+
+Run this checklist before any demo, benchmark, or acceptance run:
+
+1. Verify camera order after reboot:
+- `cam0` is the 0deg reference
+- `cam1` is +120deg
+- `cam2` is +240deg
+
+2. Verify UMA-8 is in RAW firmware mode:
+- selected audio device exposes at least 8 input channels
+
+3. Run strict preflight:
+- `python3 scripts/pi_preflight.py --config configs/full_3cam_working_local.yaml --camera-source by-path --camera-scope usb --require-cameras 3 --require-audio-channels 8 --strict`
+
+4. Run 30-second smoke:
+- `python3 scripts/pi_smoke.py --config configs/full_3cam_working_local.yaml --run-seconds 30 --strict --camera-scope usb`
+
+5. Run UMA-8 calibration and paste the emitted YAML into `configs/device_profiles.yaml`.
+
+6. Confirm camera yaw offsets:
+- `video.cameras[0].yaw_offset_deg = 0`
+- `video.cameras[1].yaw_offset_deg = 120`
+- `video.cameras[2].yaw_offset_deg = 240`
+
+7. Confirm LED ring bearing mapping:
+- tune `uma8_leds.base_bearing_offset_deg` until LED sector matches known speaker angle
+
+8. Confirm lock bearing against known positions:
+- speak from approximately `0deg`, `120deg`, and `240deg`
+- verify `lock_state.target_bearing_deg` follows the correct speaker
 
 ### Debug/degraded config generation (best-effort diagnostics)
 
@@ -208,7 +248,27 @@ If strict full-target is required, do not proceed when smoke/preflight reports f
 ### Strict full-target run
 
 ```bash
-python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml --mode vision
+./scripts/focusfield_boot.sh configs/full_3cam_working_local.yaml
+```
+
+### Strict full-target run with RT scheduler (preferred)
+
+`runtime.scheduling.enable_rt: true` and `runtime.scheduling.rt_priority` are read from config.
+If `chrt` needs elevated permissions, run with sudo:
+
+```bash
+sudo ./scripts/focusfield_boot.sh configs/full_3cam_working_local.yaml
+```
+
+Quick HID verification before strict run:
+
+```bash
+source .venv/bin/activate
+python3 - <<'PY'
+import hid
+devs = hid.enumerate(0x2752, 0x001c)
+print("hid_devices", len(devs))
+PY
 ```
 
 ### Auto-start at boot (Raspberry Pi)
@@ -272,6 +332,40 @@ If strict boot keeps failing, inspect logs and confirm camera/audio contracts fi
 - run `python3 scripts/list_cameras.py`
 - run `python3 scripts/pi_preflight.py --config ... --camera-scope usb --require-cameras 3 --require-audio-channels 8 --strict`
 
+## 5-minute realtime validation gate
+
+```bash
+./scripts/focusfield_boot.sh configs/full_3cam_working_local.yaml
+# let it run for ~5 minutes with normal speaking, then Ctrl-C
+python3 scripts/pi_perf_gate.py --run-dir artifacts/LATEST
+```
+
+Pass condition:
+- `RESULT=PASS`
+
+Telemetry sanity check (from `http://<pi-ip>:8080/telemetry`):
+- `uma8_leds.backend` is `hid` when strict transport is enabled.
+- `fusion_debug.no_candidate_reason` is not dominated by `no_faces_audio_fallback`.
+- `fusion_debug.active_acquire_threshold` and `fusion_debug.active_drop_threshold` are present.
+- `perf_summary.audio_capture.status_input_overflow_total` grows slowly and `status_input_overflow_window` stays low.
+
+## Nightly hard gate (blocking)
+
+Use this as the release/nightly blocker (PR checks can stay advisory):
+
+```bash
+python3 scripts/agent_audit.py \
+  --config configs/full_3cam_8mic_pi_prod.yaml \
+  --run-dir artifacts/LATEST \
+  --profile configs/bench_profiles/pi_realtime_nightly.yaml \
+  --strict
+```
+
+Expected artifacts:
+
+- `artifacts/<run_id>/audit/AuditReport.json`
+- `artifacts/<run_id>/audit/AuditReport.md`
+
 ## Mandatory A/B benchmark gate (release flow)
 
 Run this after capturing:
@@ -284,7 +378,7 @@ python3 scripts/focusbench_ab.py \
   --baseline-run /path/to/artifacts/<baseline_run_id> \
   --candidate-run /path/to/artifacts/<candidate_run_id> \
   --scene-manifest bench_scenes/quiet_office.yaml \
-  --config configs/full_3cam_8mic_pi_hq_aggressive.yaml \
+  --config configs/full_3cam_8mic_pi_prod.yaml \
   --output-dir artifacts/focusbench_ab/<candidate_run_id>
 ```
 

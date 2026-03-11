@@ -4,20 +4,11 @@ runtime:
   fail_fast: true
   perf_profile: realtime_pi_max
   enable_validation: true
-  scheduling:
-    niceness: -5
-    enable_rt: true
-    rt_priority: 70
-  alignment:
-    zero_deg_reference: cam0_usb
-    require_calibrated_mic_yaw: true
   requirements:
     strict: true
     min_cameras: 3
     min_audio_channels: 8
     camera_scope: usb
-    require_led_hid: true
-    require_led_hid_runtime_check: true
   artifacts:
     dir: artifacts
     retention:
@@ -33,8 +24,8 @@ trace:
 health:
   enabled: true
   thresholds_ms:
-    audio_frames: 220
-    enhanced_final: 300
+    audio_frames: 180
+    enhanced_final: 220
     face_tracks: 1000
     camera_frame: 1000
 perf:
@@ -53,14 +44,12 @@ bench:
 audio:
   channels: 8
   sample_rate_hz: 48000
-  block_size: 3072
+  block_size: 1024
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
-    portaudio_latency: high
-    queue_depth: 8
+    queue_depth: 16
     stats_emit_hz: 1
-    status_log_interval_s: 1.0
   device_selector:
     match_substring: miniDSP
     require_input_channels: 8
@@ -71,36 +60,36 @@ audio:
     min_speech_ratio: 0.3
   doa:
     method: srp_phat
-    bins: 18
-    update_hz: 2
+    bins: 72
+    update_hz: 10
     freq_low_hz: 200
     freq_high_hz: 4500
-    continuity_weight: 0.18
+    continuity_weight: 0.2
     continuity_sigma_bins: 5.0
-    max_jump_deg: 65.0
+    max_jump_deg: 55.0
   beamformer:
-    method: delay_and_sum
+    method: mvdr
     no_lock_behavior: omni
     use_last_lock_ms: 800
-    steering_smoothing_alpha: 0.85
+    steering_smoothing_alpha: 0.88
     channel_weights:
       enabled: true
-      spatial_exponent: 2.0
+      spatial_exponent: 2.2
       dead_rms_threshold: 1.0e-05
       min_snr_db: 3.0
       max_snr_db: 18.0
       max_clip_fraction: 0.01
     noise_reference:
-      ref_threshold: 0.2
+      ref_threshold: 0.22
       update_when_speaking: true
     mvdr:
-      nfft: 2048
-      refresh_ms: 250
-      noise_ema_alpha: 0.95
+      nfft: 1024
+      refresh_ms: 180
+      noise_ema_alpha: 0.96
       diagonal_loading: 0.001
-      steering_update_deg: 5.0
+      steering_update_deg: 3.5
       max_condition_number: 1.0e6
-      weight_interp_alpha: 0.35
+      weight_interp_alpha: 0.45
       speech_freeze_covariance: true
       freq_low_hz: 150
       freq_high_hz: 4600
@@ -111,120 +100,79 @@ audio:
         over_subtraction: 1.15
         min_gain: 0.08
   denoise:
-    enabled: false
+    enabled: true
     backend: hybrid
     wiener:
       g_min: 0.05
       noise_ema_alpha: 0.98
-      nfft: 2048
+      nfft: 1024
     rnnoise:
       model_path: ''
-      strength: 0.6
+      strength: 0.72
       min_gain: 0.08
       noise_ema_alpha: 0.98
-      gain_ema_alpha: 0.88
-      nfft: 2048
+      gain_ema_alpha: 0.86
+      nfft: 1024
     hybrid:
-      postfilter_strength: 0.5
+      postfilter_strength: 0.65
   sync:
-    enabled: false
+    enabled: true
     drift_check:
       max_offset_samples: 6
       check_every_s: 2.0
 video:
   cameras:
   - id: cam0
-    device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.4:1.0-video-index0
+    device_path: ''
     device_index: 0
-    width: 320
-    height: 180
-    fps: 5
+    width: 640
+    height: 360
+    fps: 15
     hfov_deg: 160
     yaw_offset_deg: 0
     bearing_model: linear
     bearing_lut_path: ''
-    controls:
-      auto_exposure: 0.75
-      exposure: -6
-      gain: 32
-      brightness: 0
-      contrast: 32
   - id: cam1
-    device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.1:1.0-video-index0
+    device_path: ''
     device_index: 1
-    width: 320
-    height: 180
-    fps: 5
+    width: 640
+    height: 360
+    fps: 15
     hfov_deg: 160
     yaw_offset_deg: 120
     bearing_model: linear
     bearing_lut_path: ''
-    controls:
-      auto_exposure: 0.75
-      exposure: -6
-      gain: 32
-      brightness: 0
-      contrast: 32
   - id: cam2
-    device_path: /dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.2:1.0-video-index0
+    device_path: ''
     device_index: 2
-    width: 320
-    height: 180
-    fps: 5
+    width: 640
+    height: 360
+    fps: 15
     hfov_deg: 160
     yaw_offset_deg: 240
     bearing_model: linear
     bearing_lut_path: ''
-    controls:
-      auto_exposure: 0.75
-      exposure: -6
-      gain: 32
-      brightness: 0
-      contrast: 32
 vision:
   face:
-    detector_backend: yunet
-    min_confidence: 0.5
+    min_confidence: 0.6
     iou_threshold: 0.3
-    max_missing_frames: 24
-    min_area: 320
-    min_neighbors: 2
+    max_missing_frames: 10
+    min_area: 800
+    min_neighbors: 4
     scale_factor: 1.1
     detect_width: 320
-    detect_every_n: 1
-    full_frame_every_n: 4
-    roi_margin_ratio: 0.22
-    max_rois_per_frame: 6
-    yunet:
-      model_path: ''
-      auto_download: true
-      score_threshold: 0.55
-      nms_threshold: 0.3
-      top_k: 5000
-      input_width: 320
-      input_height: 320
-    preprocess:
-      enabled: true
-      clahe_clip_limit: 2.2
-      clahe_tile: 8
-      gamma: 1.2
-      blur_kernel: 3
-    pose:
-      disconnect_angle_deg: 52
-      reconnect_angle_deg: 40
-      off_angle_drop_ms: 1200
-      decay_alpha: 0.35
+    detect_every_n: 2
   track:
     smoothing_alpha: 0.6
-    max_missing_frames: 24
+    max_missing_frames: 10
     min_age_frames: 2
   mouth:
     smoothing_alpha: 0.5
     min_activity: 0.02
     max_activity: 0.2
     diff_threshold: 4
-    use_facemesh: true
-    mesh_every_n: 1
+    use_facemesh: false
+    mesh_every_n: 2
     mesh_max_faces: 3
     mesh_min_detection_confidence: 0.5
     mesh_min_tracking_confidence: 0.5
@@ -237,84 +185,49 @@ vision:
     top_k_peaks: 2
     smoothing_alpha: 0.25
 fusion:
-  thresholds_preset: hybrid_low_latency
+  thresholds_preset: mvdr_low_latency_reliable
   weights:
     mouth: 0.42
     face: 0.18
     doa: 0.28
     angle: 0.12
-  interruption:
-    handoff_margin: 0.06
-    interrupt_min_delta: 0.04
-    interrupt_hold_ms: 300
-    score_smoothing_alpha: 0.45
+  require_vad: true
+  vad_max_age_ms: 500
+  require_speaking: true
   audio_fallback:
     enabled: true
-    min_doa_confidence: 0.35
-    min_peak_score: 0.22
-    score_mode: max
-    require_vad: false
+    require_vad: true
     allow_when_faces_missing: true
-    face_staleness_ms: 1200
-  require_vad: false
-  vad_max_age_ms: 500
-  require_speaking: false
+    face_staleness_ms: 700
+    min_doa_confidence: 0.45
+    min_peak_score: 0.30
+    score_mode: confidence
 bus:
   max_queue_depth: 24
   topic_queue_depths:
     audio.frames: 16
-    audio.vad: 16
-    audio.enhanced.beamformed: 12
-    audio.enhanced.final: 12
-    runtime.perf: 8
+    audio.vad: 64
+    audio.enhanced.beamformed: 24
+    audio.enhanced.final: 24
+    runtime.perf: 16
     vision.frames.*: 4
     vision.frames.cam0: 4
     vision.frames.cam1: 4
     vision.frames.cam2: 4
     vision.face_tracks: 4
-    fusion.target_lock: 8
 logging:
-  level: warning
+  level: info
   file:
     enabled: true
     flush_interval_ms: 200
     rotate_mb: 50
 output:
-  sink: none
+  sink: file
   file_sink:
     dir: artifacts
     write_raw_multich: true
-uma8_leds:
-  enabled: true
-  enabled_fallback: true
-  strict_transport: true
-  backend: hid
-  doa_fallback_enabled: true
-  doa_min_confidence: 0.05
-  doa_use_without_vad: false
-  ring_size: 12
-  update_hz: 12
-  base_bearing_offset_deg: 0.0
-  idle_rgb:
-  - 32
-  - 32
-  - 96
-  lock_rgb:
-  - 0
-  - 255
-  - 128
-  search_rgb:
-  - 0
-  - 140
-  - 255
-  smoothing_alpha: 0.35
-  brightness_min: 0.2
-  brightness_max: 0.85
-  vendor_id: 10066
-  product_id: 28
 ui:
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 8080
-  telemetry_hz: 2
-  frame_jpeg_quality: 65
+  telemetry_hz: 10
   frame_max_hz: 4

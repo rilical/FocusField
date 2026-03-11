@@ -24,6 +24,9 @@ vision = [
   "opencv-python>=4.8",
   "mediapipe>=0.10.14",
 ]
+leds = [
+  "hidapi>=0.14.0",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

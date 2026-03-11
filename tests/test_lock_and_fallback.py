@@ -1,7 +1,8 @@
 import unittest
 
+from focusfield.core.clock import now_ns
 from focusfield.fusion.lock_state_machine import LockStateMachine
-from focusfield.fusion.av_association import _build_candidates  # noqa: PLC2701
+from focusfield.fusion.av_association import _build_audio_only_candidate, _build_candidates  # noqa: PLC2701
 
 
 class LockStateMachineTests(unittest.TestCase):
@@ -110,10 +111,50 @@ class AvAssociationSizingTests(unittest.TestCase):
                 "bbox": {"x": 0, "y": 0, "w": 30, "h": 30},  # area 900 => scale 0
             },
         ]
-        cands = _build_candidates(tracks, doa_heatmap=None, max_assoc_deg=20.0, weights=weights, min_area=900, area_soft_max=3600)
+        cands = _build_candidates(
+            tracks,
+            doa_heatmap=None,
+            max_assoc_deg=20.0,
+            weights=weights,
+            min_area=900,
+            area_soft_max=3600,
+            score_ema_by_track={},
+            ema_alpha=0.45,
+            interrupt_min_delta=0.04,
+        )
         by_id = {c["track_id"]: c for c in cands}
         self.assertGreater(float(by_id["big"]["combined_score"]), float(by_id["small"]["combined_score"]))
         self.assertEqual(float(by_id["small"]["combined_score"]), 0.0)
+
+    def test_audio_only_candidate_requires_fresh_vad_for_speaking(self) -> None:
+        doa_heatmap = {
+            "seq": 7,
+            "confidence": 0.9,
+            "peaks": [{"angle_deg": 42.0, "score": 0.8}],
+        }
+        stale = _build_audio_only_candidate(
+            doa_heatmap,
+            vad_state={"t_ns": now_ns() - int(20_000_000), "speech": True, "confidence": 1.0},
+            min_doa_confidence=0.45,
+            min_peak_score=0.30,
+            score_mode="confidence",
+            require_vad=False,
+            vad_max_age_ms=10.0,
+        )
+        self.assertIsNotNone(stale)
+        self.assertFalse(bool(stale["speaking"]))
+
+        fresh = _build_audio_only_candidate(
+            doa_heatmap,
+            vad_state={"t_ns": now_ns(), "speech": True, "confidence": 1.0},
+            min_doa_confidence=0.45,
+            min_peak_score=0.30,
+            score_mode="confidence",
+            require_vad=True,
+            vad_max_age_ms=500.0,
+        )
+        self.assertIsNotNone(fresh)
+        self.assertTrue(bool(fresh["speaking"]))
 
 
 def msg_t_ns_placeholder() -> int:
@@ -124,4 +165,3 @@ def msg_t_ns_placeholder() -> int:
 
 if __name__ == "__main__":
     unittest.main()
-

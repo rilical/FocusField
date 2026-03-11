@@ -66,6 +66,164 @@ from focusfield.vision.speaker_heatmap import start_speaker_heatmap
 from focusfield.vision.tracking.face_track import start_face_tracking
 
 
+def _resolve_face_detector_backend(config: Dict[str, Any], logger: LogEmitter) -> None:
+    vision_cfg = config.get("vision", {})
+    if not isinstance(vision_cfg, dict):
+        return
+    face_cfg = vision_cfg.get("face", {})
+    if not isinstance(face_cfg, dict):
+        return
+    requested = str(face_cfg.get("detector_backend", "haar") or "haar").strip().lower()
+    if requested == "blazeface":
+        face_cfg["detector_backend"] = "yunet"
+        logger.emit(
+            "info",
+            "main.run",
+            "detector_backend_alias",
+            {"requested_backend": "blazeface", "resolved_backend": "yunet"},
+        )
+        requested = "yunet"
+    if requested != "yunet":
+        return
+    try:
+        import cv2  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        logger.emit(
+            "warning",
+            "main.run",
+            "detector_backend_fallback",
+            {
+                "requested_backend": "yunet",
+                "active_backend": "unresolved",
+                "reason": f"cv2_import_failed:{exc}",
+                "remediation": "Install OpenCV with FaceDetectorYN support to enable YuNet.",
+            },
+        )
+        return
+    if not hasattr(cv2, "FaceDetectorYN_create"):
+        logger.emit(
+            "warning",
+            "main.run",
+            "detector_backend_fallback",
+            {
+                "requested_backend": "yunet",
+                "active_backend": "unresolved",
+                "reason": "facedetectoryn_unavailable",
+                "remediation": "Use an OpenCV build with FaceDetectorYN (opencv-contrib/official wheel).",
+            },
+        )
+        return
+    logger.emit(
+        "info",
+        "main.run",
+        "detector_backend_ready",
+        {"requested_backend": "yunet", "active_backend": "yunet"},
+    )
+
+
+def _haar_cascade_available() -> bool:
+    try:
+        import cv2  # type: ignore
+    except Exception:
+        return False
+    candidates: List[Path] = []
+    if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+        candidates.append(Path(str(cv2.data.haarcascades)) / "haarcascade_frontalface_default.xml")
+    cv2_root = Path(cv2.__file__).resolve().parent if getattr(cv2, "__file__", None) else None
+    if cv2_root is not None:
+        candidates.extend(
+            [
+                cv2_root / "data" / "haarcascade_frontalface_default.xml",
+                cv2_root.parent / "share" / "opencv4" / "haarcascades" / "haarcascade_frontalface_default.xml",
+                Path("/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"),
+                Path("/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"),
+                Path("/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"),
+            ]
+        )
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            cascade = cv2.CascadeClassifier(str(path))
+        except Exception:
+            continue
+        if not cascade.empty():
+            return True
+    return False
+
+
+def _resolve_face_detector_runtime(config: Dict[str, Any]) -> Dict[str, Any]:
+    vision_cfg = config.get("vision", {})
+    if not isinstance(vision_cfg, dict):
+        vision_cfg = {}
+    face_cfg = vision_cfg.get("face", {})
+    if not isinstance(face_cfg, dict):
+        face_cfg = {}
+    requested = str(face_cfg.get("detector_backend", "haar") or "haar").strip().lower()
+    try:
+        import cv2  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "requested_backend": requested,
+            "active_backend": "none",
+            "operational": False,
+            "degraded": True,
+            "reason": f"cv2_import_failed:{exc}",
+        }
+    yunet_available = bool(hasattr(cv2, "FaceDetectorYN_create"))
+    haar_available = _haar_cascade_available()
+    active_backend = requested
+    degraded = False
+    reason = ""
+    if requested == "yunet":
+        if yunet_available:
+            active_backend = "yunet"
+        elif haar_available:
+            active_backend = "haar"
+            degraded = True
+            reason = "facedetectoryn_unavailable"
+        else:
+            active_backend = "none"
+            degraded = True
+            reason = "no_face_detector_backend"
+    elif requested == "haar":
+        if haar_available:
+            active_backend = "haar"
+        else:
+            active_backend = "none"
+            degraded = True
+            reason = "haar_cascade_missing"
+    return {
+        "requested_backend": requested,
+        "active_backend": active_backend,
+        "operational": bool(active_backend in {"haar", "yunet"}),
+        "degraded": bool(degraded),
+        "reason": reason,
+        "yunet_available": yunet_available,
+        "haar_available": haar_available,
+    }
+
+
+def _validate_face_detector_requirements(config: Dict[str, Any], logger: LogEmitter, req: Dict[str, Any]) -> None:
+    status = _resolve_face_detector_runtime(config)
+    runtime_cfg = config.setdefault("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+        config["runtime"] = runtime_cfg
+    runtime_cfg["detector_backend_active"] = str(status.get("active_backend", "unknown"))
+    runtime_cfg["detector_backend_degraded"] = bool(status.get("degraded", False))
+    runtime_cfg["detector_backend_reason"] = str(status.get("reason", ""))
+    if bool(req.get("strict")) and not bool(status.get("operational")):
+        reason = str(status.get("reason") or "no_face_detector_backend")
+        logger.emit(
+            "error",
+            "main.run",
+            "face_detector_unavailable",
+            {"reason": reason, "requested_backend": status.get("requested_backend")},
+        )
+        raise RuntimeError(f"Runtime requirements check failed:\n- no operational face detector backend: {reason}")
+
+
 def _apply_runtime_thread_caps(config: Dict[str, Any], logger: LogEmitter) -> None:
     runtime_cfg = config.get("runtime", {})
     if not isinstance(runtime_cfg, dict):
@@ -107,6 +265,59 @@ def _apply_runtime_thread_caps(config: Dict[str, Any], logger: LogEmitter) -> No
         )
 
 
+def _apply_runtime_scheduling(config: Dict[str, Any], logger: LogEmitter) -> None:
+    runtime_cfg = config.get("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+    scheduling_cfg = runtime_cfg.get("scheduling", {})
+    if scheduling_cfg is None:
+        scheduling_cfg = {}
+    if not isinstance(scheduling_cfg, dict):
+        logger.emit("warning", "main.run", "niceness_unapplied", {"reason": "invalid_config"})
+        return
+    niceness = int(scheduling_cfg.get("niceness", 0) or 0)
+    if niceness == 0:
+        return
+    try:
+        os.nice(niceness)
+    except Exception as exc:  # noqa: BLE001
+        logger.emit("warning", "main.run", "niceness_unapplied", {"niceness": niceness, "error": str(exc)})
+        return
+    logger.emit("info", "main.run", "niceness_applied", {"niceness": niceness})
+
+
+def _join_threads(threads: List[threading.Thread], logger: LogEmitter, timeout_s: float) -> List[str]:
+    alive: List[str] = []
+    joined = 0
+    current = threading.current_thread()
+    for thread in threads:
+        if thread is None or thread is current:
+            continue
+        try:
+            thread.join(timeout=timeout_s)
+        except Exception as exc:  # noqa: BLE001
+            alive.append(f"{getattr(thread, 'name', '<unknown>')} (join_error={exc})")
+            continue
+        joined += 1
+        if thread.is_alive():
+            alive.append(getattr(thread, "name", "<unknown>"))
+    if alive:
+        logger.emit(
+            "warning",
+            "main.run",
+            "shutdown_incomplete",
+            {"alive_threads": alive, "join_timeout_s": timeout_s, "joined_threads": joined},
+        )
+    else:
+        logger.emit(
+            "info",
+            "main.run",
+            "shutdown_complete",
+            {"join_timeout_s": timeout_s, "joined_threads": joined},
+        )
+    return alive
+
+
 def _start_beamformed_passthrough(bus: Bus, logger: LogEmitter, stop_event: threading.Event) -> threading.Thread:
     """Republish beamformed audio to the final topic when denoise is disabled."""
 
@@ -138,11 +349,16 @@ def _runtime_requirements(config: Dict[str, Any]) -> Dict[str, Any]:
         camera_scope = normalize_camera_scope(raw_scope)
     except Exception:
         camera_scope = "any"
+    require_led_hid = bool(req_cfg.get("require_led_hid", False))
+    runtime_check_raw = req_cfg.get("require_led_hid_runtime_check")
+    require_led_hid_runtime_check = require_led_hid if runtime_check_raw is None else bool(runtime_check_raw)
     return {
         "strict": bool(req_cfg.get("strict", False)),
         "min_cameras": int(req_cfg.get("min_cameras", 0) or 0),
         "min_audio_channels": int(req_cfg.get("min_audio_channels", 0) or 0),
         "camera_scope": camera_scope,
+        "require_led_hid": require_led_hid,
+        "require_led_hid_runtime_check": require_led_hid_runtime_check,
     }
 
 
@@ -290,6 +506,80 @@ def _validate_runtime_requirements(config: Dict[str, Any], logger: LogEmitter) -
     logger.emit("error", "main.run", "runtime_requirements_failed", payload)
     joined = "\n".join(f"- {item}" for item in failures)
     raise RuntimeError(f"Runtime requirements check failed:\n{joined}")
+
+
+def _validate_led_hid_runtime(config: Dict[str, Any], logger: LogEmitter, req: Dict[str, Any]) -> None:
+    require_led_hid = bool(req.get("require_led_hid", False))
+    require_runtime_check = bool(req.get("require_led_hid_runtime_check", require_led_hid))
+    if not (require_led_hid and require_runtime_check):
+        return
+
+    uma8_cfg = config.get("uma8_leds", {})
+    if not isinstance(uma8_cfg, dict):
+        uma8_cfg = {}
+    vendor_id = int(uma8_cfg.get("vendor_id", 0x2752) or 0x2752)
+    product_id = int(uma8_cfg.get("product_id", 0x001C) or 0x001C)
+
+    try:
+        import hid  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        logger.emit(
+            "error",
+            "main.run",
+            "led_hid_runtime_check_failed",
+            {
+                "reason": "hid_import_failed",
+                "error": str(exc),
+                "vendor_id": vendor_id,
+                "product_id": product_id,
+            },
+        )
+        raise RuntimeError(f"Runtime requirements check failed:\n- HID import failed: {exc}")
+
+    try:
+        devices = hid.enumerate(vendor_id, product_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.emit(
+            "error",
+            "main.run",
+            "led_hid_runtime_check_failed",
+            {
+                "reason": "hid_enumerate_failed",
+                "error": str(exc),
+                "vendor_id": vendor_id,
+                "product_id": product_id,
+            },
+        )
+        raise RuntimeError(f"Runtime requirements check failed:\n- HID enumerate failed: {exc}")
+
+    device_count = len(devices)
+    if device_count <= 0:
+        logger.emit(
+            "error",
+            "main.run",
+            "led_hid_runtime_check_failed",
+            {
+                "reason": "hid_no_device",
+                "vendor_id": vendor_id,
+                "product_id": product_id,
+                "device_count": device_count,
+            },
+        )
+        raise RuntimeError(
+            "Runtime requirements check failed:\n"
+            f"- HID device not found for vid=0x{vendor_id:04x} pid=0x{product_id:04x}"
+        )
+
+    logger.emit(
+        "info",
+        "main.run",
+        "led_hid_runtime_check_passed",
+        {
+            "vendor_id": vendor_id,
+            "product_id": product_id,
+            "device_count": device_count,
+        },
+    )
 
 
 def _ensure_artifacts(config: Dict[str, Any]) -> Path:
@@ -483,7 +773,9 @@ def main() -> None:
         logger.emit("warning", "core.bus", "queue_full", {"topic": topic, "depth": depth})
 
     bus.set_drop_handler(_on_drop)
+    _resolve_face_detector_backend(config, logger)
     _apply_runtime_thread_caps(config, logger)
+    _apply_runtime_scheduling(config, logger)
 
     crash_event, crash_info = _install_crash_handlers(bus, run_dir, config, logger, stop_event)
 
@@ -491,12 +783,19 @@ def main() -> None:
     if args.mode not in {"vision"}:
         logger.emit("error", "main.run", "invalid_mode", {"mode": args.mode})
         raise SystemExit(f"Unsupported mode: {args.mode}")
+    req = _runtime_requirements(config)
     try:
         _validate_runtime_requirements(config, logger)
+        _validate_led_hid_runtime(config, logger, req)
     except RuntimeError as exc:
         raise SystemExit(str(exc))
-
-    req = _runtime_requirements(config)
+    try:
+        _validate_face_detector_requirements(config, logger, req)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
+    runtime_cfg = config.setdefault("runtime", {})
+    if isinstance(runtime_cfg, dict):
+        runtime_cfg["requirements_passed"] = True
 
     log_thread = start_log_sink(bus, config, logger, stop_event)
     if log_thread is not None:
@@ -534,7 +833,11 @@ def main() -> None:
             camera_scope=req["camera_scope"],
         )
     )
-    threads.append(start_face_tracking(bus, config, logger, stop_event))
+    face_tracking_threads = start_face_tracking(bus, config, logger, stop_event)
+    if isinstance(face_tracking_threads, list):
+        threads.extend(face_tracking_threads)
+    elif face_tracking_threads is not None:
+        threads.append(face_tracking_threads)
     threads.append(start_speaker_heatmap(bus, config, logger, stop_event))
     threads.append(start_av_association(bus, config, logger, stop_event))
     threads.append(start_lock_state_machine(bus, config, logger, stop_event))
@@ -573,7 +876,13 @@ def main() -> None:
         stop_event.set()
         raise
 
+    join_timeout_s = float(config.get("runtime", {}).get("shutdown", {}).get("thread_join_timeout_s", 1.5) or 1.5)
+    join_timeout_s = max(0.1, min(5.0, join_timeout_s))
+    alive_threads = _join_threads(threads, logger, join_timeout_s)
+
     if crash_event.is_set() and bool(config.get("runtime", {}).get("fail_fast", True)):
+        crash_info = dict(crash_info)
+        crash_info["alive_threads"] = alive_threads
         logger.emit("error", "main.run", "crashed", crash_info)
         raise SystemExit(1)
 

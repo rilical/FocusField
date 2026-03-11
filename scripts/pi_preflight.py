@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 try:
     import cv2
@@ -51,6 +52,28 @@ def _safe_yaml_load(path: Path) -> dict:
         return {}
 
 
+def _load_mic_profile_yaw(config: dict) -> tuple[str, Optional[float]]:
+    audio_cfg = config.get("audio", {}) if isinstance(config, dict) else {}
+    if not isinstance(audio_cfg, dict):
+        return "", None
+    profile_name = str(audio_cfg.get("device_profile", "") or "").strip()
+    if not profile_name:
+        return "", None
+    profiles_path = Path("configs/device_profiles.yaml")
+    profiles = _safe_yaml_load(profiles_path)
+    mic_arrays = profiles.get("mic_arrays", {}) if isinstance(profiles, dict) else {}
+    if not isinstance(mic_arrays, dict):
+        return profile_name, None
+    profile = mic_arrays.get(profile_name)
+    if not isinstance(profile, dict):
+        return profile_name, None
+    yaw = profile.get("yaw_offset_deg")
+    try:
+        return profile_name, float(yaw)
+    except Exception:
+        return profile_name, None
+
+
 def _format_input_channels(config: dict) -> tuple[int | None, int, str]:
     selected_idx: int | None = None
     selected_channels = 0
@@ -79,6 +102,35 @@ def _format_input_channels(config: dict) -> tuple[int | None, int, str]:
         except Exception:
             selected_idx = None
     return selected_idx, selected_channels, selected_name
+
+
+def _haar_cascade_available() -> bool:
+    if cv2 is None:
+        return False
+    candidates = []
+    if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+        candidates.append(Path(str(cv2.data.haarcascades)) / "haarcascade_frontalface_default.xml")
+    cv2_root = Path(cv2.__file__).resolve().parent if getattr(cv2, "__file__", None) else None
+    if cv2_root is not None:
+        candidates.extend(
+            [
+                cv2_root / "data" / "haarcascade_frontalface_default.xml",
+                cv2_root.parent / "share" / "opencv4" / "haarcascades" / "haarcascade_frontalface_default.xml",
+                Path("/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"),
+                Path("/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"),
+                Path("/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"),
+            ]
+        )
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            cascade = cv2.CascadeClassifier(str(path))
+        except Exception:
+            continue
+        if not cascade.empty():
+            return True
+    return False
 
 
 def _camera_probe_source(cam: Any) -> tuple[Any, Any]:
@@ -138,6 +190,7 @@ def check_audio(config: dict) -> tuple[int, dict[str, Any]]:
         "selected_channels": 0,
         "selected_name": "",
         "max_channels": 0,
+        "uma8_raw_ready": False,
     }
     if sd is None:
         print(f"sounddevice import failed: {sounddevice_error}")
@@ -169,7 +222,9 @@ def check_audio(config: dict) -> tuple[int, dict[str, Any]]:
     details["selected_index"] = selected_idx
     details["selected_channels"] = selected_channels
     details["selected_name"] = selected_name
+    details["uma8_raw_ready"] = bool(selected_channels >= 8 and "minidsp" in selected_name.lower())
     print(f"Selected input index: {selected_idx}")
+    print(f"UMA-8 RAW 8ch ready: {details['uma8_raw_ready']}")
     return 0, details
 
 
@@ -275,11 +330,119 @@ def check_cv2() -> int:
     return 0
 
 
+def check_face_detector_backend(config: dict) -> tuple[int, dict[str, Any]]:
+    print("=== Face detector backend ===")
+    details: dict[str, Any] = {
+        "requested_backend": "haar",
+        "active_backend": "haar",
+        "yunet_available": False,
+        "haar_available": False,
+        "degraded": False,
+        "operational": True,
+        "fallback_backend": "",
+        "per_camera_active_backend": [],
+    }
+    if cv2 is None:
+        details["degraded"] = True
+        details["operational"] = False
+        details["reason"] = f"cv2_import_failed:{cv2_error}"
+        print(f"Face detector capability unavailable: {cv2_error}")
+        return 0, details
+
+    vision_cfg = config.get("vision", {}) if isinstance(config, dict) else {}
+    face_cfg = vision_cfg.get("face", {}) if isinstance(vision_cfg, dict) else {}
+    requested = str(face_cfg.get("detector_backend", "haar") or "haar").strip().lower()
+    details["requested_backend"] = requested
+    details["haar_available"] = bool(_haar_cascade_available())
+    resolved = "yunet" if requested == "blazeface" else requested
+    if resolved != "yunet":
+        details["active_backend"] = "haar" if details["haar_available"] else "none"
+        details["operational"] = bool(details["haar_available"])
+        if not details["haar_available"]:
+            details["degraded"] = True
+            details["reason"] = "haar_cascade_missing"
+        print(f"detector_backend={requested} (haar path)")
+        cameras = config.get("video", {}).get("cameras", []) if isinstance(config, dict) else []
+        if isinstance(cameras, list):
+            details["per_camera_active_backend"] = [
+                {"camera_id": str(cam.get("id", f"cam{idx}")), "active_backend": details["active_backend"]}
+                for idx, cam in enumerate(cameras)
+                if isinstance(cam, dict)
+            ]
+        return 0, details
+
+    has_yunet = hasattr(cv2, "FaceDetectorYN_create")
+    details["yunet_available"] = bool(has_yunet)
+    if has_yunet:
+        details["active_backend"] = "yunet"
+        print(f"detector_backend={requested} -> yunet available")
+    else:
+        if details["haar_available"]:
+            details["active_backend"] = "haar"
+            details["degraded"] = True
+            details["fallback_backend"] = "haar"
+            details["reason"] = "facedetectoryn_unavailable"
+            print(
+                "detector_backend=yunet requested, but FaceDetectorYN is unavailable; "
+                "runtime will fallback to haar (degraded recall)."
+            )
+        else:
+            details["active_backend"] = "none"
+            details["degraded"] = True
+            details["operational"] = False
+            details["reason"] = "no_face_detector_backend"
+            print("detector_backend=yunet requested, but neither YuNet nor Haar cascade is available.")
+    cameras = config.get("video", {}).get("cameras", []) if isinstance(config, dict) else []
+    if isinstance(cameras, list):
+        details["per_camera_active_backend"] = [
+            {"camera_id": str(cam.get("id", f"cam{idx}")), "active_backend": details["active_backend"]}
+            for idx, cam in enumerate(cameras)
+            if isinstance(cam, dict)
+        ]
+    return 0, details
+
+
+def check_led_hid(require_led_hid: bool, vendor_id: int, product_id: int) -> tuple[int, dict[str, Any]]:
+    print("=== UMA8 HID ===")
+    details: dict[str, Any] = {
+        "required": bool(require_led_hid),
+        "vendor_id": int(vendor_id),
+        "product_id": int(product_id),
+        "hid_import_ok": False,
+        "device_count": 0,
+    }
+    if not require_led_hid:
+        print("HID check skipped (not required)")
+        return 0, details
+
+    try:
+        import hid  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        print(f"HID import failed: {exc}")
+        details["error"] = f"hid_import_failed:{exc}"
+        return 1, details
+
+    details["hid_import_ok"] = True
+    try:
+        devices = hid.enumerate(int(vendor_id), int(product_id))
+    except Exception as exc:  # noqa: BLE001
+        print(f"HID enumerate failed: {exc}")
+        details["error"] = f"hid_enumerate_failed:{exc}"
+        return 1, details
+    device_count = len(devices)
+    details["device_count"] = device_count
+    print(f"HID enumerate vid=0x{int(vendor_id):04x} pid=0x{int(product_id):04x} count={device_count}")
+    if device_count <= 0:
+        details["error"] = "hid_no_device"
+        return 1, details
+    return 0, details
+
+
 def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="FocusField Pi preflight checks")
-    parser.add_argument("--config", default="configs/full_3cam_8mic_pi.yaml")
+    parser.add_argument("--config", default="configs/full_3cam_8mic_pi_prod.yaml")
     parser.add_argument(
         "--camera-source",
         choices=["auto", "by-path", "by-id", "index"],
@@ -295,11 +458,16 @@ def main() -> int:
         default=None,
         help="Camera hardware scope: usb for external UVC cameras only, any for all capture nodes.",
     )
+    parser.add_argument("--require-led-hid", action="store_true")
+    parser.add_argument("--led-vendor-id", type=int, default=None)
+    parser.add_argument("--led-product-id", type=int, default=None)
+    parser.add_argument("--json-out", type=str, default="", help="Optional JSON output path for machine-readable preflight report.")
     args = parser.parse_args()
 
     print("FocusField Pi preflight")
     config = _safe_yaml_load(Path(args.config)) if args.config else {}
-    if config:
+    config_loaded = bool(config)
+    if config_loaded:
         print(f"Loaded config: {args.config}")
     else:
         print(f"Config missing or empty: {args.config}")
@@ -312,6 +480,8 @@ def main() -> int:
     )
 
     rc |= check_cv2()
+    face_backend_rc, face_backend_details = check_face_detector_backend(config)
+    rc |= face_backend_rc
     audio_rc, audio_details = check_audio(config)
     rc |= audio_rc
     camera_rc, camera_details = check_cameras(
@@ -321,6 +491,18 @@ def main() -> int:
         camera_scope=camera_scope,
     )
     rc |= camera_rc
+
+    uma8_cfg = config.get("uma8_leds", {}) if isinstance(config, dict) else {}
+    if not isinstance(uma8_cfg, dict):
+        uma8_cfg = {}
+    required_led_hid_cfg = False
+    if isinstance(req_cfg, dict):
+        required_led_hid_cfg = bool(req_cfg.get("require_led_hid", False))
+    require_led_hid = bool(args.require_led_hid or required_led_hid_cfg)
+    vendor_id = int(args.led_vendor_id if args.led_vendor_id is not None else int(uma8_cfg.get("vendor_id", 0x2752) or 0x2752))
+    product_id = int(args.led_product_id if args.led_product_id is not None else int(uma8_cfg.get("product_id", 0x001C) or 0x001C))
+    led_rc, led_details = check_led_hid(require_led_hid=require_led_hid, vendor_id=vendor_id, product_id=product_id)
+    rc |= led_rc
 
     required_cameras = int(max(0, args.require_cameras))
     required_audio_channels = int(max(0, args.require_audio_channels))
@@ -344,6 +526,47 @@ def main() -> int:
             f"required audio_channels={required_audio_channels} but selected channels={observed_audio_channels} "
             f"(index={audio_details.get('selected_index')}, name={selected_name!r}){hint}"
         )
+    if require_led_hid and int(led_details.get("device_count", 0) or 0) <= 0:
+        contract_failures.append(
+            "required UMA8 HID device not available "
+            f"(vid=0x{vendor_id:04x}, pid=0x{product_id:04x})"
+        )
+    if not bool(face_backend_details.get("operational", False)):
+        contract_failures.append("no operational face detector backend available")
+
+    print("=== Alignment Summary ===")
+    cameras_cfg = config.get("video", {}).get("cameras", []) if isinstance(config, dict) else []
+    if not isinstance(cameras_cfg, list):
+        cameras_cfg = []
+    camera_yaws = []
+    camera_yaw_map: list[dict[str, Any]] = []
+    for idx, cam in enumerate(cameras_cfg):
+        if not isinstance(cam, dict):
+            continue
+        cam_id = str(cam.get("id", f"cam{idx}"))
+        try:
+            yaw = float(cam.get("yaw_offset_deg", 0.0) or 0.0)
+        except Exception:
+            yaw = 0.0
+        camera_yaws.append(f"{cam_id}:{yaw:.1f}")
+        camera_yaw_map.append({"id": cam_id, "yaw_offset_deg": yaw})
+    camera_yaw_map_text = ", ".join(camera_yaws) if camera_yaws else "n/a"
+    print("camera_yaw_map=" + camera_yaw_map_text)
+    profile_name, mic_yaw = _load_mic_profile_yaw(config)
+    if profile_name:
+        if mic_yaw is None:
+            print(f"mic_profile={profile_name} yaw_offset_deg=n/a")
+        else:
+            print(f"mic_profile={profile_name} yaw_offset_deg={mic_yaw:.1f}")
+    alignment_cfg = config.get("runtime", {}).get("alignment", {}) if isinstance(config, dict) else {}
+    if not isinstance(alignment_cfg, dict):
+        alignment_cfg = {}
+    require_calibrated_mic_yaw = bool(alignment_cfg.get("require_calibrated_mic_yaw", False))
+    alignment_warnings: list[str] = []
+    if require_calibrated_mic_yaw and mic_yaw is not None and abs(float(mic_yaw)) < 1e-6:
+        warning = "runtime.alignment.require_calibrated_mic_yaw=true but mic yaw_offset_deg is 0.0"
+        alignment_warnings.append(warning)
+        print(f"alignment_warning: {warning}")
 
     print("=== Contract Summary ===")
     print(f"strict={args.strict}")
@@ -352,11 +575,78 @@ def main() -> int:
     print(
         f"required_audio_channels={required_audio_channels} observed_audio_channels={observed_audio_channels}"
     )
+    print(
+        "face_backend_requested="
+        f"{face_backend_details.get('requested_backend')} "
+        f"active={face_backend_details.get('active_backend')} "
+        f"degraded={bool(face_backend_details.get('degraded', False))}"
+    )
+    print(
+        f"face_backend_operational={bool(face_backend_details.get('operational', False))} "
+        f"haar_available={bool(face_backend_details.get('haar_available', False))} "
+        f"yunet_available={bool(face_backend_details.get('yunet_available', False))}"
+    )
+    print(f"require_led_hid={require_led_hid} observed_hid_devices={int(led_details.get('device_count', 0) or 0)}")
+    print(f"uma8_raw_ready={bool(audio_details.get('uma8_raw_ready', False))}")
     if contract_failures:
         for item in contract_failures:
             print(f"contract_failure: {item}")
     if args.strict and contract_failures:
         rc |= 1
+
+    preflight_report: Dict[str, Any] = {
+        "config_loaded": bool(config_loaded),
+        "config_path": str(args.config or ""),
+        "strict": bool(args.strict),
+        "camera_scope": str(camera_scope),
+        "face_detector": {
+            "requested_backend": face_backend_details.get("requested_backend"),
+            "active_backend": face_backend_details.get("active_backend"),
+            "degraded": bool(face_backend_details.get("degraded", False)),
+            "reason": face_backend_details.get("reason", ""),
+            "operational": bool(face_backend_details.get("operational", False)),
+            "haar_available": bool(face_backend_details.get("haar_available", False)),
+            "yunet_available": bool(face_backend_details.get("yunet_available", False)),
+            "fallback_backend": face_backend_details.get("fallback_backend", ""),
+            "per_camera_active_backend": face_backend_details.get("per_camera_active_backend", []),
+        },
+        "camera_contract": {
+            "required": int(required_cameras),
+            "observed": int(observed_cameras),
+            "passed": bool(required_cameras <= 0 or observed_cameras >= required_cameras),
+            "details": camera_details,
+        },
+        "audio_contract": {
+            "required_channels": int(required_audio_channels),
+            "observed_channels": int(observed_audio_channels),
+            "passed": bool(required_audio_channels <= 0 or observed_audio_channels >= required_audio_channels),
+            "details": audio_details,
+            "uma8_raw_ready": bool(audio_details.get("uma8_raw_ready", False)),
+        },
+        "led_hid_contract": {
+            "required": bool(require_led_hid),
+            "vendor_id": int(vendor_id),
+            "product_id": int(product_id),
+            "passed": bool((not require_led_hid) or int(led_details.get("device_count", 0) or 0) > 0),
+            "details": led_details,
+        },
+        "alignment_summary": {
+            "camera_yaw_map": camera_yaw_map,
+            "camera_yaw_map_text": camera_yaw_map_text,
+            "mic_profile": profile_name,
+            "mic_yaw_offset_deg": mic_yaw,
+            "require_calibrated_mic_yaw": bool(require_calibrated_mic_yaw),
+            "warnings": alignment_warnings,
+        },
+        "contract_failures": contract_failures,
+        "preflight_ok": bool(rc == 0),
+    }
+
+    if args.json_out:
+        out_path = Path(args.json_out).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("w", encoding="utf-8") as handle:
+            json.dump(preflight_report, handle, indent=2, sort_keys=True)
 
     if rc:
         print("Preflight: FAILED")

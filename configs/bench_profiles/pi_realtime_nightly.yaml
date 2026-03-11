@@ -1,0 +1,28 @@
+name: pi_realtime_nightly
+description: Nightly hard-gate thresholds for Raspberry Pi real-time validation.
+
+pi_perf_gate:
+  min_runtime_seconds: 300
+  latency_p95_max: 420
+  latency_p99_max: 650
+  overflow_delta_max: 40
+  queue_full_max: 20
+  no_candidates_ratio_max: 0.80
+  speech_with_no_lock_ratio_max: 0.45
+  no_faces_fallback_ratio_max: 0.70
+  overflow_rate_max_per_min: 10.0
+  face_track_rate_min: 0.35
+  face_detection_stall_max_ms: 2200
+  lock_continuity_ratio_min: 0.55
+  no_candidates_denominator_min: 10
+
+focusbench:
+  thresholds:
+    si_sdr_delta_db_min: 2.0
+    stoi_delta_min: 0.03
+    wer_relative_improvement_min: 0.12
+    sir_delta_db_min: 4.0
+    latency_p95_ms_max: 420.0
+    latency_p99_ms_max: 650.0
+    audio_queue_full_max: 40.0
+    audio_underrun_rate_max: 0.01

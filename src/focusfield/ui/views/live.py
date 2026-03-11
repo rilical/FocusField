@@ -203,7 +203,7 @@ def live_page() -> str:
   <body>
     <header>
       <h1>FocusField Live</h1>
-      <span>Vision-first demo</span>
+      <span>Operator debug view</span>
     </header>
     <main>
       <section class="panel">
@@ -220,6 +220,8 @@ def live_page() -> str:
           <h2>Target Lock</h2>
           <p><span class="pill" id="lockState">NO_LOCK</span></p>
           <p id="lockInfo">Waiting for speaking face...</p>
+          <p id="lockDebug" style="font-size:12px;opacity:0.75;margin-top:6px;">cand=0 mode=n/a acq=n/a drop=n/a</p>
+          <p id="runtimeBadges" style="font-size:12px;margin-top:6px;"></p>
         </section>
         <section class="panel beam">
           <h2>Beamformer</h2>
@@ -232,7 +234,7 @@ def live_page() -> str:
         </section>
         <section class="panel health">
           <div class="row"><div>Health</div><div id="healthStatus">n/a</div></div>
-          <div class="row"><div>Latency</div><div id="perfLatency">n/a</div></div>
+          <div class="row"><div>Queue age</div><div id="perfLatency">n/a</div></div>
           <div class="row"><div>LED transport</div><div id="ledBackend">n/a</div></div>
           <div id="ledError"></div>
           <div id="healthReasons"></div>
@@ -265,7 +267,7 @@ def live_page() -> str:
         return tiles[cameraId];
       }
 
-      function drawFrame(cameraId, faces, targetId) {
+      function drawFrame(cameraId, faces, targetId, scoreMap) {
         const tile = ensureTile(cameraId);
         const yaw = cameraYawById[cameraId];
         tile.label.textContent = Number.isFinite(yaw) ? `${cameraId} @ ${Math.round(yaw)}°` : cameraId;
@@ -278,15 +280,23 @@ def live_page() -> str:
             const bbox = face.bbox;
             if (!bbox) continue;
             const isTarget = targetId && face.track_id === targetId;
-            const color = isTarget ? "#1fbf6b" : (face.speaking ? "#e35d2f" : "rgba(255,255,255,0.7)");
+            const scoreInfo = scoreMap && face.track_id ? scoreMap[String(face.track_id)] : null;
+            const lockScore = scoreInfo && Number.isFinite(Number(scoreInfo.score)) ? Number(scoreInfo.score) : 0;
+            const mode = scoreInfo && scoreInfo.mode ? String(scoreInfo.mode) : "";
+            let color = "rgba(255,255,255,0.7)";
+            if (lockScore >= 0.65) color = "#1fbf6b";
+            else if (lockScore >= 0.45) color = "#e3a52f";
+            else color = "rgba(180,180,180,0.85)";
+            if (isTarget) color = "#1fbf6b";
             tile.ctx.strokeStyle = color;
             tile.ctx.lineWidth = isTarget ? 3 : 2;
             tile.ctx.strokeRect(bbox.x, bbox.y, bbox.w, bbox.h);
             tile.ctx.fillStyle = color;
             tile.ctx.font = "12px IBM Plex Sans";
             const status = face.speaking ? "TALK" : "idle";
+            const modeBadge = mode === "AUDIO_ONLY" ? "A" : (mode === "VISION_ONLY" ? "V" : (mode === "AV_LOCK" ? "AV" : ""));
             tile.ctx.fillText(
-              `${face.track_id} ${status} ${face.mouth_activity?.toFixed(3) ?? ""}`,
+              `${face.track_id} ${status} L=${lockScore.toFixed(2)} ${modeBadge} ${face.mouth_activity?.toFixed(3) ?? ""}`,
               bbox.x,
               Math.max(12, bbox.y - 4)
             );
@@ -382,7 +392,8 @@ def live_page() -> str:
         document.getElementById("beamTarget").textContent = target == null ? "n/a" : `${target.toFixed(1)}°`;
         const cond = beam.mvdr_condition_number;
         document.getElementById("beamCond").textContent = cond == null ? "n/a" : cond.toExponential(2);
-        document.getElementById("beamStatus").textContent = beam.fallback_active ? "fallback" : "ok";
+        const runtimeState = beam.runtime_state || (beam.fallback_active ? "fallback" : "active");
+        document.getElementById("beamStatus").textContent = runtimeState;
         document.getElementById("beamFallback").textContent = beam.fallback_active ? (lock?.reason || "fallback") : "none";
         const gains = beam.gains || [];
         for (let i = 0; i < gains.length; i++) {
@@ -422,8 +433,8 @@ def live_page() -> str:
         if (!perf || !perf.enhanced_final) {
           latency.textContent = "n/a";
         } else {
-          const l = perf.enhanced_final.last_latency_ms;
-          latency.textContent = l == null ? "n/a" : `${Math.round(l)}ms`;
+          const l = perf.enhanced_final.pipeline_queue_age_ms;
+          latency.textContent = l == null ? "n/a" : `${Math.round(l)}ms queue age`;
         }
         if (!leds) {
           ledBackend.textContent = "n/a";
@@ -470,7 +481,7 @@ def live_page() -> str:
           const cachedFaces = lastFacesByCamera[cameraId] || [];
           const ageMs = nowMs - (lastFacesTsByCamera[cameraId] || 0);
           const faces = freshFaces.length > 0 ? freshFaces : (ageMs <= FACE_HOLD_MS ? cachedFaces : []);
-          drawFrame(cameraId, faces, targetId);
+          drawFrame(cameraId, faces, targetId, (data.fusion_debug || {}).face_lock_scores || {});
         }
         drawHeatmap(data.heatmap_summary, data.meta || {}, lock);
         renderBeamformer(data.beamformer, lock);
@@ -480,6 +491,36 @@ def live_page() -> str:
           lock.state === "NO_LOCK"
             ? "Waiting for speaking face..."
             : `Mode: ${lock.mode || "n/a"} | Target: ${lock.target_id || "n/a"} | ${lock.target_bearing_deg?.toFixed(1) ?? "?"}° | ${lock.reason || ""}`;
+        const fdbg = data.fusion_debug || {};
+        const acq = fdbg.active_acquire_threshold;
+        const drop = fdbg.active_drop_threshold;
+        const activeScore = fdbg.active_track_score;
+        const handoffMargin = fdbg.handoff_margin;
+        document.getElementById("lockDebug").textContent =
+          `cand=${fdbg.candidate_count ?? 0} mode=${fdbg.current_mode || fdbg.last_candidate_mode || "n/a"} score=${activeScore == null ? "n/a" : Number(activeScore).toFixed(2)} acq=${acq == null ? "n/a" : Number(acq).toFixed(2)} drop=${drop == null ? "n/a" : Number(drop).toFixed(2)} hm=${handoffMargin == null ? "n/a" : Number(handoffMargin).toFixed(2)}`;
+        const badges = [];
+        if (data.audio_fallback_active || lock.mode === "AUDIO_ONLY") {
+          badges.push('<span class="pill">AUDIO_ONLY</span>');
+        }
+        const detectorBackend = data.detector_backend_active || data.vision_debug?.detector_backend || "unknown";
+        badges.push(`<span class="pill">det=${detectorBackend}</span>`);
+        if (data.vision_debug?.detector_degraded?.active) {
+          badges.push('<span class="pill">DETECTOR_DEGRADED</span>');
+        }
+        const dropWindow = data.bus_drop_counts_window || {};
+        const dropTotal = Object.values(dropWindow).reduce((sum, value) => sum + Number(value || 0), 0);
+        if (dropTotal > 0) {
+          badges.push(`<span class="pill">QUEUE_DROP ${dropTotal}</span>`);
+        }
+        const overflowWindow = Number(data.capture_overflow_window || 0);
+        if (overflowWindow > 0) {
+          badges.push(`<span class="pill">CAPTURE_OVF ${overflowWindow}</span>`);
+        }
+        if (!data.strict_requirements_passed) {
+          badges.push('<span class="pill">NON_STRICT</span>');
+        }
+        badges.push(`<span class="pill">profile=${data.runtime_profile || "default"}</span>`);
+        document.getElementById("runtimeBadges").innerHTML = badges.join(" ");
       }
 
       setInterval(update, 200);

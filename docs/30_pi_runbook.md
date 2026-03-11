@@ -81,14 +81,17 @@ Switch UMA-8 to RAW firmware first.
 
 ### Strict full-target config generation (recommended for production)
 
-Use one of these base configs:
-- `configs/full_3cam_8mic_pi_hq_aggressive.yaml` for latency-first production
-- `configs/full_3cam_8mic_pi_hq_balanced.yaml` for safer sustained operation
+Use this base config for production:
+- `configs/full_3cam_8mic_pi_prod.yaml`
+
+Keep these only for debug or bench work:
+- `configs/full_3cam_8mic_pi_hq_aggressive.yaml`
+- `configs/full_3cam_8mic_pi_hq_balanced.yaml`
 
 ```bash
 set -euo pipefail
 python3 scripts/prepare_pi_local_config.py \
-  --base-config configs/full_3cam_8mic_pi_hq_aggressive.yaml \
+  --base-config configs/full_3cam_8mic_pi_prod.yaml \
   --output configs/full_3cam_working_local.yaml \
   --camera-source by-path \
   --camera-scope usb \
@@ -102,7 +105,8 @@ python3 scripts/pi_preflight.py \
   --camera-scope usb \
   --require-cameras 3 \
   --require-audio-channels 8 \
-  --strict && \
+  --strict \
+  --require-led-hid && \
 python3 scripts/list_cameras.py
 ```
 
@@ -284,7 +288,7 @@ python3 scripts/focusbench_ab.py \
   --baseline-run /path/to/artifacts/<baseline_run_id> \
   --candidate-run /path/to/artifacts/<candidate_run_id> \
   --scene-manifest bench_scenes/quiet_office.yaml \
-  --config configs/full_3cam_8mic_pi_hq_aggressive.yaml \
+  --config configs/full_3cam_8mic_pi_prod.yaml \
   --output-dir artifacts/focusbench_ab/<candidate_run_id>
 ```
 
@@ -294,6 +298,15 @@ Expected:
 - report at `artifacts/focusbench_ab/<candidate_run_id>/BenchReport.json`
 
 Recommended: repeat the same command for each standard manifest in `bench_scenes/`.
+
+Production calibration checklist:
+- verify camera order after reboot
+- confirm camera paths resolve by `by-path`
+- confirm UMA-8 RAW mode exposes at least 8 input channels
+- run UMA-8 calibration
+- confirm `yaw_offset_deg`
+- confirm LED ring bearing mapping
+- confirm lock bearing against known speaker positions at `0`, `120`, and `240` degrees
 
 ### Degraded debug run
 

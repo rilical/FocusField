@@ -72,6 +72,7 @@ def start_av_association(
     require_vad = bool(fallback_cfg.get("require_vad", False))
     allow_when_faces_missing = bool(fallback_cfg.get("allow_when_faces_missing", True))
     face_staleness_ms = float(fallback_cfg.get("face_staleness_ms", 1200.0))
+    vad_max_age_ms = float(fusion_cfg.get("vad_max_age_ms", fallback_cfg.get("vad_max_age_ms", 400.0)) or 400.0)
 
     vision_cfg = config.get("vision", {})
     if not isinstance(vision_cfg, dict):
@@ -183,6 +184,7 @@ def start_av_association(
                     score_mode=score_mode,
                     require_vad=require_vad,
                     weights=weights,
+                    vad_max_age_ms=vad_max_age_ms,
                 )
                 if audio_cand is not None:
                     candidates = [audio_cand]
@@ -325,10 +327,17 @@ def _build_audio_only_candidate(
     score_mode: str,
     require_vad: bool,
     weights: Dict[str, float],
+    vad_max_age_ms: float = 400.0,
 ) -> Optional[Dict[str, Any]]:
     if doa_heatmap is None:
         return None
-    if require_vad and (vad_state is None or not bool(vad_state.get("speech"))):
+    vad_fresh = False
+    vad_speaking = False
+    if isinstance(vad_state, dict):
+        vad_t_ns = int(vad_state.get("t_ns", 0) or 0)
+        vad_fresh = bool(vad_t_ns) and ((now_ns() - vad_t_ns) / 1_000_000.0 <= float(vad_max_age_ms))
+        vad_speaking = bool(vad_state.get("speech")) and vad_fresh
+    if require_vad and not vad_speaking:
         return None
     conf = float(doa_heatmap.get("confidence", 0.0) or 0.0)
     peaks = doa_heatmap.get("peaks") or []
@@ -386,7 +395,7 @@ def _build_audio_only_candidate(
         "combined_score": float(combined),
         "bearing_deg": bearing,
         "speaking_probability": float(max(audio_speech_prob, peak_score)),
-        "speaking": True,
+        "speaking": bool(vad_speaking),
     }
 
 

@@ -64,6 +64,8 @@ def runtime_requirements(config: Dict[str, Any]) -> Dict[str, Any]:
         "min_cameras": int(req_cfg.get("min_cameras", 0) or 0),
         "min_audio_channels": int(req_cfg.get("min_audio_channels", 0) or 0),
         "camera_scope": camera_scope,
+        "require_led_hid": bool(req_cfg.get("require_led_hid", False)),
+        "require_led_hid_runtime_check": bool(req_cfg.get("require_led_hid_runtime_check", False)),
     }
 
 

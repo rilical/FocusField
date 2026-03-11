@@ -94,6 +94,17 @@ def live_page() -> str:
     }
     #ws-label { color: var(--text-sec); font-size: 11px; }
     #header-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+    #runtime-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-sec);
+      font-size: 10px;
+      max-width: 520px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     #perf-badge {
       font-size: 11px; color: var(--text-sec);
       font-variant-numeric: tabular-nums;
@@ -319,7 +330,8 @@ def live_page() -> str:
   <div id="ws-dot"></div>
   <div id="ws-label">connecting…</div>
   <div id="header-right">
-    <div id="perf-badge">latency: —</div>
+    <div id="runtime-badges"></div>
+    <div id="perf-badge">queue age: —</div>
     <div id="health-pill">ok</div>
     <button id="calib-toggle">Calibration</button>
   </div>
@@ -455,6 +467,7 @@ const wsDot          = document.getElementById('ws-dot');
 const wsLabel        = document.getElementById('ws-label');
 const healthPill     = document.getElementById('health-pill');
 const perfBadge      = document.getElementById('perf-badge');
+const runtimeBadges  = document.getElementById('runtime-badges');
 const heatmapCanvas  = document.getElementById('heatmapCanvas');
 const heatCtx        = heatmapCanvas.getContext('2d');
 const tlCanvas       = document.getElementById('timeline-canvas');
@@ -561,7 +574,7 @@ function updateAllPanels(data) {
   updateLog(data.logs);
 
   // Header badges
-  updateHeader(data.health_summary, data.perf_summary);
+  updateHeader(data);
 
   // Calibration
   updateCalibration(data.meta);
@@ -1084,10 +1097,27 @@ function updateLog(logs) {
 /* ═══════════════════════════════════════════════
    HEADER
    ═══════════════════════════════════════════════ */
-function updateHeader(healthSummary, perfSummary) {
-  // Latency
-  const lat = perfSummary && perfSummary.enhanced_final && perfSummary.enhanced_final.last_latency_ms;
-  perfBadge.textContent = lat != null ? 'latency: ' + Math.round(lat) + ' ms' : 'latency: —';
+function updateHeader(data) {
+  const healthSummary = (data && data.health_summary) || {};
+  const perfSummary = (data && data.perf_summary) || {};
+  const enhancedFinal = perfSummary && perfSummary.enhanced_final ? perfSummary.enhanced_final : {};
+  const queueAge = enhancedFinal.pipeline_queue_age_ms != null
+    ? enhancedFinal.pipeline_queue_age_ms
+    : enhancedFinal.last_latency_ms;
+  perfBadge.textContent = queueAge != null ? 'queue age: ' + Math.round(queueAge) + ' ms' : 'queue age: —';
+  const badges = [];
+  if (data && data.runtime_profile) badges.push('profile=' + data.runtime_profile);
+  if (data && data.audio_fallback_active) badges.push('AUDIO_ONLY');
+  if (data && data.detector_backend_active) badges.push('det=' + data.detector_backend_active);
+  if (data && !data.strict_requirements_passed) badges.push('NON_STRICT');
+  const visionDebug = (data && data.vision_debug) || {};
+  if (visionDebug.detector_degraded) badges.push('DETECTOR_DEGRADED');
+  const dropCounts = (data && data.bus_drop_counts_window) || {};
+  const totalDrops = Object.values(dropCounts).reduce((acc, v) => acc + Number(v || 0), 0);
+  if (totalDrops > 0) badges.push('QUEUE_DROP ' + totalDrops);
+  const captureOverflow = Number((data && data.capture_overflow_window) || 0);
+  if (captureOverflow > 0) badges.push('CAPTURE_OVF ' + captureOverflow);
+  if (runtimeBadges) runtimeBadges.textContent = badges.join(' | ');
 
   // Health
   const status = (healthSummary && healthSummary.status) || 'n/a';

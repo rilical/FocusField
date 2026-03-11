@@ -55,6 +55,7 @@ def start_telemetry(
     q_heatmap = bus.subscribe("vision.speaker_heatmap")
     q_audio = bus.subscribe("audio.doa_heatmap")
     q_faces = bus.subscribe("vision.face_tracks")
+    q_faces_debug = bus.subscribe("vision.face_tracks.debug")
     q_lock = bus.subscribe("fusion.target_lock")
     q_uma8_leds = bus.subscribe("uma8_leds.state")
     q_logs = bus.subscribe("log.events")
@@ -92,6 +93,16 @@ def start_telemetry(
         "perf": None,
         "vad": None,
         "mic_health": None,
+        "runtime_cfg": config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {},
+        "runtime_profile": str(config.get("runtime", {}).get("perf_profile", "") or ""),
+        "strict_requirements_passed": bool(config.get("runtime", {}).get("requirements_passed", False)),
+        "detector_backend_active": str(config.get("runtime", {}).get("detector_backend_active", "") or ""),
+        "vision_debug": {
+            "detector_backend": str(config.get("runtime", {}).get("detector_backend_active", "") or ""),
+            "detector_degraded": bool(config.get("runtime", {}).get("detector_backend_degraded", False)),
+            "detector_reason": str(config.get("runtime", {}).get("detector_backend_reason", "") or ""),
+        },
+        "overflow_window": 0,
         "configured_cameras": configured_cameras,
         "configured_camera_map": configured_camera_map,
     }
@@ -120,6 +131,12 @@ def start_telemetry(
             faces = _drain(q_faces)
             if faces is not None:
                 state["faces"] = faces
+            faces_debug = _drain(q_faces_debug)
+            if faces_debug is not None:
+                state["vision_debug"] = {
+                    **(state.get("vision_debug") or {}),
+                    **(faces_debug if isinstance(faces_debug, dict) else {}),
+                }
             lock_msg = _drain(q_lock)
             if lock_msg is not None:
                 state["lock"] = lock_msg
@@ -135,6 +152,13 @@ def start_telemetry(
             perf_msg = _drain(q_perf)
             if perf_msg is not None:
                 state["perf"] = perf_msg
+                summary = perf_msg.get("summary") if isinstance(perf_msg, dict) else {}
+                if not isinstance(summary, dict):
+                    summary = {}
+                capture_summary = summary.get("audio_capture") if isinstance(summary.get("audio_capture"), dict) else {}
+                state["overflow_window"] = int(
+                    capture_summary.get("status_input_overflow_window", perf_msg.get("status_input_overflow_window", 0)) or 0
+                )
             vad_msg = _drain(q_vad)
             if vad_msg is not None:
                 state["vad"] = vad_msg
@@ -162,7 +186,8 @@ def start_telemetry(
 
 
 def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
-    heatmap = state.get("heatmap") or state.get("audio_heatmap") or {}
+    heatmap = state.get("audio_heatmap") or {}
+    vision_heatmap = state.get("heatmap") or {}
     lock_state = state.get("lock") or {}
     led_state = state.get("uma8_leds") or {}
     faces = state.get("faces") or []
@@ -185,6 +210,30 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     if isinstance(peaks, list) and peaks and isinstance(peaks[0], dict):
         top_peak_score = float(peaks[0].get("score", 0.0) or 0.0)
     doa_confidence = float(heatmap.get("confidence", 0.0) or 0.0)
+    perf_state = state.get("perf") or {}
+    perf_summary = perf_state.get("summary") if isinstance(perf_state, dict) else {}
+    if not isinstance(perf_summary, dict):
+        perf_summary = perf_state if isinstance(perf_state, dict) else {}
+    bus_drop_counts_window = (
+        perf_summary.get("bus_drop_counts_window")
+        if isinstance(perf_summary.get("bus_drop_counts_window"), dict)
+        else perf_state.get("bus_drop_counts_window", {})
+    )
+    if not isinstance(bus_drop_counts_window, dict):
+        bus_drop_counts_window = {}
+    runtime_cfg = state.get("runtime_cfg") if isinstance(state.get("runtime_cfg"), dict) else {}
+    runtime_profile = state.get("runtime_profile") or runtime_cfg.get("perf_profile") or ""
+    strict_requirements_passed = bool(
+        state.get("strict_requirements_passed", runtime_cfg.get("requirements_passed", False))
+    )
+    detector_backend_active = state.get("detector_backend_active") or runtime_cfg.get("detector_backend_active") or ""
+    audio_fallback_active = str(lock_state.get("mode", "") or "") == "AUDIO_ONLY"
+    vision_debug = state.get("vision_debug") or {}
+    if not isinstance(vision_debug, dict):
+        vision_debug = {}
+    detector_degraded = vision_debug.get("detector_degraded", runtime_cfg.get("detector_backend_degraded", False))
+    if isinstance(detector_degraded, dict):
+        detector_degraded = bool(detector_degraded.get("active", False))
     active_face_cameras = sorted({face.get("camera_id") for face in faces if face.get("camera_id")})
     configured_cameras = [str(cam) for cam in (state.get("configured_cameras") or [])]
     cameras = configured_cameras if configured_cameras else active_face_cameras
@@ -197,6 +246,13 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "peaks": heatmap.get("peaks", []),
             "confidence": heatmap.get("confidence", 0.0),
             "heatmap": heatmap.get("heatmap", []),
+        },
+        "vision_heatmap_summary": {
+            "bins": vision_heatmap.get("bins", 0),
+            "bin_size_deg": vision_heatmap.get("bin_size_deg", 0.0),
+            "peaks": vision_heatmap.get("peaks", []),
+            "confidence": vision_heatmap.get("confidence", 0.0),
+            "heatmap": vision_heatmap.get("heatmap", []),
         },
         "lock_state": {
             "state": lock_state.get("state", "NO_LOCK"),
@@ -245,7 +301,19 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "doa_peak_score": top_peak_score,
         },
         "health_summary": state.get("health") or {},
-        "perf_summary": state.get("perf") or {},
+        "perf_summary": perf_state,
+        "runtime_profile": runtime_profile,
+        "strict_requirements_passed": strict_requirements_passed,
+        "detector_backend_active": detector_backend_active,
+        "audio_fallback_active": audio_fallback_active,
+        "bus_drop_counts_window": bus_drop_counts_window,
+        "capture_overflow_window": int(state.get("overflow_window", 0) or 0),
+        "vision_debug": {
+            **vision_debug,
+            "detector_backend": detector_backend_active,
+            "detector_degraded": bool(detector_degraded),
+            "detector_reason": vision_debug.get("detector_reason", runtime_cfg.get("detector_backend_reason", "")),
+        },
         "logs": logs,
         "meta": {
             "cameras": cameras,

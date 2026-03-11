@@ -1,7 +1,8 @@
 import unittest
 
+from focusfield.core.clock import now_ns
 from focusfield.fusion.lock_state_machine import LockStateMachine
-from focusfield.fusion.av_association import _build_candidates  # noqa: PLC2701
+from focusfield.fusion.av_association import _build_audio_only_candidate, _build_candidates  # noqa: PLC2701
 
 
 class LockStateMachineTests(unittest.TestCase):
@@ -115,6 +116,39 @@ class AvAssociationSizingTests(unittest.TestCase):
         self.assertGreater(float(by_id["big"]["combined_score"]), float(by_id["small"]["combined_score"]))
         self.assertEqual(float(by_id["small"]["combined_score"]), 0.0)
 
+    def test_audio_only_candidate_requires_fresh_vad_for_speaking(self) -> None:
+        now = now_ns()
+        doa_heatmap = {"seq": 1, "confidence": 0.9, "peaks": [{"angle_deg": 15.0, "score": 0.8}]}
+        stale = {"speech": True, "confidence": 1.0, "t_ns": now - 2_000_000_000}
+        stale_cand = _build_audio_only_candidate(
+            doa_heatmap,
+            stale,
+            mic_health=None,
+            min_doa_confidence=0.45,
+            min_peak_score=0.30,
+            score_mode="confidence",
+            require_vad=False,
+            weights={},
+            vad_max_age_ms=400.0,
+        )
+        self.assertIsNotNone(stale_cand)
+        self.assertFalse(bool(stale_cand["speaking"]))
+
+        fresh = {"speech": True, "confidence": 1.0, "t_ns": now}
+        fresh_cand = _build_audio_only_candidate(
+            doa_heatmap,
+            fresh,
+            mic_health=None,
+            min_doa_confidence=0.45,
+            min_peak_score=0.30,
+            score_mode="confidence",
+            require_vad=True,
+            weights={},
+            vad_max_age_ms=400.0,
+        )
+        self.assertIsNotNone(fresh_cand)
+        self.assertTrue(bool(fresh_cand["speaking"]))
+
 
 def msg_t_ns_placeholder() -> int:
     # LockStateMachine only needs a numeric `t_ns` for freshness checks. Tests don't
@@ -124,4 +158,3 @@ def msg_t_ns_placeholder() -> int:
 
 if __name__ == "__main__":
     unittest.main()
-

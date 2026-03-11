@@ -337,7 +337,7 @@ def _uma8_mode_hint(name: str, channels: int, required: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-config", default="configs/full_3cam_8mic_pi.yaml", help="Template config to patch.")
+    parser.add_argument("--base-config", default="configs/full_3cam_8mic_pi_prod.yaml", help="Template config to patch.")
     parser.add_argument(
         "--output",
         default="configs/full_3cam_working_local.yaml",

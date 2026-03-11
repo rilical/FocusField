@@ -47,3 +47,23 @@ conservative:
   min_off_frames: 2
   min_switch_interval_ms: 700
   bearing_smoothing_alpha: 0.8
+
+mvdr_low_latency_reliable:
+  acquire_threshold: 0.58
+  acquire_timeout_ms: 450
+  hold_ms: 450
+  handoff_min_ms: 260
+  drop_threshold: 0.32
+  acquire_threshold_audio_only: 0.48
+  drop_threshold_audio_only: 0.30
+  hold_ms_audio_only: 320
+  handoff_min_ms_audio_only: 220
+  speak_on_threshold: 0.45
+  speak_off_threshold: 0.35
+  min_on_frames: 1
+  min_off_frames: 2
+  min_switch_interval_ms: 250
+  bearing_smoothing_alpha: 0.60
+  handoff_margin: 0.08
+  interrupt_min_delta: 0.05
+  interrupt_hold_ms: 250

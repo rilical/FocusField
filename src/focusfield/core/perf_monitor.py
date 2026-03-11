@@ -29,6 +29,22 @@ from typing import Any, Dict, List, Optional
 from focusfield.core.clock import now_ns
 
 
+def _percentile(values: List[float], pct: float) -> Optional[float]:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    p = min(100.0, max(0.0, float(pct)))
+    rank = (p / 100.0) * (len(ordered) - 1)
+    lo = int(rank)
+    hi = min(len(ordered) - 1, lo + 1)
+    if lo == hi:
+        return float(ordered[lo])
+    alpha = rank - lo
+    return float(ordered[lo] * (1.0 - alpha) + ordered[hi] * alpha)
+
+
 def start_perf_monitor(
     bus: Any,
     config: Dict[str, Any],
@@ -54,19 +70,43 @@ def start_perf_monitor(
     q_final = bus.subscribe("audio.enhanced.final")
     q_capture_stats = bus.subscribe("audio.capture.stats")
     q_worker = bus.subscribe("runtime.worker_loop")
+    q_lock = bus.subscribe("fusion.target_lock")
+    q_faces = bus.subscribe("vision.face_tracks")
 
+    started_t_ns = now_ns()
     stats: Dict[str, Any] = {
         "audio_frames": {"last_t_ns": 0, "count": 0},
-        "enhanced_final": {"last_t_ns": 0, "count": 0, "last_latency_ms": None},
+        "enhanced_final": {"last_t_ns": 0, "count": 0, "pipeline_queue_age_ms": None},
         "audio_capture": {
             "queue_depth": 0,
             "frames_enqueued": 0,
             "frames_published": 0,
             "callback_overflow_drop": 0,
             "status_input_overflow": 0,
+            "status_input_overflow_total": 0,
+            "status_input_overflow_window": 0,
         },
         "worker_loops": {},
+        "fusion_debug": {
+            "interruptions_committed": 0,
+            "lock_dwell_ms": 0.0,
+            "fallback_dwell_ms": 0.0,
+        },
+        "vision_debug": {
+            "face_reacquire_ms_p50": None,
+            "face_reacquire_ms_p95": None,
+        },
     }
+    overflow_prev_total: Optional[int] = None
+    lock_state = "NO_LOCK"
+    lock_state_since_ns = started_t_ns
+    lock_dwell_ns = 0
+    fallback_dwell_ns = 0
+    interruption_count = 0
+    last_lock_target_id: Optional[str] = None
+    faces_present = False
+    faces_absent_since_ns = started_t_ns
+    face_reacquire_samples_ms: List[float] = []
 
     def _drain_latest(q: queue.Queue) -> Optional[Dict[str, Any]]:
         item = None
@@ -89,6 +129,16 @@ def start_perf_monitor(
         return items
 
     def _run() -> None:
+        nonlocal overflow_prev_total
+        nonlocal lock_state
+        nonlocal lock_state_since_ns
+        nonlocal lock_dwell_ns
+        nonlocal fallback_dwell_ns
+        nonlocal interruption_count
+        nonlocal last_lock_target_id
+        nonlocal faces_present
+        nonlocal faces_absent_since_ns
+        nonlocal face_reacquire_samples_ms
         fh = None
         try:
             if path is not None:
@@ -108,9 +158,10 @@ def start_perf_monitor(
                     t_ns = int(f.get("t_ns", 0))
                     stats["enhanced_final"]["last_t_ns"] = t_ns
                     stats["enhanced_final"]["count"] = int(stats["enhanced_final"]["count"]) + 1
-                    # Approx latency: wall-clock now - message t_ns
-                    latency_ms = (now_ns() - t_ns) / 1_000_000.0 if t_ns else None
-                    stats["enhanced_final"]["last_latency_ms"] = float(latency_ms) if latency_ms is not None else None
+                    queue_age_ms = (now_ns() - t_ns) / 1_000_000.0 if t_ns else None
+                    stats["enhanced_final"]["pipeline_queue_age_ms"] = (
+                        float(queue_age_ms) if queue_age_ms is not None else None
+                    )
                 cap_stats = _drain_latest(q_capture_stats)
                 if isinstance(cap_stats, dict):
                     stats["audio_capture"]["queue_depth"] = int(cap_stats.get("queue_depth", 0) or 0)
@@ -122,6 +173,52 @@ def start_perf_monitor(
                     stats["audio_capture"]["status_input_overflow"] = int(
                         cap_stats.get("status_input_overflow", 0) or 0
                     )
+                    overflow_total = int(
+                        cap_stats.get(
+                            "status_input_overflow_total",
+                            cap_stats.get("status_input_overflow", 0),
+                        )
+                        or 0
+                    )
+                    stats["audio_capture"]["status_input_overflow_total"] = overflow_total
+                    if overflow_prev_total is None:
+                        stats["audio_capture"]["status_input_overflow_window"] = 0
+                    else:
+                        stats["audio_capture"]["status_input_overflow_window"] = max(0, overflow_total - overflow_prev_total)
+                    overflow_prev_total = overflow_total
+                lock_msg = _drain_latest(q_lock)
+                if isinstance(lock_msg, dict):
+                    msg_t_ns = int(lock_msg.get("t_ns", now_ns()) or now_ns())
+                    state = str(lock_msg.get("state", "NO_LOCK") or "NO_LOCK")
+                    if state != lock_state:
+                        elapsed_ns = max(0, msg_t_ns - lock_state_since_ns)
+                        if lock_state == "NO_LOCK":
+                            fallback_dwell_ns += elapsed_ns
+                        else:
+                            lock_dwell_ns += elapsed_ns
+                        lock_state = state
+                        lock_state_since_ns = msg_t_ns
+                    reason = str(lock_msg.get("reason", "") or "")
+                    target_id = lock_msg.get("target_id")
+                    if reason == "handoff_commit":
+                        interruption_count += 1
+                    elif target_id is not None and last_lock_target_id is not None and str(target_id) != str(last_lock_target_id):
+                        interruption_count += 1
+                    if target_id is not None:
+                        last_lock_target_id = str(target_id)
+                faces_msg = _drain_latest(q_faces)
+                if isinstance(faces_msg, list):
+                    present = len(faces_msg) > 0
+                    face_t_ns = now_ns()
+                    if present and not faces_present:
+                        reacquire_ms = max(0.0, (face_t_ns - faces_absent_since_ns) / 1_000_000.0)
+                        if reacquire_ms > 0.0:
+                            face_reacquire_samples_ms.append(reacquire_ms)
+                            if len(face_reacquire_samples_ms) > 200:
+                                face_reacquire_samples_ms = face_reacquire_samples_ms[-200:]
+                    if (not present) and faces_present:
+                        faces_absent_since_ns = face_t_ns
+                    faces_present = present
                 for worker in _drain_all(q_worker):
                     module = str(worker.get("module", "") or "").strip()
                     if not module:
@@ -170,7 +267,26 @@ def start_perf_monitor(
                     "enhanced_final": dict(stats["enhanced_final"]),
                     "audio_capture": dict(stats["audio_capture"]),
                     "worker_loops": {module: dict(values) for module, values in stats["worker_loops"].items()},
+                    "fusion_debug": {},
+                    "vision_debug": {},
                     "bus": bus_summary,
+                    "bus_drop_counts_window": dict(bus_summary.get("drop_delta", {})) if isinstance(bus_summary, dict) else {},
+                }
+                running_elapsed_ns = max(0, snapshot["t_ns"] - lock_state_since_ns)
+                running_lock_ns = lock_dwell_ns
+                running_fallback_ns = fallback_dwell_ns
+                if lock_state == "NO_LOCK":
+                    running_fallback_ns += running_elapsed_ns
+                else:
+                    running_lock_ns += running_elapsed_ns
+                snapshot["fusion_debug"] = {
+                    "interruptions_committed": int(interruption_count),
+                    "lock_dwell_ms": float(running_lock_ns / 1_000_000.0),
+                    "fallback_dwell_ms": float(running_fallback_ns / 1_000_000.0),
+                }
+                snapshot["vision_debug"] = {
+                    "face_reacquire_ms_p50": _percentile(face_reacquire_samples_ms, 50.0),
+                    "face_reacquire_ms_p95": _percentile(face_reacquire_samples_ms, 95.0),
                 }
                 bus.publish("runtime.perf", snapshot)
                 if fh is not None:

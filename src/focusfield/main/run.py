@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import sys
 import threading
@@ -220,6 +221,130 @@ def _validate_runtime_requirements(config: Dict[str, Any], logger: LogEmitter) -
     logger.emit("error", "main.run", "runtime_requirements_failed", payload)
     joined = "\n".join(f"- {item}" for item in failures)
     raise RuntimeError(f"Runtime requirements check failed:\n{joined}")
+
+
+def _validate_face_detector_requirements(
+    config: Dict[str, Any],
+    logger: LogEmitter,
+    req: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    runtime_req = req or runtime_requirements(config)
+    strict = bool(runtime_req.get("strict", False))
+    vision_cfg = config.get("vision", {})
+    if not isinstance(vision_cfg, dict):
+        vision_cfg = {}
+    face_cfg = vision_cfg.get("face", {})
+    if not isinstance(face_cfg, dict):
+        face_cfg = {}
+    requested = str(face_cfg.get("backend", face_cfg.get("detector_backend", "auto")) or "auto").strip().lower()
+    has_yunet = False
+    has_haar = False
+    try:
+        import cv2  # type: ignore
+
+        has_yunet = bool(hasattr(cv2, "FaceDetectorYN_create"))
+        haar_path = getattr(cv2.data, "haarcascades", "") + "haarcascade_frontalface_default.xml"
+        has_haar = bool(haar_path) and os.path.exists(haar_path)
+    except Exception:
+        has_yunet = False
+        has_haar = False
+
+    active = requested
+    degraded = False
+    operational = True
+    reason = ""
+    if requested == "auto":
+        if has_yunet:
+            active = "yunet"
+        elif has_haar:
+            active = "haar"
+        else:
+            active = "none"
+            operational = False
+            reason = "no face detector backend available"
+    elif requested == "yunet":
+        if has_yunet:
+            active = "yunet"
+        elif has_haar:
+            active = "haar"
+            degraded = True
+            reason = "yunet unavailable; fell back to haar"
+        else:
+            active = "none"
+            operational = False
+            reason = "yunet unavailable and haar missing"
+    elif requested == "haar":
+        if has_haar:
+            active = "haar"
+        else:
+            active = "none"
+            operational = False
+            reason = "haar cascade missing"
+    else:
+        active = requested
+        degraded = True
+        reason = f"unknown detector backend '{requested}'"
+
+    cameras = config.get("video", {}).get("cameras", [])
+    if not isinstance(cameras, list):
+        cameras = []
+    per_camera = []
+    for idx, cam_cfg in enumerate(cameras):
+        camera_id = f"cam{idx}"
+        path = None
+        if isinstance(cam_cfg, dict):
+            camera_id = str(cam_cfg.get("id", camera_id))
+            path = cam_cfg.get("device_path") or cam_cfg.get("device")
+        per_camera.append(
+            {
+                "camera_id": camera_id,
+                "path": path,
+                "requested_backend": requested,
+                "active_backend": active,
+                "operational": operational,
+                "degraded": degraded,
+            }
+        )
+
+    payload = {
+        "requested_backend": requested,
+        "active_backend": active,
+        "operational": operational,
+        "degraded": degraded,
+        "reason": reason,
+        "haar_available": has_haar,
+        "yunet_available": has_yunet,
+        "per_camera_active_backend": per_camera,
+    }
+    if not operational:
+        logger.emit("error", "main.run", "face_detector_requirements_failed", payload)
+        if strict:
+            raise RuntimeError(reason or "No operational face detector backend available")
+    elif degraded:
+        logger.emit("warning", "main.run", "face_detector_degraded", payload)
+    else:
+        logger.emit("info", "main.run", "face_detector_ready", payload)
+    return payload
+
+
+def _validate_led_hid_runtime(
+    config: Dict[str, Any],
+    logger: LogEmitter,
+    req: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    runtime_req = req or runtime_requirements(config)
+    required = bool(runtime_req.get("require_led_hid_runtime_check", False))
+    payload = {"required": required, "ok": True, "reason": ""}
+    if not required:
+        return payload
+    helper = Path("scripts/led_ring_hid.py")
+    if not helper.exists():
+        payload["ok"] = False
+        payload["reason"] = "scripts/led_ring_hid.py missing"
+        logger.emit("error", "main.run", "led_hid_runtime_failed", payload)
+        if bool(runtime_req.get("strict", False)):
+            raise RuntimeError(str(payload["reason"]))
+    return payload
 
 
 def _ensure_artifacts(config: Dict[str, Any]) -> Path:
@@ -519,6 +644,21 @@ def main() -> None:
         raise SystemExit(str(exc))
 
     req = runtime_requirements(config)
+    try:
+        detector_status = _validate_face_detector_requirements(config, logger, req)
+        led_hid_status = _validate_led_hid_runtime(config, logger, req)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
+    runtime_cfg = config.setdefault("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+        config["runtime"] = runtime_cfg
+    runtime_cfg["requirements_passed"] = True
+    runtime_cfg["detector_backend_active"] = detector_status.get("active_backend", "unknown")
+    runtime_cfg["detector_backend_degraded"] = bool(detector_status.get("degraded", False))
+    runtime_cfg["detector_backend_reason"] = detector_status.get("reason", "")
+    runtime_cfg["detector_backend_per_camera"] = detector_status.get("per_camera_active_backend", [])
+    runtime_cfg["led_hid_runtime"] = led_hid_status
     threads.extend(_start_parent_modules(bus, config, logger, stop_event))
     if runtime_process_mode(config) == "multiprocess":
         threads.extend(start_multiprocess_runtime(bus, config, logger, stop_event))

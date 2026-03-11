@@ -156,7 +156,7 @@ def compute_latency_stats(perf_jsonl_path: str | Path) -> Dict[str, Optional[flo
         enhanced = row.get("enhanced_final")
         if not isinstance(enhanced, dict):
             continue
-        latency = enhanced.get("last_latency_ms")
+        latency = enhanced.get("pipeline_queue_age_ms", enhanced.get("last_latency_ms"))
         if latency is None:
             continue
         try:
@@ -240,6 +240,98 @@ def compute_lock_jitter(lock_jsonl_path: str | Path) -> Dict[str, Optional[float
         "samples": float(len(bearings)),
         "mae_step_deg": float(np.mean(arr)),
         "std_step_deg": float(np.std(arr)),
+    }
+
+
+def compute_conversation_metrics(
+    lock_jsonl_path: str | Path,
+    faces_jsonl_path: str | Path,
+    events_jsonl_path: str | Path,
+) -> Dict[str, Optional[float]]:
+    """Compute interruption/handoff and reacquire quality metrics for conversational scenes."""
+
+    handoff_start_ns: Optional[int] = None
+    handoff_latencies_ms: List[float] = []
+    switch_count = 0
+    false_switch_count = 0
+    last_target_id: Optional[str] = None
+    last_switch_ns: Optional[int] = None
+    false_window_ns = int(700 * 1_000_000)  # rapid switch-back window
+
+    for row in _read_jsonl(lock_jsonl_path):
+        t_ns = int(row.get("t_ns", 0) or 0)
+        reason = str(row.get("reason", "") or "")
+        state = str(row.get("state", "") or "")
+        target_id_raw = row.get("target_id")
+        target_id = str(target_id_raw) if target_id_raw is not None else None
+
+        if reason == "handoff_start":
+            handoff_start_ns = t_ns
+        elif reason == "handoff_commit" and handoff_start_ns and t_ns >= handoff_start_ns:
+            handoff_latencies_ms.append((t_ns - handoff_start_ns) / 1_000_000.0)
+            handoff_start_ns = None
+
+        if state in {"LOCKED", "HANDOFF"} and target_id:
+            if last_target_id and target_id != last_target_id:
+                switch_count += 1
+                if last_switch_ns and (t_ns - last_switch_ns) <= false_window_ns:
+                    false_switch_count += 1
+                last_switch_ns = t_ns
+            last_target_id = target_id
+
+    face_reacquire_ms: List[float] = []
+    faces_present = False
+    faces_absent_since_ns: Optional[int] = None
+    for row in _read_jsonl(faces_jsonl_path):
+        t_ns = int(row.get("t_ns", 0) or 0)
+        faces = row.get("faces")
+        count = len(faces) if isinstance(faces, list) else 0
+        present = count > 0
+        if present and not faces_present and faces_absent_since_ns is not None and t_ns >= faces_absent_since_ns:
+            face_reacquire_ms.append((t_ns - faces_absent_since_ns) / 1_000_000.0)
+        if (not present) and faces_present:
+            faces_absent_since_ns = t_ns
+        faces_present = present
+
+    speech_no_lock = 0
+    speech_samples = 0
+    for row in _read_jsonl(events_jsonl_path):
+        ctx = row.get("context")
+        if not isinstance(ctx, dict):
+            continue
+        if str(ctx.get("module", "") or "") != "fusion.av_association":
+            continue
+        if str(ctx.get("event", "") or "") != "no_candidates":
+            continue
+        details = ctx.get("details")
+        if not isinstance(details, dict):
+            continue
+        if bool(details.get("vad_speech", False)):
+            speech_no_lock += 1
+            speech_samples += 1
+        elif "vad_speech" in details:
+            speech_samples += 1
+
+    no_lock_during_speech_ratio = (
+        float(speech_no_lock) / float(max(1, speech_samples))
+        if speech_samples > 0
+        else None
+    )
+    false_handoff_rate = (
+        float(false_switch_count) / float(max(1, switch_count))
+        if switch_count > 0
+        else 0.0
+    )
+
+    return {
+        "handoff_latency_p50_ms": _percentile_list(handoff_latencies_ms, 50.0),
+        "handoff_latency_p95_ms": _percentile_list(handoff_latencies_ms, 95.0),
+        "no_lock_during_speech_ratio": no_lock_during_speech_ratio,
+        "face_reacquire_latency_p50_ms": _percentile_list(face_reacquire_ms, 50.0),
+        "face_reacquire_latency_p95_ms": _percentile_list(face_reacquire_ms, 95.0),
+        "false_handoff_rate": false_handoff_rate,
+        "handoff_count": float(len(handoff_latencies_ms)),
+        "switch_count": float(switch_count),
     }
 
 
@@ -361,6 +453,13 @@ def _median(values: Iterable[Optional[float]]) -> Optional[float]:
     if not cleaned:
         return None
     return float(np.median(np.asarray(cleaned, dtype=np.float64)))
+
+
+def _percentile_list(values: List[float], pct: float) -> Optional[float]:
+    if not values:
+        return None
+    arr = np.asarray(values, dtype=np.float64)
+    return float(np.percentile(arr, pct))
 
 
 def _as_optional_float(value: Any) -> Optional[float]:

@@ -54,10 +54,15 @@ def load_mic_positions(config: Dict[str, object]) -> Tuple[List[MicPosition], Li
         raise ValueError(f"unknown mic profile: {profile_name}")
 
     geometry = str(profile.get("geometry", "circular")).lower()
-    yaw_offset_deg = float(profile.get("yaw_offset_deg", 0.0) or 0.0)
+    profile_yaw_offset_deg = float(profile.get("yaw_offset_deg", 0.0) or 0.0)
+    runtime_yaw_offset_deg = float(audio_cfg.get("yaw_offset_deg", 0.0) or 0.0)
+    yaw_offset_deg = profile_yaw_offset_deg + runtime_yaw_offset_deg
     channel_order = profile.get("channel_order") or list(range(channels))
-    if channels and len(channel_order) != channels:
-        raise ValueError("channel_order length does not match channel count")
+    channel_order = [int(ch) for ch in channel_order]
+    if channels and len(channel_order) > channels:
+        raise ValueError("channel_order length exceeds channel count")
+    if channels and any(ch < 0 or ch >= channels for ch in channel_order):
+        raise ValueError("channel_order contains channel outside capture width")
 
     if geometry == "circular":
         radius_m = float(profile.get("radius_m", 0.0))
@@ -72,8 +77,8 @@ def load_mic_positions(config: Dict[str, object]) -> Tuple[List[MicPosition], Li
         if not isinstance(positions_raw, list) or not positions_raw:
             raise ValueError("custom geometry requires positions_m list")
         positions: List[MicPosition] = [tuple(map(float, p)) for p in positions_raw]  # type: ignore[arg-type]
-        if channels and len(positions) != channels:
-            raise ValueError("positions_m length does not match channel count")
+        if len(positions) != len(channel_order):
+            raise ValueError("positions_m length does not match active channel_order length")
         positions = _rotate_positions(positions, yaw_offset_deg)
         return positions, list(channel_order)
 

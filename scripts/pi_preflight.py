@@ -74,10 +74,18 @@ def _load_mic_profile_yaw(config: dict) -> tuple[str, Optional[float]]:
     if not isinstance(profile, dict):
         return profile_name, None
     yaw = profile.get("yaw_offset_deg")
+    runtime_yaw = audio_cfg.get("yaw_offset_deg")
     try:
-        return profile_name, float(yaw)
+        base_yaw = float(yaw)
     except Exception:
+        base_yaw = None
+    try:
+        override_yaw = float(runtime_yaw)
+    except Exception:
+        override_yaw = 0.0
+    if base_yaw is None:
         return profile_name, None
+    return profile_name, float(base_yaw + override_yaw)
 
 
 def _format_input_channels(config: dict) -> tuple[int | None, int, str]:

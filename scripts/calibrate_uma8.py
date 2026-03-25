@@ -6,14 +6,15 @@ This script is meant to be run on the target machine with the UMA-8 connected.
 Step A: Channel-order "tap" test
   - You will be prompted to tap near each physical mic (clockwise).
   - The script records a short window and detects the channel with max RMS.
-  - Output: suggested channel_order.
+  - Output: suggested active channel_order.
 
 Step B: Orientation (yaw_offset_deg)
   - Place a speaker directly in front of cam0 (global 0°).
   - The script runs SRP-PHAT for a few seconds and reads the peak.
   - Output: suggested yaw_offset_deg.
 
-The output is a YAML snippet you can paste into configs/device_profiles.yaml.
+The output is a YAML snippet for configs/device_profiles.yaml plus a local-config
+audio yaw override for the target rig.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ def main() -> None:
     print(f"Using device_index={device_index}")
 
     print("\n=== Step A: tap test (channel order) ===")
-    order, tap_debug = _tap_test(
+    order, unused_lanes, tap_debug = _tap_test(
         device_index=device_index,
         channels=args.channels,
         sample_rate=args.sample_rate,
@@ -58,6 +59,7 @@ def main() -> None:
         tap_count=args.tap_count,
     )
     print(f"Suggested channel_order: {order}")
+    print(f"Unused capture lanes: {unused_lanes}")
     if tap_debug:
         print("Tap diagnostics:")
         for line in tap_debug:
@@ -82,11 +84,15 @@ def main() -> None:
     print("mic_arrays:")
     print("  minidsp_uma8_raw_7p1:")
     print("    geometry: custom")
+    print(f"    capture_channels: {args.channels}")
     print(f"    yaw_offset_deg: {yaw:.1f}")
     print("    positions_m:")
-    for x, y in _uma8_positions(args.ring_radius_m):
+    for x, y in _uma8_positions(args.ring_radius_m, count=len(order)):
         print(f"      - [{x:.6f}, {y:.6f}]")
     print(f"    channel_order: {order}")
+    print("\n=== Apply to the local Pi config ===")
+    print("audio:")
+    print(f"  yaw_offset_deg: {yaw:.1f}")
 
 
 def _resolve_device(device: Optional[str], channels: int) -> int:
@@ -122,7 +128,7 @@ def _tap_test(
     sample_rate: int,
     seconds: float,
     tap_count: int,
-) -> Tuple[List[int], List[str]]:
+) -> Tuple[List[int], List[int], List[str]]:
     observed: List[int] = []
     debug: List[str] = []
     remaining = set(range(channels))
@@ -137,24 +143,7 @@ def _tap_test(
         print(f"Detected channel {best} (rms={rms[best]:.6f})")
         debug.append(f"ring tap {tap_idx}: channel={best} rms={rms[best]:.6f}")
 
-    extra_index = 0
-    while remaining:
-        label = "center mic" if len(remaining) == 1 else f"remaining mic #{extra_index}"
-        print(f"Tap {label} now. Press Enter when ready.")
-        input()
-        rms = _record_rms(device_index=device_index, channels=channels, sample_rate=sample_rate, seconds=seconds)
-        remaining_scores = {idx: float(rms[idx]) for idx in sorted(remaining)}
-        best = max(remaining_scores, key=remaining_scores.get)
-        global_best = int(np.argmax(rms))
-        observed.append(best)
-        remaining.discard(best)
-        print(f"Detected {label} on channel {best} (rms={rms[best]:.6f}, global_best={global_best})")
-        debug.append(
-            f"{label}: channel={best} rms={rms[best]:.6f} "
-            f"global_best={global_best} remaining_scores={remaining_scores}"
-        )
-        extra_index += 1
-    return observed, debug
+    return observed, sorted(remaining), debug
 
 
 def _default_input_index() -> int:
@@ -242,13 +231,13 @@ def _circular_positions(count: int, radius_m: float) -> np.ndarray:
     return out
 
 
-def _uma8_positions(radius_m: float) -> List[Tuple[float, float]]:
-    # 7 mic ring + center channel.
+def _uma8_positions(radius_m: float, count: int = 7) -> List[Tuple[float, float]]:
+    # Active ring microphones only; leftover capture lanes are not modeled.
     ring = []
-    for idx in range(7):
-        ang = 2.0 * np.pi * idx / 7.0
+    count = max(1, int(count))
+    for idx in range(count):
+        ang = 2.0 * np.pi * idx / float(count)
         ring.append((float(radius_m * np.cos(ang)), float(radius_m * np.sin(ang))))
-    ring.append((0.0, 0.0))
     return ring
 
 

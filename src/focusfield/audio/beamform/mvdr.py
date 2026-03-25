@@ -247,7 +247,11 @@ def start_mvdr(
                         x = frame[:, state.channel_order]
                         block_len = int(x.shape[0])
                         speech = bool(last_vad.get("speech")) if last_vad else False
-                        health_scores, health_trust = channel_health_vectors(last_mic_health, x.shape[1])
+                        health_scores, health_trust = channel_health_vectors(
+                            last_mic_health,
+                            x.shape[1],
+                            channel_order=state.channel_order,
+                        )
                         active_idx = _active_channels(health_scores, health_trust, min_active_score)
                         if active_idx.size == 0:
                             quality = np.clip(health_scores, 0.0, 1.0) * np.clip(0.10 + 0.90 * health_trust, 0.0, 1.0)

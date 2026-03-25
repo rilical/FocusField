@@ -25,8 +25,7 @@ def detect_tap_channel(frame: np.ndarray) -> int:
     return int(np.argmax(rms))
 
 
-def build_channel_order(observed_ring: List[int], total_channels: int) -> List[int]:
-    """Build full channel_order by appending remaining channels."""
+def build_channel_order(observed_ring: List[int], total_channels: int, include_remaining: bool = False) -> List[int]:
+    """Build active channel_order, optionally appending leftover capture lanes."""
     remaining = [ch for ch in range(int(total_channels)) if ch not in observed_ring]
-    return list(observed_ring) + remaining
-
+    return list(observed_ring) + (remaining if include_remaining else [])

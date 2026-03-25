@@ -677,6 +677,14 @@ def main() -> None:
     runtime_cfg["selected_audio_device"] = _selected_audio_info(config)
     runtime_cfg["configured_camera_bindings"] = _configured_camera_bindings(config)
     runtime_cfg["requirements_passed"] = True
+    runtime_cfg["config_effective_path"] = str(os.environ.get("FOCUSFIELD_CONFIG_EFFECTIVE", runtime_cfg.get("config_path", "")) or "")
+    runtime_cfg["config_invoked_path"] = str(os.environ.get("FOCUSFIELD_CONFIG_PATH", runtime_cfg.get("config_path", "")) or "")
+    runtime_cfg["process_mode"] = runtime_process_mode(config)
+    runtime_cfg["perf_profile"] = str(runtime_cfg.get("perf_profile", "") or "")
+    runtime_cfg["thresholds_preset_active"] = str(config.get("fusion", {}).get("thresholds_preset", "") or "")
+    runtime_cfg["requirements"] = dict(config.get("runtime", {}).get("requirements", {}) or {})
+    runtime_cfg["audio_device_profile"] = str(config.get("audio", {}).get("device_profile", "") or "")
+    runtime_cfg["audio_yaw_offset_deg"] = float(config.get("audio", {}).get("yaw_offset_deg", 0.0) or 0.0)
     runtime_cfg["detector_backend_active"] = detector_status.get("active_backend", "unknown")
     runtime_cfg["detector_backend_degraded"] = bool(detector_status.get("degraded", False))
     runtime_cfg["detector_backend_reason"] = detector_status.get("reason", "")
@@ -687,7 +695,15 @@ def main() -> None:
         "main.run",
         "resolved_bindings",
         {
+            "config_path": runtime_cfg.get("config_path", ""),
+            "config_effective_path": runtime_cfg.get("config_effective_path", ""),
+            "process_mode": runtime_cfg.get("process_mode", ""),
+            "perf_profile": runtime_cfg.get("perf_profile", ""),
+            "thresholds_preset": runtime_cfg.get("thresholds_preset_active", ""),
+            "requirements": runtime_cfg.get("requirements", {}),
             "audio_device": runtime_cfg.get("selected_audio_device", {}),
+            "audio_device_profile": runtime_cfg.get("audio_device_profile", ""),
+            "audio_yaw_offset_deg": runtime_cfg.get("audio_yaw_offset_deg", 0.0),
             "camera_bindings": runtime_cfg.get("configured_camera_bindings", []),
             "camera_calibration_overlay": runtime_cfg.get("camera_calibration_overlay", {}),
         },

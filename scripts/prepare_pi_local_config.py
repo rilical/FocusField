@@ -36,6 +36,12 @@ def pick_profile_name(channels: int, profiles: Dict[str, Any], preferred: str) -
         profile = mic_arrays.get(name)
         if not isinstance(profile, dict):
             return None
+        capture_channels = profile.get("capture_channels")
+        if capture_channels is not None:
+            try:
+                return int(capture_channels)
+            except Exception:
+                return None
         order = profile.get("channel_order")
         return len(order) if isinstance(order, list) else None
 
@@ -467,6 +473,13 @@ def main() -> int:
         min_audio_channels=req_audio,
         camera_scope=camera_scope,
     )
+    runtime_cfg = cfg.get("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+        cfg["runtime"] = runtime_cfg
+    runtime_cfg["generated_for_pi"] = True
+    runtime_cfg["generated_from_base_config"] = str(base_config)
+    runtime_cfg["generated_from_base_basename"] = Path(base_config).name
 
     output_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     print(f"wrote: {output_path}")

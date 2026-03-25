@@ -333,6 +333,20 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "camera_map": state.get("configured_camera_map") or [],
             "audio_device": runtime_cfg.get("selected_audio_device", {}),
             "camera_calibration_overlay": runtime_cfg.get("camera_calibration_overlay", {}),
+            "runtime_config": {
+                "config_path": runtime_cfg.get("config_path", ""),
+                "config_effective_path": runtime_cfg.get("config_effective_path", ""),
+                "config_basename": runtime_cfg.get("config_basename", ""),
+                "generated_from_base_config": runtime_cfg.get("generated_from_base_config", ""),
+                "generated_from_base_basename": runtime_cfg.get("generated_from_base_basename", ""),
+                "generated_for_pi": bool(runtime_cfg.get("generated_for_pi", False)),
+                "process_mode": runtime_cfg.get("process_mode", ""),
+                "perf_profile": runtime_profile,
+                "thresholds_preset": runtime_cfg.get("thresholds_preset_active", ""),
+                "requirements": runtime_cfg.get("requirements", {}),
+                "audio_device_profile": runtime_cfg.get("audio_device_profile", ""),
+                "audio_yaw_offset_deg": float(runtime_cfg.get("audio_yaw_offset_deg", 0.0) or 0.0),
+            },
         },
     }
 

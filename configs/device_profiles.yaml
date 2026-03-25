@@ -24,10 +24,11 @@ mic_arrays:
     channel_order: [0, 1, 2, 3, 4, 5]
 
   # miniDSP UMA-8 (RAW mode)
-  # Model: 7 mics on a ring + 1 center channel.
-  # NOTE: The default ring radius is an estimate and should be calibrated.
+  # Model the 7 physical ring mics only. The USB device exposes an eighth lane,
+  # but that lane is not treated as part of the acoustic geometry.
   minidsp_uma8_raw_7p1:
     geometry: custom
+    capture_channels: 8
     yaw_offset_deg: 0.0
     positions_m:
       - [0.042000, 0.000000]
@@ -37,8 +38,7 @@ mic_arrays:
       - [-0.037841, -0.018223]
       - [-0.009346, -0.040947]
       - [0.026187, -0.032837]
-      - [0.000000, 0.000000]
-    channel_order: [0, 1, 2, 3, 4, 5, 6, 7]
+    channel_order: [0, 1, 2, 3, 4, 5, 6]
 
 cameras:
   generic_usb_cam:

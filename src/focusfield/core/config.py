@@ -51,6 +51,14 @@ def load_config(path: str) -> Dict[str, Any]:
     merged = _merge_dicts(defaults, data)
     _apply_thresholds_preset(merged, path)
     apply_camera_calibration_sidecar(merged)
+    runtime_cfg = merged.setdefault("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+        merged["runtime"] = runtime_cfg
+    config_path = str(Path(path).resolve())
+    runtime_cfg["config_path"] = config_path
+    runtime_cfg["config_basename"] = Path(config_path).name
+    runtime_cfg["thresholds_preset_active"] = str(get_path(merged, "fusion.thresholds_preset", "") or "")
     if bool(get_path(merged, "runtime.enable_validation", False)):
         errors = validate_config(merged)
         if errors:
@@ -237,6 +245,7 @@ def _default_config() -> Dict[str, Any]:
             },
         },
         "audio": {
+            "yaw_offset_deg": 0.0,
             "capture": {
                 # If true, allow audio.capture to fall back to mono when the requested
                 # multichannel input can't be opened (useful for laptop baseline runs).
@@ -359,22 +368,50 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         audio_cfg = {}
     channels = int(audio_cfg.get("channels", 0) or 0)
     profile_name = str(audio_cfg.get("device_profile", "") or "")
+    if "yaw_offset_deg" in audio_cfg:
+        try:
+            _ = float(audio_cfg.get("yaw_offset_deg", 0.0) or 0.0)
+        except Exception:
+            errors.append("audio.yaw_offset_deg must be numeric")
     if channels > 0 and profile_name:
         profile = _load_device_profile(profile_name)
         if profile is None:
             errors.append(f"audio.device_profile '{profile_name}' not found in configs/device_profiles.yaml")
         else:
             order = profile.get("channel_order")
-            if isinstance(order, list) and len(order) != channels:
-                errors.append(
-                    f"audio.channels={channels} but device profile '{profile_name}' has channel_order length {len(order)}"
-                )
+            if isinstance(order, list):
+                if len(order) > channels:
+                    errors.append(
+                        f"audio.channels={channels} but device profile '{profile_name}' has channel_order length {len(order)}"
+                    )
+                for idx, channel in enumerate(order):
+                    try:
+                        channel_i = int(channel)
+                    except Exception:
+                        errors.append(f"audio.device_profile '{profile_name}' channel_order[{idx}] must be integer")
+                        continue
+                    if channel_i < 0 or channel_i >= channels:
+                        errors.append(
+                            f"audio.device_profile '{profile_name}' channel_order[{idx}]={channel_i} is outside audio.channels={channels}"
+                        )
+            capture_channels = profile.get("capture_channels")
+            if capture_channels is not None:
+                try:
+                    capture_channels_i = int(capture_channels)
+                except Exception:
+                    errors.append(f"audio.device_profile '{profile_name}' capture_channels must be integer")
+                else:
+                    if channels != capture_channels_i:
+                        errors.append(
+                            f"audio.channels={channels} but device profile '{profile_name}' expects capture_channels={capture_channels_i}"
+                        )
             geom = str(profile.get("geometry", "") or "").lower()
             if geom == "custom":
                 positions = profile.get("positions_m")
-                if isinstance(positions, list) and len(positions) != channels:
+                order_len = len(order) if isinstance(order, list) else 0
+                if isinstance(positions, list) and order_len and len(positions) != order_len:
                     errors.append(
-                        f"audio.channels={channels} but device profile '{profile_name}' has positions_m length {len(positions)}"
+                        f"audio.device_profile '{profile_name}' has positions_m length {len(positions)} but channel_order length {order_len}"
                     )
 
     runtime_cfg = config.get("runtime", {})

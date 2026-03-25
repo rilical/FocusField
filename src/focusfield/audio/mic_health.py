@@ -316,7 +316,11 @@ def _reference_channel(channels: int) -> int:
     return 0
 
 
-def channel_health_vectors(mic_health: Optional[Dict[str, Any]], channels: int) -> Tuple[np.ndarray, np.ndarray]:
+def channel_health_vectors(
+    mic_health: Optional[Dict[str, Any]],
+    channels: int,
+    channel_order: Optional[List[int] | np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     """Extract per-channel score and trust arrays from a mic_health message.
 
     Shared by SRP-PHAT and MVDR to avoid duplication.
@@ -328,10 +332,18 @@ def channel_health_vectors(mic_health: Optional[Dict[str, Any]], channels: int) 
     entries = mic_health.get("channels")
     if not isinstance(entries, list):
         return scores, trust
+    order_map: Optional[List[int]] = None
+    if channel_order is not None:
+        order_map = [int(ch) for ch in channel_order][:channels]
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         idx = int(entry.get("channel", -1) or -1)
+        if order_map is not None:
+            try:
+                idx = order_map.index(idx)
+            except ValueError:
+                continue
         if idx < 0 or idx >= channels:
             continue
         score_value = entry.get("score")

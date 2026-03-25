@@ -61,6 +61,9 @@ PY
   echo "Using runtime LED override: uma8_leds.enabled=${ENABLE_UMA8_LEDS} (${CONFIG_EFFECTIVE})"
 fi
 
+export FOCUSFIELD_CONFIG_PATH="$CONFIG_PATH"
+export FOCUSFIELD_CONFIG_EFFECTIVE="$CONFIG_EFFECTIVE"
+
 attempt=0
 while :; do
   attempt=$((attempt + 1))

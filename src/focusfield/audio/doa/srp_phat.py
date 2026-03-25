@@ -159,7 +159,11 @@ class SrpPhatDoa:
             heatmap = np.zeros(self._bins, dtype=np.float32)
             msg = self._build_msg(t_ns, heatmap, confidence=0.0)
             return msg
-        channel_scores, channel_trust = channel_health_vectors(mic_health, frame.shape[1])
+        channel_scores, channel_trust = channel_health_vectors(
+            mic_health,
+            frame.shape[1],
+            channel_order=self._channel_order,
+        )
         cross = (spectrum[:, self._pair_i] * np.conj(spectrum[:, self._pair_j])).T.astype(np.complex64)
         cross = cross / np.maximum(np.abs(cross), 1e-12)
         coherence = np.abs(np.mean(cross, axis=1)).astype(np.float32)
@@ -356,4 +360,3 @@ def _confidence(scores: np.ndarray) -> float:
 
 def _wrap_deg(deg: float) -> float:
     return (deg + 180.0) % 360.0 - 180.0
-

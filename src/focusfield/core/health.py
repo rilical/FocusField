@@ -83,6 +83,9 @@ def start_health_monitor(
     q_final = bus.subscribe("audio.enhanced.final")
     q_faces = bus.subscribe("vision.face_tracks")
     q_lock = bus.subscribe("fusion.target_lock")
+    q_perf = bus.subscribe("runtime.perf")
+    q_beam = bus.subscribe("audio.beamformer.debug")
+    q_mic_health = bus.subscribe("audio.mic_health")
     q_cams = {cam_id: bus.subscribe(f"vision.frames.{cam_id}") for cam_id in cameras}
 
     state = {
@@ -94,6 +97,9 @@ def start_health_monitor(
     for cam_id in cameras:
         state[f"vision.frames.{cam_id}"] = _TopicState()
     seq = 0
+    latest_perf: Dict[str, Any] = {}
+    latest_beam: Dict[str, Any] = {}
+    latest_mic_health: Dict[str, Any] = {}
 
     def _drain(q: queue.Queue) -> Optional[Dict[str, Any]]:
         item = None
@@ -105,7 +111,7 @@ def start_health_monitor(
         return item
 
     def _run() -> None:
-        nonlocal seq
+        nonlocal seq, latest_perf, latest_beam, latest_mic_health
         next_emit = time.time()
         while not stop_event.is_set():
             audio = _drain(q_audio)
@@ -120,6 +126,15 @@ def start_health_monitor(
             lock = _drain(q_lock)
             if lock is not None:
                 state["fusion.target_lock"].on_msg(lock)
+            perf = _drain(q_perf)
+            if isinstance(perf, dict):
+                latest_perf = perf
+            beam = _drain(q_beam)
+            if isinstance(beam, dict):
+                latest_beam = beam
+            mic_health = _drain(q_mic_health)
+            if isinstance(mic_health, dict):
+                latest_mic_health = mic_health
             for cam_id, q in q_cams.items():
                 cam_msg = _drain(q)
                 if cam_msg is not None:
@@ -137,7 +152,17 @@ def start_health_monitor(
             except Exception:
                 drop_counts = {}
 
-            snapshot = _build_snapshot(state, seq, th_audio, th_final, th_faces, th_cam)
+            snapshot = _build_snapshot(
+                state,
+                seq,
+                th_audio,
+                th_final,
+                th_faces,
+                th_cam,
+                latest_perf=latest_perf,
+                latest_beam=latest_beam,
+                latest_mic_health=latest_mic_health,
+            )
             snapshot["bus"] = {"drop_counts": drop_counts}
             bus.publish("runtime.health", snapshot)
             if snapshot.get("status") == "degraded":
@@ -155,6 +180,9 @@ def _build_snapshot(
     th_final_ms: float,
     th_faces_ms: float,
     th_cam_ms: float,
+    latest_perf: Optional[Dict[str, Any]] = None,
+    latest_beam: Optional[Dict[str, Any]] = None,
+    latest_mic_health: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     now_s = time.time()
 
@@ -178,6 +206,44 @@ def _build_snapshot(
         a_cam = age_ms(topic)
         if a_cam is None or a_cam > th_cam_ms:
             reasons.append({"topic": topic, "age_ms": a_cam, "threshold_ms": th_cam_ms})
+
+    perf = latest_perf if isinstance(latest_perf, dict) else {}
+    queue_pressure = perf.get("queue_pressure", {}) if isinstance(perf.get("queue_pressure", {}), dict) else {}
+    drop_total_window = int(queue_pressure.get("drop_total_window", 0) or 0)
+    capture_overflow_window = int(queue_pressure.get("capture_overflow_window", 0) or 0)
+    if drop_total_window > 0:
+        reasons.append({"topic": "runtime.perf", "reason": "queue_pressure", "drop_total_window": drop_total_window})
+    if capture_overflow_window > 0:
+        reasons.append(
+            {
+                "topic": "audio.capture",
+                "reason": "input_overflow",
+                "capture_overflow_window": capture_overflow_window,
+            }
+        )
+
+    beam = latest_beam if isinstance(latest_beam, dict) else {}
+    if bool(beam.get("fallback_active", False)):
+        reasons.append({"topic": "audio.beamformer", "reason": "fallback_active"})
+
+    mic_health = latest_mic_health if isinstance(latest_mic_health, dict) else {}
+    bad_channels: List[int] = []
+    entries = mic_health.get("channels")
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            bad_reason = str(entry.get("bad_reason", "") or "")
+            if "dead" in bad_reason or "dropout" in bad_reason:
+                bad_channels.append(int(entry.get("channel", -1) or -1))
+    if bad_channels:
+        reasons.append(
+            {
+                "topic": "audio.mic_health",
+                "reason": "dead_or_dropout_channels",
+                "channels": [ch for ch in bad_channels if ch >= 0],
+            }
+        )
 
     status = "ok" if not reasons else "degraded"
     topics = {

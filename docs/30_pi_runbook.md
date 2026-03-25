@@ -62,7 +62,7 @@ audio device with at least 8 channels, strict full-target mode will fail fast.
 
 ### UMA-8 mode gate (mandatory before strict full-target)
 
-Run this and verify the miniDSP endpoint exposes 8 input channels:
+Run this and verify the raw array endpoint exposes 8 input channels:
 
 ```bash
 python3 - <<'PY'
@@ -74,14 +74,18 @@ PY
 ```
 
 Pass condition:
-- At least one `miniDSP` input device reports `max_input_channels >= 8`.
+- At least one raw-array input device reports `max_input_channels >= 8`.
+- Common names include `miniDSP` and `micArray RAW SPK`.
 
-If miniDSP only reports 2 channels, it is in DSP mode and strict full-target will fail.
+If the raw-array device only reports 2 channels, it is in DSP mode and strict full-target will fail.
 Switch UMA-8 to RAW firmware first.
 
 ### Strict full-target config generation (recommended for production)
 
-Use this base config for production:
+Use this base config for Pi bring-up, root-cause work, and the stable local service:
+- `configs/full_3cam_8mic_pi.yaml`
+
+Keep this only for the tighter threaded production operating point after the rig is already stable:
 - `configs/full_3cam_8mic_pi_prod.yaml`
 
 Keep these only for debug or bench work:
@@ -91,7 +95,7 @@ Keep these only for debug or bench work:
 ```bash
 set -euo pipefail
 python3 scripts/prepare_pi_local_config.py \
-  --base-config configs/full_3cam_8mic_pi_prod.yaml \
+  --base-config configs/full_3cam_8mic_pi.yaml \
   --output configs/full_3cam_working_local.yaml \
   --camera-source by-path \
   --camera-scope usb \
@@ -121,7 +125,7 @@ python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml --m
 Use this once your 3-camera rig is physically mounted.
 
 1. Set physical reference direction:
-- Define cam0 as 0deg (front/reference).
+- Define cam0/front as global 0deg.
 - Mount cam1 approximately +120deg and cam2 approximately +240deg around the UMA-8.
 
 2. Confirm config azimuths:
@@ -155,9 +159,20 @@ python3 scripts/pi_smoke.py \
 - Open `http://<pi-ip>:8080/telemetry`
 - Check `lock_state.target_bearing_deg` and `uma8_leds.sector` while speaking from known angles.
 
-6. Tune alignment:
+6. Calibrate mic yaw before per-camera tuning:
+
+```bash
+sudo systemctl stop focusfield || true
+pkill -f 'python3 -m focusfield.main.run' || true
+python3 scripts/calibrate_uma8.py --device "micArray RAW SPK"
+```
+
+- Place the speaker directly in front of cam0 during the orientation step.
+- Update `configs/device_profiles.yaml` with the emitted `yaw_offset_deg` and `channel_order`.
+
+7. Tune final alignment:
 - Rotate LED ring mapping with `uma8_leds.base_bearing_offset_deg`.
-- If visual direction is correct but face direction is off, tune each `video.cameras[].yaw_offset_deg`.
+- If audio direction is correct but face direction is off, tune each `video.cameras[].yaw_offset_deg`.
 
 ### Debug/degraded config generation (best-effort diagnostics)
 
@@ -179,7 +194,9 @@ python3 scripts/pi_preflight.py --config configs/full_3cam_working_local.yaml --
 Channel-order and yaw alignment are critical for DOA/beamforming.
 
 ```bash
-python3 scripts/calibrate_uma8.py --device miniDSP
+sudo systemctl stop focusfield || true
+pkill -f 'python3 -m focusfield.main.run' || true
+python3 scripts/calibrate_uma8.py --device "micArray RAW SPK"
 ```
 
 Paste the emitted YAML snippet into `configs/device_profiles.yaml`.
@@ -288,7 +305,7 @@ python3 scripts/focusbench_ab.py \
   --baseline-run /path/to/artifacts/<baseline_run_id> \
   --candidate-run /path/to/artifacts/<candidate_run_id> \
   --scene-manifest bench_scenes/quiet_office.yaml \
-  --config configs/full_3cam_8mic_pi_prod.yaml \
+  --config configs/full_3cam_8mic_pi.yaml \
   --output-dir artifacts/focusbench_ab/<candidate_run_id>
 ```
 

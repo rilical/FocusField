@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SERVICE_NAME=${1:-focusfield}
-CONFIG_PATH=${2:-configs/full_3cam_8mic_pi_prod.yaml}
+CONFIG_PATH=${2:-configs/full_3cam_8mic_pi.yaml}
 SERVICE_USER=${3:-${SUDO_USER:-$(whoami)}}
 BOOT_CAMERA_SOURCE=${FOCUSFIELD_CAMERA_SOURCE:-by-path}
 BOOT_CAMERA_SCOPE=${FOCUSFIELD_CAMERA_SCOPE:-usb}

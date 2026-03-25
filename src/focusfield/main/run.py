@@ -44,7 +44,7 @@ from focusfield.core.health import start_health_monitor
 from focusfield.core.log_sink import start_log_sink
 from focusfield.core.logging import LogEmitter
 from focusfield.audio.capture import start_audio_capture
-from focusfield.audio.devices import list_input_devices, resolve_input_device_index
+from focusfield.audio.devices import is_raw_array_device, list_input_devices, resolve_input_device_index
 from focusfield.audio.beamform.delay_and_sum import start_delay_and_sum
 from focusfield.audio.beamform.mvdr import start_mvdr
 from focusfield.audio.doa.srp_phat import start_srp_phat
@@ -92,6 +92,27 @@ def _selected_audio_info(config: Dict[str, Any]) -> Dict[str, Any]:
         "device_name": selected_name,
         "channels": selected_channels,
     }
+
+
+def _configured_camera_bindings(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    cameras = config.get("video", {}).get("cameras", [])
+    if not isinstance(cameras, list):
+        cameras = []
+    bindings: List[Dict[str, Any]] = []
+    for idx, cam in enumerate(cameras):
+        if not isinstance(cam, dict):
+            continue
+        bindings.append(
+            {
+                "camera_id": str(cam.get("id", f"cam{idx}")),
+                "device_path": str(cam.get("device_path", "") or ""),
+                "device_index": cam.get("device_index"),
+                "yaw_offset_deg": float(cam.get("yaw_offset_deg", 0.0) or 0.0),
+                "bearing_offset_deg": float(cam.get("bearing_offset_deg", 0.0) or 0.0),
+                "hfov_deg": float(cam.get("hfov_deg", 0.0) or 0.0),
+            }
+        )
+    return bindings
 
 
 def _configured_camera_status(config: Dict[str, Any], strict_capture: bool, camera_scope: str) -> Dict[str, Any]:
@@ -167,7 +188,7 @@ def _configured_camera_status(config: Dict[str, Any], strict_capture: bool, came
 
 
 def _uma8_mode_hint(name: str, channels: int, required: int) -> str:
-    if "minidsp" not in str(name).lower():
+    if not is_raw_array_device(name):
         return ""
     if channels >= required:
         return ""
@@ -653,12 +674,24 @@ def main() -> None:
     if not isinstance(runtime_cfg, dict):
         runtime_cfg = {}
         config["runtime"] = runtime_cfg
+    runtime_cfg["selected_audio_device"] = _selected_audio_info(config)
+    runtime_cfg["configured_camera_bindings"] = _configured_camera_bindings(config)
     runtime_cfg["requirements_passed"] = True
     runtime_cfg["detector_backend_active"] = detector_status.get("active_backend", "unknown")
     runtime_cfg["detector_backend_degraded"] = bool(detector_status.get("degraded", False))
     runtime_cfg["detector_backend_reason"] = detector_status.get("reason", "")
     runtime_cfg["detector_backend_per_camera"] = detector_status.get("per_camera_active_backend", [])
     runtime_cfg["led_hid_runtime"] = led_hid_status
+    logger.emit(
+        "info",
+        "main.run",
+        "resolved_bindings",
+        {
+            "audio_device": runtime_cfg.get("selected_audio_device", {}),
+            "camera_bindings": runtime_cfg.get("configured_camera_bindings", []),
+            "camera_calibration_overlay": runtime_cfg.get("camera_calibration_overlay", {}),
+        },
+    )
     threads.extend(_start_parent_modules(bus, config, logger, stop_event))
     if runtime_process_mode(config) == "multiprocess":
         threads.extend(start_multiprocess_runtime(bus, config, logger, stop_event))

@@ -36,25 +36,26 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import queue
 import socket
 import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 import cv2
 
+from focusfield.vision.calibration.runtime_overlay import (
+    apply_camera_calibration,
+    load_camera_calibration,
+    save_camera_calibration,
+)
 from focusfield.ui.views.live import live_page
 
 _WS_MAGIC = b"258EAFA5-E914-47DA-95CA-5AB5DC69C85E"
-
-_CAMERA_CALIBRATION_FILE = "camera_calibration.json"
 
 
 def _ws_send_text(sock: socket.socket, text: str) -> None:
@@ -161,36 +162,14 @@ def _recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
     return bytes(buf)
 
 
-def _get_camera_calibration_path() -> Path:
-    """Return the path to the camera calibration sidecar file."""
-    return Path(os.getcwd()) / _CAMERA_CALIBRATION_FILE
-
-
 def _load_camera_calibration(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Load camera calibration from sidecar file, falling back to config defaults."""
-    cal_path = _get_camera_calibration_path()
-    if cal_path.exists():
-        try:
-            with open(cal_path, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-    # Build defaults from config
-    cameras_cfg = config.get("video", {}).get("cameras", [])
-    cameras: List[Dict[str, Any]] = []
-    for idx, cam in enumerate(cameras_cfg):
-        cameras.append({
-            "id": cam.get("id", f"cam{idx}"),
-            "yaw_offset_deg": cam.get("yaw_offset_deg", 0),
-        })
-    return {"cameras": cameras}
+    calibration, _meta = load_camera_calibration(config)
+    return calibration
 
 
-def _save_camera_calibration(data: Dict[str, Any]) -> None:
-    """Write camera calibration to the sidecar file."""
-    cal_path = _get_camera_calibration_path()
-    with open(cal_path, "w") as f:
-        json.dump(data, f, indent=2)
+def _save_camera_calibration(data: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+    """Write normalized camera calibration to the sidecar file."""
+    return save_camera_calibration(data, config)
 
 
 class UIState:
@@ -419,7 +398,23 @@ def start_ui_server(
                     self.end_headers()
                     self.wfile.write(json.dumps({"status": "error", "message": "invalid JSON"}).encode("utf-8"))
                     return
-                _save_camera_calibration(body)
+                normalized = _save_camera_calibration(body, config)
+                apply_camera_calibration(config, normalized)
+                _loaded, overlay_meta = load_camera_calibration(config)
+                runtime_cfg = config.setdefault("runtime", {})
+                if not isinstance(runtime_cfg, dict):
+                    runtime_cfg = {}
+                    config["runtime"] = runtime_cfg
+                runtime_cfg["camera_calibration_overlay"] = {
+                    **overlay_meta,
+                    "applied_camera_ids": [
+                        str(item.get("id", ""))
+                        for item in normalized.get("cameras", [])
+                        if isinstance(item, dict)
+                    ],
+                    "cameras": normalized.get("cameras", []),
+                }
+                bus.publish("vision.camera_calibration", normalized)
                 resp = json.dumps({"status": "ok"}).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

@@ -50,7 +50,7 @@ def main() -> None:
     print(f"Using device_index={device_index}")
 
     print("\n=== Step A: tap test (channel order) ===")
-    order = _tap_test(
+    order, tap_debug = _tap_test(
         device_index=device_index,
         channels=args.channels,
         sample_rate=args.sample_rate,
@@ -58,6 +58,10 @@ def main() -> None:
         tap_count=args.tap_count,
     )
     print(f"Suggested channel_order: {order}")
+    if tap_debug:
+        print("Tap diagnostics:")
+        for line in tap_debug:
+            print("  " + line)
 
     print("\n=== Step B: orientation test (yaw_offset_deg) ===")
     print("Place a speaker directly in front of cam0 (global 0°), then press Enter.")
@@ -112,24 +116,45 @@ def _resolve_device(device: Optional[str], channels: int) -> int:
     return _default_input_index()
 
 
-def _tap_test(device_index: int, channels: int, sample_rate: int, seconds: float, tap_count: int) -> List[int]:
+def _tap_test(
+    device_index: int,
+    channels: int,
+    sample_rate: int,
+    seconds: float,
+    tap_count: int,
+) -> Tuple[List[int], List[str]]:
     observed: List[int] = []
+    debug: List[str] = []
     remaining = set(range(channels))
     for tap_idx in range(tap_count):
         print(f"Tap mic #{tap_idx} now (clockwise). Press Enter when ready.")
         input()
-        data = sd.rec(int(seconds * sample_rate), samplerate=sample_rate, channels=channels, dtype="float32", device=device_index)
-        sd.wait()
-        x = np.asarray(data)
-        rms = np.sqrt(np.mean(x**2, axis=0))
+        rms = _record_rms(device_index=device_index, channels=channels, sample_rate=sample_rate, seconds=seconds)
         # Prefer channels not already assigned.
         best = int(np.argmax(np.where(np.array([i in remaining for i in range(channels)]), rms, -1.0)))
         observed.append(best)
         remaining.discard(best)
         print(f"Detected channel {best} (rms={rms[best]:.6f})")
-    # Append any remaining channels (e.g. center) in numeric order.
-    observed.extend(sorted(remaining))
-    return observed
+        debug.append(f"ring tap {tap_idx}: channel={best} rms={rms[best]:.6f}")
+
+    extra_index = 0
+    while remaining:
+        label = "center mic" if len(remaining) == 1 else f"remaining mic #{extra_index}"
+        print(f"Tap {label} now. Press Enter when ready.")
+        input()
+        rms = _record_rms(device_index=device_index, channels=channels, sample_rate=sample_rate, seconds=seconds)
+        remaining_scores = {idx: float(rms[idx]) for idx in sorted(remaining)}
+        best = max(remaining_scores, key=remaining_scores.get)
+        global_best = int(np.argmax(rms))
+        observed.append(best)
+        remaining.discard(best)
+        print(f"Detected {label} on channel {best} (rms={rms[best]:.6f}, global_best={global_best})")
+        debug.append(
+            f"{label}: channel={best} rms={rms[best]:.6f} "
+            f"global_best={global_best} remaining_scores={remaining_scores}"
+        )
+        extra_index += 1
+    return observed, debug
 
 
 def _default_input_index() -> int:
@@ -140,6 +165,13 @@ def _default_input_index() -> int:
     if default_idx_int < 0:
         raise RuntimeError("No valid default input device available. Select an input device in sounddevice settings or pass --device.")
     return default_idx_int
+
+
+def _record_rms(device_index: int, channels: int, sample_rate: int, seconds: float) -> np.ndarray:
+    data = sd.rec(int(seconds * sample_rate), samplerate=sample_rate, channels=channels, dtype="float32", device=device_index)
+    sd.wait()
+    x = np.asarray(data)
+    return np.sqrt(np.mean(x**2, axis=0))
 
 
 def _orientation_test(

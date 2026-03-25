@@ -8,9 +8,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import sounddevice as sd
 import yaml
 
+from focusfield.audio.devices import is_raw_array_device, is_raw_array_ready, list_input_devices
 from focusfield.platform.hardware_probe import (
     collect_camera_sources,
     is_capture_node,
@@ -251,28 +251,12 @@ def _camera_paths_from_indices(
 
 
 def detect_audio() -> tuple[Optional[int], int, str]:
-    selected_index = None
-    selected_channels = 0
-    selected_name = ""
-
-    for i, device in enumerate(sd.query_devices()):
-        max_in = int(device.get("max_input_channels") or 0)
-        if max_in <= 0:
-            continue
-        name = str(device.get("name", ""))
-        if selected_index is None or (selected_name.find("miniDSP") < 0 and "miniDSP" in name):
-            selected_index = i
-            selected_channels = max_in
-            selected_name = name
-        if "miniDSP" in name and max_in >= 8:
-            selected_index = i
-            selected_channels = max_in
-            selected_name = name
-            break
-
-    if selected_index is None:
+    devices = list_input_devices()
+    if not devices:
         return None, 0, ""
-    return selected_index, selected_channels, selected_name
+    preferred = [device for device in devices if is_raw_array_device(device.name)]
+    chosen = max(preferred or devices, key=lambda device: (device.max_input_channels, -device.index))
+    return int(chosen.index), int(chosen.max_input_channels), str(chosen.name)
 
 
 def build_video_entries(base_cameras: List[dict], camera_sources: List[tuple[str, object]]) -> List[Dict[str, Any]]:
@@ -326,7 +310,7 @@ def _apply_runtime_requirements(
 
 
 def _uma8_mode_hint(name: str, channels: int, required: int) -> str:
-    if "minidsp" not in str(name).lower():
+    if not is_raw_array_device(name):
         return ""
     if channels >= required:
         return ""
@@ -337,7 +321,7 @@ def _uma8_mode_hint(name: str, channels: int, required: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-config", default="configs/full_3cam_8mic_pi_prod.yaml", help="Template config to patch.")
+    parser.add_argument("--base-config", default="configs/full_3cam_8mic_pi.yaml", help="Template config to patch.")
     parser.add_argument(
         "--output",
         default="configs/full_3cam_working_local.yaml",
@@ -450,10 +434,12 @@ def main() -> int:
 
     current_profile = str(audio_cfg.get("device_profile", "mic_array_8ch_default"))
     audio_cfg["channels"] = audio_channels
+    audio_cfg["device_index"] = int(audio_index)
+    audio_cfg.pop("device_id", None)
     audio_cfg["device_profile"] = pick_profile_name(audio_channels, profiles, current_profile)
     selector = dict(audio_cfg.get("device_selector", {}) or {})
     selector["require_input_channels"] = audio_channels
-    selector["match_substring"] = audio_name if audio_channels < 8 else "miniDSP"
+    selector["match_substring"] = audio_name
     audio_cfg["device_selector"] = selector
     capture = dict(audio_cfg.get("capture", {}) or {})
     capture["allow_mono_fallback"] = audio_channels <= 1
@@ -489,6 +475,7 @@ def main() -> int:
         f"profile={audio_cfg['device_profile']}"
     )
     print(f"selected_audio={audio_name!r} default_ch={audio_channels}")
+    print(f"selected_audio_raw_ready={is_raw_array_ready(audio_name, audio_channels, max(req_audio, 1))}")
     print(
         "camera_probe: "
         f"source_mode={args.camera_source} scope={camera_scope} "

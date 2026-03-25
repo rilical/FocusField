@@ -30,7 +30,8 @@ except Exception as exc:  # pragma: no cover
 else:
     sounddevice_error = None
 
-from focusfield.audio.devices import list_input_devices, resolve_input_device_index
+from focusfield.audio.devices import is_raw_array_device, is_raw_array_ready, list_input_devices, resolve_input_device_index
+from focusfield.core.config import load_config
 from focusfield.platform.hardware_probe import (
     collect_camera_sources,
     is_capture_node,
@@ -41,6 +42,11 @@ from focusfield.platform.hardware_probe import (
 
 
 def _safe_yaml_load(path: Path) -> dict:
+    try:
+        data = load_config(str(path))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
     if yaml is None:
         return {}
     try:
@@ -222,8 +228,9 @@ def check_audio(config: dict) -> tuple[int, dict[str, Any]]:
     details["selected_index"] = selected_idx
     details["selected_channels"] = selected_channels
     details["selected_name"] = selected_name
-    details["uma8_raw_ready"] = bool(selected_channels >= 8 and "minidsp" in selected_name.lower())
+    details["uma8_raw_ready"] = bool(is_raw_array_ready(selected_name, selected_channels, 8))
     print(f"Selected input index: {selected_idx}")
+    print(f"Selected input name: {selected_name!r}")
     print(f"UMA-8 RAW 8ch ready: {details['uma8_raw_ready']}")
     return 0, details
 
@@ -528,8 +535,8 @@ def main() -> int:
     if required_audio_channels > 0 and observed_audio_channels < required_audio_channels:
         selected_name = str(audio_details.get("selected_name", ""))
         hint = ""
-        if "minidsp" in selected_name.lower() and required_audio_channels >= 8:
-            hint = " hint: miniDSP UMA-8 appears in 2ch DSP mode; switch to RAW firmware for 8ch."
+        if is_raw_array_device(selected_name) and required_audio_channels >= 8:
+            hint = " hint: the raw array device appears to be in 2ch mode; switch to RAW firmware for 8ch."
         contract_failures.append(
             f"required audio_channels={required_audio_channels} but selected channels={observed_audio_channels} "
             f"(index={audio_details.get('selected_index')}, name={selected_name!r}){hint}"
@@ -560,6 +567,13 @@ def main() -> int:
         camera_yaw_map.append({"id": cam_id, "yaw_offset_deg": yaw})
     camera_yaw_map_text = ", ".join(camera_yaws) if camera_yaws else "n/a"
     print("camera_yaw_map=" + camera_yaw_map_text)
+    overlay_cfg = config.get("runtime", {}).get("camera_calibration_overlay", {}) if isinstance(config, dict) else {}
+    if isinstance(overlay_cfg, dict):
+        print(
+            "camera_calibration_overlay="
+            f"active={bool(overlay_cfg.get('active', False))} "
+            f"path={overlay_cfg.get('path', '')}"
+        )
     profile_name, mic_yaw = _load_mic_profile_yaw(config)
     if profile_name:
         if mic_yaw is None:
@@ -641,6 +655,7 @@ def main() -> int:
         "alignment_summary": {
             "camera_yaw_map": camera_yaw_map,
             "camera_yaw_map_text": camera_yaw_map_text,
+            "camera_calibration_overlay": overlay_cfg if isinstance(overlay_cfg, dict) else {},
             "mic_profile": profile_name,
             "mic_yaw_offset_deg": mic_yaw,
             "require_calibrated_mic_yaw": bool(require_calibrated_mic_yaw),

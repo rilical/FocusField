@@ -40,6 +40,8 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from focusfield.vision.calibration.runtime_overlay import apply_camera_calibration_sidecar
+
 
 def load_config(path: str) -> Dict[str, Any]:
     """Load YAML config and apply defaults."""
@@ -48,6 +50,7 @@ def load_config(path: str) -> Dict[str, Any]:
     defaults = _default_config()
     merged = _merge_dicts(defaults, data)
     _apply_thresholds_preset(merged, path)
+    apply_camera_calibration_sidecar(merged)
     if bool(get_path(merged, "runtime.enable_validation", False)):
         errors = validate_config(merged)
         if errors:

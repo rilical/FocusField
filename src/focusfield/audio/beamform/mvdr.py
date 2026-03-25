@@ -250,7 +250,9 @@ def start_mvdr(
                         health_scores, health_trust = channel_health_vectors(last_mic_health, x.shape[1])
                         active_idx = _active_channels(health_scores, health_trust, min_active_score)
                         if active_idx.size == 0:
-                            active_idx = np.arange(x.shape[1], dtype=np.int64)
+                            quality = np.clip(health_scores, 0.0, 1.0) * np.clip(0.10 + 0.90 * health_trust, 0.0, 1.0)
+                            best_idx = int(np.argmax(quality)) if quality.size else 0
+                            active_idx = np.asarray([best_idx], dtype=np.int64)
 
                         target_bearing = _select_target_bearing(last_lock, t_ns, last_target, use_last_lock_ms)
                         if target_bearing is None:
@@ -720,7 +722,14 @@ def _frame_fft_from_msg(frame_msg: Dict[str, Any], x: np.ndarray, nfft: int, cha
 
 def _active_channels(scores: np.ndarray, trust: np.ndarray, min_active_score: float) -> np.ndarray:
     active = np.where((scores >= float(min_active_score)) & (trust >= 0.2))[0]
-    return np.asarray(active, dtype=np.int64)
+    if active.size > 0:
+        return np.asarray(active, dtype=np.int64)
+    score_only = np.where(scores >= float(min_active_score))[0]
+    if score_only.size > 0:
+        return np.asarray(score_only, dtype=np.int64)
+    quality = np.clip(scores, 0.0, 1.0) * np.clip(0.10 + 0.90 * trust, 0.0, 1.0)
+    viable = np.where(quality > 0.0)[0]
+    return np.asarray(viable, dtype=np.int64)
 
 
 def _subset_average(x: np.ndarray, active_idx: np.ndarray) -> np.ndarray:

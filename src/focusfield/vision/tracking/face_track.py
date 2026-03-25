@@ -112,6 +112,25 @@ class CameraTracker:
         self._bearing_model = str(camera_cfg.get("bearing_model", "linear")).lower()
         self._bearing_lut = _load_bearing_lut(camera_cfg.get("bearing_lut_path"), camera_id, logger)
 
+    def apply_calibration(self, calibration: Dict[str, Any]) -> Dict[str, Any]:
+        self._camera_cfg["yaw_offset_deg"] = float(calibration.get("yaw_offset_deg", self._camera_cfg.get("yaw_offset_deg", 0.0)) or 0.0)
+        self._camera_cfg["bearing_offset_deg"] = float(
+            calibration.get("bearing_offset_deg", self._camera_cfg.get("bearing_offset_deg", 0.0)) or 0.0
+        )
+        bearing_model = calibration.get("bearing_model")
+        if bearing_model:
+            self._bearing_model = str(bearing_model).lower()
+            self._camera_cfg["bearing_model"] = self._bearing_model
+        bearing_lut_path = calibration.get("bearing_lut_path")
+        if isinstance(bearing_lut_path, str) and bearing_lut_path != self._camera_cfg.get("bearing_lut_path"):
+            self._camera_cfg["bearing_lut_path"] = bearing_lut_path
+            self._bearing_lut = _load_bearing_lut(bearing_lut_path, self._camera_id, self._logger)
+        return {
+            "camera_id": self._camera_id,
+            "yaw_offset_deg": float(self._camera_cfg.get("yaw_offset_deg", 0.0) or 0.0),
+            "bearing_offset_deg": float(self._camera_cfg.get("bearing_offset_deg", 0.0) or 0.0),
+        }
+
     def process_frame(self, frame_msg: Dict[str, Any]) -> List[Dict[str, Any]]:
         frame = frame_msg["data"]
         height, width = frame.shape[:2]
@@ -397,6 +416,7 @@ def start_face_tracking(
     stop_event: threading.Event,
 ) -> threading.Thread:
     cameras = config.get("video", {}).get("cameras", [])
+    q_calibration = bus.subscribe("vision.camera_calibration")
     queues: Dict[str, queue.Queue] = {}
     trackers: Dict[str, CameraTracker] = {}
     latest_tracks: Dict[str, List[Dict[str, Any]]] = {}
@@ -421,6 +441,22 @@ def start_face_tracking(
         processed_cycles = 0
         next_stats_emit = time.time() + 1.0
         while not stop_event.is_set():
+            calibration_msg = _drain_latest(q_calibration)
+            if isinstance(calibration_msg, dict):
+                raw_cameras = calibration_msg.get("cameras", [])
+                applied: List[Dict[str, Any]] = []
+                if isinstance(raw_cameras, list):
+                    for item in raw_cameras:
+                        if not isinstance(item, dict):
+                            continue
+                        camera_id = str(item.get("id", "") or "").strip()
+                        tracker = trackers.get(camera_id)
+                        if tracker is None:
+                            continue
+                        applied.append(tracker.apply_calibration(item))
+                if applied:
+                    logger.emit("info", "vision.face_track", "camera_calibration_applied", {"cameras": applied})
+                    bus.publish("vision.face_tracks.debug", {"camera_calibration": applied})
             updated = False
             for camera_id, q in queues.items():
                 frame_msg = _drain_latest(q)

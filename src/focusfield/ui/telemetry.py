@@ -64,6 +64,7 @@ def start_telemetry(
     q_perf = bus.subscribe("runtime.perf")
     q_vad = bus.subscribe("audio.vad")
     q_mic_health = bus.subscribe("audio.mic_health")
+    q_camera_calibration = bus.subscribe("vision.camera_calibration")
     configured_cameras = [
         cam.get("id", f"cam{idx}")
         for idx, cam in enumerate(config.get("video", {}).get("cameras", []))
@@ -165,6 +166,12 @@ def start_telemetry(
             mic_health_msg = _drain(q_mic_health)
             if mic_health_msg is not None:
                 state["mic_health"] = mic_health_msg
+            calibration_msg = _drain(q_camera_calibration)
+            if isinstance(calibration_msg, dict):
+                state["configured_camera_map"] = _merge_camera_map(
+                    state.get("configured_camera_map") or [],
+                    calibration_msg.get("cameras", []),
+                )
             log_event = _drain(q_logs)
             if log_event is not None:
                 logs: List[Dict[str, Any]] = state["logs"]
@@ -227,7 +234,10 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
         state.get("strict_requirements_passed", runtime_cfg.get("requirements_passed", False))
     )
     detector_backend_active = state.get("detector_backend_active") or runtime_cfg.get("detector_backend_active") or ""
-    audio_fallback_active = str(lock_state.get("mode", "") or "") == "AUDIO_ONLY"
+    beam_state = state.get("beam") or {}
+    if not isinstance(beam_state, dict):
+        beam_state = {}
+    audio_fallback_active = bool(beam_state.get("fallback_active", False)) or str(lock_state.get("mode", "") or "") == "AUDIO_ONLY"
     vision_debug = state.get("vision_debug") or {}
     if not isinstance(vision_debug, dict):
         vision_debug = {}
@@ -237,6 +247,7 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     active_face_cameras = sorted({face.get("camera_id") for face in faces if face.get("camera_id")})
     configured_cameras = [str(cam) for cam in (state.get("configured_cameras") or [])]
     cameras = configured_cameras if configured_cameras else active_face_cameras
+    mic_health_summary = _summarize_mic_health(state.get("mic_health") or {})
     return {
         "t_ns": now_ns(),
         "seq": seq,
@@ -277,6 +288,7 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
         ],
         "beamformer": state.get("beam"),
         "mic_health": state.get("mic_health") or {},
+        "mic_health_summary": mic_health_summary,
         "uma8_leds": {
             "enabled": bool(led_state.get("enabled", False)),
             "backend": led_state.get("backend", "none"),
@@ -319,5 +331,66 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "cameras": cameras,
             "active_face_cameras": active_face_cameras,
             "camera_map": state.get("configured_camera_map") or [],
+            "audio_device": runtime_cfg.get("selected_audio_device", {}),
+            "camera_calibration_overlay": runtime_cfg.get("camera_calibration_overlay", {}),
         },
+    }
+
+
+def _merge_camera_map(current: List[Dict[str, Any]], updates: Any) -> List[Dict[str, Any]]:
+    if not isinstance(current, list):
+        current = []
+    merged: List[Dict[str, Any]] = [dict(item) for item in current if isinstance(item, dict)]
+    by_id = {str(item.get("id", "")): item for item in merged}
+    if not isinstance(updates, list):
+        return merged
+    for item in updates:
+        if not isinstance(item, dict):
+            continue
+        camera_id = str(item.get("id", "") or "").strip()
+        if not camera_id:
+            continue
+        target = by_id.get(camera_id)
+        if target is None:
+            target = {"id": camera_id}
+            merged.append(target)
+            by_id[camera_id] = target
+        if "yaw_offset_deg" in item:
+            target["yaw_offset_deg"] = float(item.get("yaw_offset_deg", target.get("yaw_offset_deg", 0.0)) or 0.0)
+    return merged
+
+
+def _summarize_mic_health(mic_health: Dict[str, Any]) -> Dict[str, Any]:
+    entries = mic_health.get("channels", []) if isinstance(mic_health, dict) else []
+    if not isinstance(entries, list):
+        entries = []
+    dead_channels: List[int] = []
+    degraded_channels: List[int] = []
+    bad_channels: List[int] = []
+    weakest: List[Dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        channel_raw = entry.get("channel", -1)
+        channel = int(channel_raw if channel_raw is not None else -1)
+        if channel < 0:
+            continue
+        score = float(entry.get("score", 1.0) or 1.0)
+        bad_reason = str(entry.get("bad_reason", "") or "")
+        if bad_reason:
+            bad_channels.append(channel)
+        if "dead" in bad_reason or "dropout" in bad_reason:
+            dead_channels.append(channel)
+        elif bad_reason or score < 0.35:
+            degraded_channels.append(channel)
+        weakest.append({"channel": channel, "score": score, "bad_reason": bad_reason})
+    weakest = sorted(weakest, key=lambda item: item["score"])[:3]
+    return {
+        "dead_channels": dead_channels,
+        "degraded_channels": degraded_channels,
+        "bad_channels": bad_channels,
+        "active_channels": list(mic_health.get("active_channels", []) or []) if isinstance(mic_health, dict) else [],
+        "mean_score": float(mic_health.get("mean_score", 0.0) or 0.0) if isinstance(mic_health, dict) else 0.0,
+        "mean_trust": float(mic_health.get("mean_trust", 0.0) or 0.0) if isinstance(mic_health, dict) else 0.0,
+        "weakest_channels": weakest,
     }

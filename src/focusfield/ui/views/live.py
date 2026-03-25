@@ -1112,6 +1112,12 @@ function updateHeader(data) {
   if (data && !data.strict_requirements_passed) badges.push('NON_STRICT');
   const visionDebug = (data && data.vision_debug) || {};
   if (visionDebug.detector_degraded) badges.push('DETECTOR_DEGRADED');
+  const micSummary = (data && data.mic_health_summary) || {};
+  if (Array.isArray(micSummary.dead_channels) && micSummary.dead_channels.length > 0) {
+    badges.push('MIC_DEAD ' + micSummary.dead_channels.join(','));
+  } else if (Array.isArray(micSummary.degraded_channels) && micSummary.degraded_channels.length > 0) {
+    badges.push('MIC_DEG ' + micSummary.degraded_channels.join(','));
+  }
   const dropCounts = (data && data.bus_drop_counts_window) || {};
   const totalDrops = Object.values(dropCounts).reduce((acc, v) => acc + Number(v || 0), 0);
   if (totalDrops > 0) badges.push('QUEUE_DROP ' + totalDrops);

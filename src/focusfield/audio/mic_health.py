@@ -334,8 +334,16 @@ def channel_health_vectors(mic_health: Optional[Dict[str, Any]], channels: int) 
         idx = int(entry.get("channel", -1) or -1)
         if idx < 0 or idx >= channels:
             continue
-        scores[idx] = float(entry.get("score", 1.0) or 1.0)
-        trust[idx] = float(entry.get("trust", 1.0) or 1.0)
+        score_value = entry.get("score")
+        trust_value = entry.get("trust")
+        bad_reason = str(entry.get("bad_reason", "") or "")
+        if score_value is not None:
+            scores[idx] = float(score_value)
+        if trust_value is not None:
+            trust[idx] = float(trust_value)
+        if "dead" in bad_reason or "dropout" in bad_reason:
+            scores[idx] = 0.0
+            trust[idx] = 0.0
     return np.clip(scores, 0.0, 1.0).astype(np.float32), np.clip(trust, 0.0, 1.0).astype(np.float32)
 
 

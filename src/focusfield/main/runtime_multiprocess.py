@@ -54,6 +54,7 @@ def start_multiprocess_runtime(
     audio_out = ctx.Queue(maxsize=queue_depth)
     audio_in = ctx.Queue(maxsize=queue_depth)
     vision_out = ctx.Queue(maxsize=queue_depth)
+    vision_in = ctx.Queue(maxsize=queue_depth)
 
     req = runtime_requirements(config)
     audio_proc = ctx.Process(
@@ -65,7 +66,7 @@ def start_multiprocess_runtime(
     vision_proc = ctx.Process(
         target=_worker_main,
         name="focusfield-vision",
-        args=("vision", copy.deepcopy(config), req, queue_depth, use_shared_memory, vision_out, None, stop_flag),
+        args=("vision", copy.deepcopy(config), req, queue_depth, use_shared_memory, vision_out, vision_in, stop_flag),
         daemon=True,
     )
     audio_proc.start()
@@ -87,6 +88,7 @@ def start_multiprocess_runtime(
         _start_parent_reader(bus, logger, stop_event, stop_flag, audio_out, "audio", use_shared_memory),
         _start_parent_reader(bus, logger, stop_event, stop_flag, vision_out, "vision", use_shared_memory),
         _start_parent_forwarder(bus, stop_event, audio_in, "fusion.target_lock"),
+        _start_parent_forwarder(bus, stop_event, vision_in, "vision.camera_calibration"),
         _start_process_supervisor(logger, stop_event, stop_flag, {"audio": audio_proc, "vision": vision_proc}),
     ]
     return threads
@@ -297,7 +299,7 @@ def _start_parent_forwarder(bus: Any, stop_event: threading.Event, in_queue: mp.
                 msg = q_topic.get(timeout=0.1)
             except queue.Empty:
                 continue
-            _put_queue_drop_oldest(in_queue, msg)
+            _put_queue_drop_oldest(in_queue, {"topic": topic, "msg": msg})
 
     thread = threading.Thread(target=_run, name=f"runtime-mp-fwd-{topic.replace('.', '-')}", daemon=True)
     thread.start()

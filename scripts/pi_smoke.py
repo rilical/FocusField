@@ -7,7 +7,7 @@ What it does:
   - Runs the full pipeline for ~10s and writes enhanced.wav via file sink.
 
 Run:
-  python3 scripts/pi_smoke.py --config configs/full_3cam_8mic_pi_prod.yaml
+  python3 scripts/pi_smoke.py --config configs/full_3cam_8mic_pi.yaml
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def _runtime_requirements(config: dict) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="FocusField Pi smoke")
-    parser.add_argument("--config", default="configs/full_3cam_8mic_pi_prod.yaml")
+    parser.add_argument("--config", default="configs/full_3cam_8mic_pi.yaml")
     parser.add_argument("--run-seconds", type=float, default=10.0)
     parser.add_argument("--strict", action="store_true", help="Require strict camera/audio requirements while running.")
     parser.add_argument(

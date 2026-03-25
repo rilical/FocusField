@@ -39,6 +39,15 @@ try:
 except ImportError:  # pragma: no cover
     sd = None
 
+_RAW_ARRAY_NAME_HINTS = (
+    "minidsp",
+    "micarray",
+    "mic array",
+    "uma8",
+    "uma-8",
+    "raw spk",
+)
+
 
 @dataclass(frozen=True)
 class AudioDeviceInfo:
@@ -79,6 +88,16 @@ def list_input_devices() -> List[AudioDeviceInfo]:
             )
         )
     return devices
+
+
+def is_raw_array_device(name: str) -> bool:
+    lowered = str(name or "").strip().lower()
+    return any(token in lowered for token in _RAW_ARRAY_NAME_HINTS)
+
+
+def is_raw_array_ready(name: str, channels: int, required_channels: int = 8) -> bool:
+    minimum = max(1, int(required_channels or 0))
+    return int(channels) >= minimum and is_raw_array_device(name)
 
 
 def resolve_input_device_index(config: Dict[str, Any], logger: Any = None) -> Optional[int]:
@@ -170,12 +189,16 @@ def _coerce_device_index(value: object) -> Optional[int]:
 def _best_by_channels(devices: List[AudioDeviceInfo], required_channels: int) -> Optional[AudioDeviceInfo]:
     if not devices:
         return None
+    preferred = [device for device in devices if is_raw_array_device(device.name)]
     if required_channels <= 0:
-        # Pick device with the most channels.
-        return max(devices, key=lambda d: d.max_input_channels)
+        candidates = preferred or devices
+        return max(candidates, key=lambda d: (d.max_input_channels, -d.index))
     eligible = [d for d in devices if d.max_input_channels >= required_channels]
+    preferred_eligible = [device for device in preferred if device.max_input_channels >= required_channels]
+    if preferred_eligible:
+        return max(preferred_eligible, key=lambda d: (d.max_input_channels, -d.index))
     if eligible:
-        return max(eligible, key=lambda d: d.max_input_channels)
+        return max(eligible, key=lambda d: (d.max_input_channels, -d.index))
     return None
 
 

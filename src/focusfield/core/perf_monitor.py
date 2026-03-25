@@ -72,6 +72,7 @@ def start_perf_monitor(
     q_worker = bus.subscribe("runtime.worker_loop")
     q_lock = bus.subscribe("fusion.target_lock")
     q_faces = bus.subscribe("vision.face_tracks")
+    q_beam = bus.subscribe("audio.beamformer.debug")
 
     started_t_ns = now_ns()
     stats: Dict[str, Any] = {
@@ -107,6 +108,10 @@ def start_perf_monitor(
     faces_present = False
     faces_absent_since_ns = started_t_ns
     face_reacquire_samples_ms: List[float] = []
+    beam_fallback_active = False
+    beam_fallback_windows = 0
+    last_queue_pressure_warning_s = 0.0
+    last_fallback_warning_s = 0.0
 
     def _drain_latest(q: queue.Queue) -> Optional[Dict[str, Any]]:
         item = None
@@ -139,6 +144,10 @@ def start_perf_monitor(
         nonlocal faces_present
         nonlocal faces_absent_since_ns
         nonlocal face_reacquire_samples_ms
+        nonlocal beam_fallback_active
+        nonlocal beam_fallback_windows
+        nonlocal last_queue_pressure_warning_s
+        nonlocal last_fallback_warning_s
         fh = None
         try:
             if path is not None:
@@ -219,6 +228,9 @@ def start_perf_monitor(
                     if (not present) and faces_present:
                         faces_absent_since_ns = face_t_ns
                     faces_present = present
+                beam_msg = _drain_latest(q_beam)
+                if isinstance(beam_msg, dict):
+                    beam_fallback_active = bool(beam_msg.get("fallback_active", False))
                 for worker in _drain_all(q_worker):
                     module = str(worker.get("module", "") or "").strip()
                     if not module:
@@ -269,6 +281,7 @@ def start_perf_monitor(
                     "worker_loops": {module: dict(values) for module, values in stats["worker_loops"].items()},
                     "fusion_debug": {},
                     "vision_debug": {},
+                    "beamformer": {"fallback_active": bool(beam_fallback_active)},
                     "bus": bus_summary,
                     "bus_drop_counts_window": dict(bus_summary.get("drop_delta", {})) if isinstance(bus_summary, dict) else {},
                 }
@@ -288,6 +301,42 @@ def start_perf_monitor(
                     "face_reacquire_ms_p50": _percentile(face_reacquire_samples_ms, 50.0),
                     "face_reacquire_ms_p95": _percentile(face_reacquire_samples_ms, 95.0),
                 }
+                queue_drop_total = int(sum(snapshot["bus_drop_counts_window"].values()))
+                capture_overflow_window = int(
+                    snapshot["audio_capture"].get("status_input_overflow_window", 0) or 0
+                )
+                snapshot["queue_pressure"] = {
+                    "drop_total_window": queue_drop_total,
+                    "capture_overflow_window": capture_overflow_window,
+                }
+                if beam_fallback_active:
+                    beam_fallback_windows += 1
+                else:
+                    beam_fallback_windows = 0
+                if (queue_drop_total > 0 or capture_overflow_window > 0) and (now_s - last_queue_pressure_warning_s) >= 5.0:
+                    logger.emit(
+                        "warning",
+                        "core.perf_monitor",
+                        "queue_pressure",
+                        {
+                            "drop_total_window": queue_drop_total,
+                            "capture_overflow_window": capture_overflow_window,
+                            "drop_counts_window": snapshot["bus_drop_counts_window"],
+                        },
+                    )
+                    last_queue_pressure_warning_s = now_s
+                if beam_fallback_windows >= 3 and (now_s - last_fallback_warning_s) >= 5.0:
+                    logger.emit(
+                        "warning",
+                        "core.perf_monitor",
+                        "fallback_persistent",
+                        {
+                            "windows": beam_fallback_windows,
+                            "emit_hz": emit_hz,
+                            "fallback_active": True,
+                        },
+                    )
+                    last_fallback_warning_s = now_s
                 bus.publish("runtime.perf", snapshot)
                 if fh is not None:
                     fh.write(json.dumps(snapshot, sort_keys=True) + "\n")

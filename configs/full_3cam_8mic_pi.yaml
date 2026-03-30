@@ -193,7 +193,7 @@ vision:
     min_confidence: 0.6
     iou_threshold: 0.3
     max_missing_frames: 10
-    min_area: 800
+    min_area: 120
     min_neighbors: 6
     scale_factor: 1.15
     detect_width: 320

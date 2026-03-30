@@ -9,6 +9,10 @@ audio:
   sample_rate_hz: 48000
   block_size: 1024
 
+vision:
+  face:
+    min_area: 120
+
 video:
   cameras:
     - id: cam0
@@ -27,4 +31,3 @@ output:
     channels: 1
     device_selector:
       match_substring: USB
-

@@ -46,6 +46,7 @@ vision:
     allow_runtime_downloads: false
   face:
     backend: auto
+    min_area: 120
     detect_width: 416
     detect_every_n: 1
   mouth:

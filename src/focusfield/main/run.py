@@ -271,7 +271,8 @@ def _validate_face_detector_requirements(
                 and hasattr(cv2.FaceDetectorYN, "create")
             )
         )
-        haar_path = getattr(cv2.data, "haarcascades", "") + "haarcascade_frontalface_default.xml"
+        haar_root = getattr(getattr(cv2, "data", None), "haarcascades", "")
+        haar_path = str(haar_root or "") + "haarcascade_frontalface_default.xml"
         has_haar = bool(haar_path) and os.path.exists(haar_path)
     except Exception:
         has_yunet = False

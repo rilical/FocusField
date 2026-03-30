@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SERVICE_NAME=${1:-focusfield}
-CONFIG_PATH=${2:-configs/full_3cam_8mic_pi.yaml}
+CONFIG_PATH=${2:-configs/meeting_peripheral.yaml}
 SERVICE_USER=${3:-${SUDO_USER:-$(whoami)}}
 BOOT_CAMERA_SOURCE=${FOCUSFIELD_CAMERA_SOURCE:-by-path}
 BOOT_CAMERA_SCOPE=${FOCUSFIELD_CAMERA_SCOPE:-usb}
@@ -30,6 +30,13 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
+eval "$("$PYTHON_BIN" scripts/boot_validation.py --config "$CONFIG_PATH" --emit-shell-vars)"
+if ! "$PYTHON_BIN" scripts/boot_validation.py --config "$CONFIG_PATH" --validate-local-models; then
+  echo "Install validation failed: bundled model assets are missing or incomplete." >&2
+  echo "Set local paths for the YuNet and mouth-landmark models before installing the service." >&2
+  exit 1
+fi
+
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 BOOT_SCRIPT="$ROOT_DIR/scripts/focusfield_boot.sh"
 if [[ ! -x "$BOOT_SCRIPT" ]]; then
@@ -50,8 +57,16 @@ Description=FocusField pipeline
 After=multi-user.target
 After=systemd-udev-settle.service
 Wants=systemd-udev-settle.service
+EOF
+
+if [[ "$FOCUSFIELD_BOOT_AUDIO_ONLY" != "1" ]]; then
+  sudo tee -a "$UNIT_FILE" >/dev/null <<EOF
 Wants=network-online.target
 After=network-online.target
+EOF
+fi
+
+sudo tee -a "$UNIT_FILE" >/dev/null <<EOF
 
 [Service]
 Type=simple

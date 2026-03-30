@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import fnmatch
 import multiprocessing as mp
 import os
 import queue
@@ -87,8 +88,8 @@ def start_multiprocess_runtime(
     threads = [
         _start_parent_reader(bus, logger, stop_event, stop_flag, audio_out, "audio", use_shared_memory),
         _start_parent_reader(bus, logger, stop_event, stop_flag, vision_out, "vision", use_shared_memory),
-        _start_parent_forwarder(bus, stop_event, audio_in, "fusion.target_lock"),
-        _start_parent_forwarder(bus, stop_event, vision_in, "vision.camera_calibration"),
+        _start_parent_forwarder(bus, config, stop_event, audio_in, "fusion.target_lock"),
+        _start_parent_forwarder(bus, config, stop_event, vision_in, "vision.camera_calibration"),
         _start_process_supervisor(logger, stop_event, stop_flag, {"audio": audio_proc, "vision": vision_proc}),
     ]
     return threads
@@ -141,6 +142,7 @@ def _worker_main(
         stop_event,
         out_queue,
         role,
+        config,
         _worker_topics(role, config),
         queue_depth,
         use_shared_memory,
@@ -290,8 +292,15 @@ def _start_parent_reader(
     return thread
 
 
-def _start_parent_forwarder(bus: Any, stop_event: threading.Event, in_queue: mp.Queue, topic: str) -> threading.Thread:
+def _start_parent_forwarder(
+    bus: Any,
+    config: Dict[str, Any],
+    stop_event: threading.Event,
+    in_queue: mp.Queue,
+    topic: str,
+) -> threading.Thread:
     q_topic = bus.subscribe(topic)
+    policy = _topic_queue_policy(config, topic)
 
     def _run() -> None:
         while not stop_event.is_set():
@@ -299,7 +308,7 @@ def _start_parent_forwarder(bus: Any, stop_event: threading.Event, in_queue: mp.
                 msg = q_topic.get(timeout=0.1)
             except queue.Empty:
                 continue
-            _put_queue_drop_oldest(in_queue, {"topic": topic, "msg": msg})
+            _put_queue_with_policy(in_queue, {"topic": topic, "msg": msg}, policy)
 
     thread = threading.Thread(target=_run, name=f"runtime-mp-fwd-{topic.replace('.', '-')}", daemon=True)
     thread.start()
@@ -351,6 +360,7 @@ def _start_topic_forwarders(
     stop_event: threading.Event,
     out_queue: mp.Queue,
     role: str,
+    config: Dict[str, Any],
     topics: Iterable[str],
     queue_depth: int,
     use_shared_memory: bool,
@@ -358,6 +368,7 @@ def _start_topic_forwarders(
     threads: List[threading.Thread] = []
     for topic in topics:
         q_topic = bus.subscribe(topic)
+        policy = _topic_queue_policy(config, topic)
 
         def _run(q_local=q_topic, topic_name=topic) -> None:
             while not stop_event.is_set():
@@ -367,7 +378,7 @@ def _start_topic_forwarders(
                     continue
                 try:
                     payload = _encode_payload(msg) if use_shared_memory else msg
-                    _put_queue_drop_oldest(out_queue, {"topic": topic_name, "msg": payload})
+                    _put_queue_with_policy(out_queue, {"topic": topic_name, "msg": payload}, policy)
                 except Exception as exc:  # noqa: BLE001
                     logger.emit(
                         "warning",
@@ -415,11 +426,41 @@ def _start_stop_watcher(stop_event: threading.Event, stop_flag: mp.synchronize.E
     return thread
 
 
-def _put_queue_drop_oldest(q_obj: Any, msg: Any) -> None:
+def _topic_queue_policy(config: Dict[str, Any], topic: str) -> str:
+    bus_cfg = config.get("bus", {})
+    if not isinstance(bus_cfg, dict):
+        bus_cfg = {}
+    policies = bus_cfg.get("topic_queue_policies", {})
+    if not isinstance(policies, dict):
+        policies = {}
+    configured = policies.get(topic)
+    if configured is not None:
+        return _normalize_policy(configured)
+    wildcard_matches: list[tuple[str, Any]] = []
+    for key, value in policies.items():
+        if "*" in str(key) and fnmatch.fnmatch(topic, str(key)):
+            wildcard_matches.append((str(key), value))
+    if wildcard_matches:
+        _best_key, best_value = max(wildcard_matches, key=lambda item: len(item[0]))
+        return _normalize_policy(best_value)
+    return "drop_oldest"
+
+
+def _normalize_policy(value: Any) -> str:
+    policy = str(value or "drop_oldest").strip().lower()
+    if policy in {"drop_newest", "newest"}:
+        return "drop_newest"
+    return "drop_oldest"
+
+
+def _put_queue_with_policy(q_obj: Any, msg: Any, policy: str) -> None:
     try:
         q_obj.put_nowait(msg)
         return
     except queue.Full:
+        if policy == "drop_newest":
+            _cleanup_encoded_payload(msg)
+            return
         pass
     except Exception:
         try:
@@ -437,6 +478,10 @@ def _put_queue_drop_oldest(q_obj: Any, msg: Any) -> None:
         q_obj.put_nowait(msg)
     except Exception:
         _cleanup_encoded_payload(msg)
+
+
+def _put_queue_drop_oldest(q_obj: Any, msg: Any) -> None:
+    _put_queue_with_policy(q_obj, msg, "drop_oldest")
 
 
 def _encode_payload(msg: Any) -> Any:

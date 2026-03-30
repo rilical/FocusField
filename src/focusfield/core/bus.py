@@ -40,6 +40,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 
 DropHandler = Callable[[str, int], None]
+QueuePolicy = str
 
 
 class Bus:
@@ -50,10 +51,12 @@ class Bus:
         max_queue_depth: int = 8,
         on_drop: Optional[DropHandler] = None,
         topic_queue_depths: Optional[Dict[str, int]] = None,
+        topic_queue_policies: Optional[Dict[str, QueuePolicy]] = None,
     ) -> None:
         self._max_queue_depth = max_queue_depth
         self._on_drop = on_drop
         self._topic_queue_depths = dict(topic_queue_depths or {})
+        self._topic_queue_policies = {str(key): str(value) for key, value in dict(topic_queue_policies or {}).items()}
         self._lock = threading.Lock()
         self._stats_lock = threading.Lock()
         self._subscribers: Dict[str, List[queue.Queue[Any]]] = defaultdict(list)
@@ -126,17 +129,38 @@ class Bus:
             subscribers = list(self._subscribers.get(topic, []))
         with self._stats_lock:
             self._publish_counts[topic] += 1
+        policy = self._resolve_topic_policy(topic)
         for q in subscribers:
-            dropped = self._put_with_drop_oldest(q, msg)
+            dropped = self._put_with_policy(q, msg, policy)
             if dropped:
                 with self._stats_lock:
                     self._drop_counts[topic] += 1
                 if self._on_drop:
                     self._on_drop(topic, q.maxsize)
 
+    def _resolve_topic_policy(self, topic: str) -> str:
+        configured = self._topic_queue_policies.get(topic)
+        if configured is not None:
+            return self._normalize_policy(configured)
+        wildcard_matches: list[tuple[str, Any]] = []
+        for key, value in self._topic_queue_policies.items():
+            if "*" in str(key) and fnmatch.fnmatch(topic, str(key)):
+                wildcard_matches.append((str(key), value))
+        if wildcard_matches:
+            _best_key, best_value = max(wildcard_matches, key=lambda item: len(item[0]))
+            return self._normalize_policy(best_value)
+        return "drop_oldest"
+
     @staticmethod
-    def _put_with_drop_oldest(q: queue.Queue[Any], msg: Any) -> bool:
-        """Enqueue, dropping the oldest item on overflow.
+    def _normalize_policy(value: Any) -> str:
+        policy = str(value or "drop_oldest").strip().lower()
+        if policy in {"drop_newest", "newest"}:
+            return "drop_newest"
+        return "drop_oldest"
+
+    @staticmethod
+    def _put_with_policy(q: queue.Queue[Any], msg: Any, policy: str) -> bool:
+        """Enqueue, applying the configured overflow policy.
 
         Returns True when a drop occurred (even if enqueue succeeds).
         """
@@ -144,6 +168,8 @@ class Bus:
             q.put_nowait(msg)
             return False
         except queue.Full:
+            if policy == "drop_newest":
+                return True
             try:
                 q.get_nowait()
             except queue.Empty:

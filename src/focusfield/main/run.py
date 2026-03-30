@@ -66,6 +66,7 @@ from focusfield.vision.cameras import start_cameras
 from focusfield.vision.speaker_heatmap import start_speaker_heatmap
 from focusfield.vision.tracking.face_track import start_face_tracking
 from focusfield.main.runtime_multiprocess import start_multiprocess_runtime
+from focusfield.main.modes import KNOWN_RUNTIME_MODES, normalize_runtime_mode
 from focusfield.main.runtime_support import (
     apply_runtime_os_tuning,
     apply_runtime_thread_caps,
@@ -385,6 +386,32 @@ def _ensure_artifacts(config: Dict[str, Any]) -> Path:
     return run_dir
 
 
+def _configure_runtime_environment(config: Dict[str, Any]) -> None:
+    vision_cfg = config.get("vision", {})
+    if not isinstance(vision_cfg, dict):
+        vision_cfg = {}
+    audio_cfg = config.get("audio", {})
+    if not isinstance(audio_cfg, dict):
+        audio_cfg = {}
+    vision_models = vision_cfg.get("models", {})
+    if not isinstance(vision_models, dict):
+        vision_models = {}
+    audio_models = audio_cfg.get("models", {})
+    if not isinstance(audio_models, dict):
+        audio_models = {}
+    allow_downloads = bool(vision_models.get("allow_runtime_downloads", True)) and bool(
+        audio_models.get("allow_runtime_downloads", True)
+    )
+    os.environ["FOCUSFIELD_ALLOW_RUNTIME_DOWNLOADS"] = "1" if allow_downloads else "0"
+
+
+def _runtime_startup_cfg(config: Dict[str, Any]) -> Dict[str, Any]:
+    startup_cfg = config.get("runtime", {}).get("startup", {})
+    if not isinstance(startup_cfg, dict):
+        startup_cfg = {}
+    return startup_cfg
+
+
 def _install_crash_handlers(
     bus: Bus,
     run_dir: Path,
@@ -534,17 +561,20 @@ def _start_parent_modules(
     trace_thread = start_trace_recorder(bus, config, logger, stop_event)
     if trace_thread is not None:
         threads.append(trace_thread)
-    threads.append(start_telemetry(bus, config, logger, stop_event))
-    threads.append(start_ui_server(bus, config, logger, stop_event))
+    telemetry_thread = start_telemetry(bus, config, logger, stop_event)
+    if telemetry_thread is not None:
+        threads.append(telemetry_thread)
+    ui_thread = start_ui_server(bus, config, logger, stop_event)
+    if ui_thread is not None:
+        threads.append(ui_thread)
     return threads
 
 
-def _start_threaded_workers(
+def _start_audio_threaded_workers(
     bus: Any,
     config: Dict[str, Any],
     logger: LogEmitter,
     stop_event: threading.Event,
-    req: Dict[str, Any],
 ) -> List[threading.Thread]:
     threads: List[threading.Thread] = []
 
@@ -560,6 +590,28 @@ def _start_threaded_workers(
     doa_thread = start_srp_phat(bus, config, logger, stop_event)
     if doa_thread is not None:
         threads.append(doa_thread)
+    beam_thread = start_mvdr(bus, config, logger, stop_event)
+    if beam_thread is None:
+        beam_thread = start_delay_and_sum(bus, config, logger, stop_event)
+    if beam_thread is not None:
+        threads.append(beam_thread)
+
+    denoise_thread = start_denoise(bus, config, logger, stop_event)
+    if denoise_thread is not None:
+        threads.append(denoise_thread)
+    else:
+        threads.append(start_beamformed_passthrough(bus, logger, stop_event, "main.run"))
+    return threads
+
+
+def _start_vision_threaded_workers(
+    bus: Any,
+    config: Dict[str, Any],
+    logger: LogEmitter,
+    stop_event: threading.Event,
+    req: Dict[str, Any],
+) -> List[threading.Thread]:
+    threads: List[threading.Thread] = []
 
     threads.extend(
         start_cameras(
@@ -573,29 +625,73 @@ def _start_threaded_workers(
     )
     threads.append(start_face_tracking(bus, config, logger, stop_event))
     threads.append(start_speaker_heatmap(bus, config, logger, stop_event))
+    return threads
 
-    beam_thread = start_mvdr(bus, config, logger, stop_event)
-    if beam_thread is None:
-        beam_thread = start_delay_and_sum(bus, config, logger, stop_event)
-    if beam_thread is not None:
-        threads.append(beam_thread)
 
-    denoise_thread = start_denoise(bus, config, logger, stop_event)
-    if denoise_thread is not None:
-        threads.append(denoise_thread)
-    else:
-        threads.append(start_beamformed_passthrough(bus, logger, stop_event, "main.run"))
+def _start_threaded_workers(
+    bus: Any,
+    config: Dict[str, Any],
+    logger: LogEmitter,
+    stop_event: threading.Event,
+    req: Dict[str, Any],
+) -> List[threading.Thread]:
+    threads = _start_audio_threaded_workers(bus, config, logger, stop_event)
+    threads.extend(_start_vision_threaded_workers(bus, config, logger, stop_event, req))
+    return threads
 
+
+def _start_threaded_runtime_staged(
+    bus: Any,
+    config: Dict[str, Any],
+    logger: LogEmitter,
+    stop_event: threading.Event,
+    req: Dict[str, Any],
+) -> List[threading.Thread]:
+    threads = _start_audio_threaded_workers(bus, config, logger, stop_event)
+    startup_cfg = _runtime_startup_cfg(config)
+    vision_delay_ms = max(0, int(startup_cfg.get("vision_start_delay_ms", 0) or 0))
+
+    def _launch_vision() -> None:
+        if vision_delay_ms > 0:
+            time.sleep(vision_delay_ms / 1000.0)
+        if stop_event.is_set():
+            return
+        _start_vision_threaded_workers(bus, config, logger, stop_event, req)
+        logger.emit(
+            "info",
+            "main.run",
+            "vision_workers_started",
+            {
+                "delay_ms": vision_delay_ms,
+                "mode": str(config.get("runtime", {}).get("mode", "") or ""),
+            },
+        )
+
+    launcher = threading.Thread(target=_launch_vision, name="runtime-start-vision", daemon=True)
+    launcher.start()
+    threads.append(launcher)
     return threads
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="FocusField vision-first runner")
     parser.add_argument("--config", default="configs/mvp_1cam_4mic.yaml", help="Path to YAML config")
-    parser.add_argument("--mode", default="vision", help="Run mode (vision)")
+    parser.add_argument("--mode", default="", help=f"Run mode ({', '.join(KNOWN_RUNTIME_MODES)})")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    runtime_cfg = config.setdefault("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+        config["runtime"] = runtime_cfg
+    cli_mode = args.mode.strip().lower()
+    if cli_mode:
+        runtime_cfg["mode"] = cli_mode
+    try:
+        runtime_cfg["mode"] = normalize_runtime_mode(runtime_cfg.get("mode", "mac_loopback_dev"))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    _configure_runtime_environment(config)
     run_dir = _ensure_artifacts(config)
     bus_cfg = config.get("bus", {})
     if not isinstance(bus_cfg, dict):
@@ -656,9 +752,7 @@ def main() -> None:
     crash_event, crash_info = _install_crash_handlers(bus, run_dir, config, logger, stop_event)
 
     threads: List[threading.Thread] = []
-    if args.mode not in {"vision"}:
-        logger.emit("error", "main.run", "invalid_mode", {"mode": args.mode})
-        raise SystemExit(f"Unsupported mode: {args.mode}")
+    mode = str(runtime_cfg.get("mode", "mac_loopback_dev") or "mac_loopback_dev")
     try:
         _validate_runtime_requirements(config, logger)
     except RuntimeError as exc:
@@ -670,10 +764,6 @@ def main() -> None:
         led_hid_status = _validate_led_hid_runtime(config, logger, req)
     except RuntimeError as exc:
         raise SystemExit(str(exc))
-    runtime_cfg = config.setdefault("runtime", {})
-    if not isinstance(runtime_cfg, dict):
-        runtime_cfg = {}
-        config["runtime"] = runtime_cfg
     runtime_cfg["selected_audio_device"] = _selected_audio_info(config)
     runtime_cfg["configured_camera_bindings"] = _configured_camera_bindings(config)
     runtime_cfg["requirements_passed"] = True
@@ -712,9 +802,22 @@ def main() -> None:
     if runtime_process_mode(config) == "multiprocess":
         threads.extend(start_multiprocess_runtime(bus, config, logger, stop_event))
     else:
-        threads.extend(_start_threaded_workers(bus, config, logger, stop_event, req))
+        startup_cfg = _runtime_startup_cfg(config)
+        if bool(startup_cfg.get("audio_first", False)):
+            threads.extend(_start_threaded_runtime_staged(bus, config, logger, stop_event, req))
+        else:
+            threads.extend(_start_threaded_workers(bus, config, logger, stop_event, req))
 
-    logger.emit("info", "main.run", "started", {"mode": args.mode})
+    logger.emit(
+        "info",
+        "main.run",
+        "started",
+        {
+            "mode": mode,
+            "process_mode": runtime_process_mode(config),
+            "audio_first": bool(_runtime_startup_cfg(config).get("audio_first", False)),
+        },
+    )
     try:
         while not stop_event.is_set() and not crash_event.is_set():
             time.sleep(0.2)

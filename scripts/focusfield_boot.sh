@@ -64,16 +64,30 @@ fi
 export FOCUSFIELD_CONFIG_PATH="$CONFIG_PATH"
 export FOCUSFIELD_CONFIG_EFFECTIVE="$CONFIG_EFFECTIVE"
 
+eval "$("$PYTHON_BIN" scripts/boot_validation.py --config "$CONFIG_EFFECTIVE" --emit-shell-vars)"
+
+if [[ "$FOCUSFIELD_BOOT_AUDIO_ONLY" == "1" ]]; then
+  CAMERA_SOURCE=auto
+  CAMERA_SCOPE=any
+  REQUIRE_CAMERAS=0
+  REQUIRE_CHANNELS=1
+fi
+
 attempt=0
 while :; do
   attempt=$((attempt + 1))
-  if "$PYTHON_BIN" scripts/pi_preflight.py \
-    --config "$CONFIG_EFFECTIVE" \
-    --camera-source "$CAMERA_SOURCE" \
-    --camera-scope "$CAMERA_SCOPE" \
-    --require-cameras "$REQUIRE_CAMERAS" \
-    --require-audio-channels "$REQUIRE_CHANNELS" \
-    --strict; then
+  preflight_args=(
+    --config "$CONFIG_EFFECTIVE"
+    --camera-source "$CAMERA_SOURCE"
+    --camera-scope "$CAMERA_SCOPE"
+    --require-audio-channels "$REQUIRE_CHANNELS"
+  )
+  if [[ "$FOCUSFIELD_BOOT_AUDIO_ONLY" == "1" ]]; then
+    preflight_args+=(--audio-only)
+  else
+    preflight_args+=(--require-cameras "$REQUIRE_CAMERAS" --strict)
+  fi
+  if "$PYTHON_BIN" scripts/pi_preflight.py "${preflight_args[@]}"; then
     break
   fi
 
@@ -87,5 +101,4 @@ while :; do
 done
 
 "$PYTHON_BIN" -m focusfield.main.run \
-  --config "$CONFIG_EFFECTIVE" \
-  --mode vision
+  --config "$CONFIG_EFFECTIVE"

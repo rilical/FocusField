@@ -39,6 +39,7 @@ import queue
 import threading
 import time
 import urllib.request
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -77,6 +78,8 @@ class CameraTracker:
             iou_threshold=float(face_cfg.get("iou_threshold", 0.3)),
             max_missing_frames=int(track_cfg.get("max_missing_frames", face_cfg.get("max_missing_frames", 10))),
             smoothing_alpha=float(track_cfg.get("smoothing_alpha", 0.6)),
+            center_gate_px=float(track_cfg.get("center_gate_px", 180.0) or 180.0),
+            velocity_alpha=float(track_cfg.get("velocity_alpha", 0.45) or 0.45),
         )
         self._mouth = MouthActivityEstimator(
             smoothing_alpha=float(mouth_cfg.get("smoothing_alpha", 0.75)),
@@ -97,6 +100,8 @@ class CameraTracker:
         self._yunet_model_path = face_cfg.get("yunet_model_path")
         self._init_mouth_model(mouth_cfg)
         self._mesh_frame_count = 0
+        self._visual_quality_floor = float(mouth_cfg.get("visual_quality_floor", 0.2) or 0.2)
+        self._visual_motion_weight = float(mouth_cfg.get("visual_motion_weight", 0.35) or 0.35)
         speak_on = float(thresholds.get("speak_on_threshold", 0.5))
         speak_off = float(thresholds.get("speak_off_threshold", 0.4))
         self._speak_on = speak_on
@@ -164,7 +169,7 @@ class CameraTracker:
             if _bbox_area(bbox) < self._min_area:
                 continue
             track_key = f"{self._camera_id}-{track.track_id}"
-            activity = self._estimate_activity(track_key, frame, bbox, width, height, mesh_faces)
+            visual = self._estimate_visual_state(track_key, frame, bbox, width, height, mesh_faces)
             speaking_tracker = self._speaking.get(track.track_id)
             if speaking_tracker is None:
                 speaking_tracker = SpeakingHysteresis(
@@ -174,7 +179,7 @@ class CameraTracker:
                     min_off_frames=self._speak_off_frames,
                 )
                 self._speaking[track.track_id] = speaking_tracker
-            speaking = speaking_tracker.update(activity)
+            speaking = speaking_tracker.update(float(visual.get("visual_speaking_prob", 0.0)))
             bearing = bearing_from_bbox(
                 bbox=bbox,
                 frame_width=width,
@@ -192,8 +197,12 @@ class CameraTracker:
                     "bbox": {"x": bbox[0], "y": bbox[1], "w": bbox[2], "h": bbox[3]},
                         "confidence": float(track.confidence),
                         "bearing_deg": bearing,
-                        "mouth_activity": activity,
-                        "visual_speaking_prob": activity,
+                        "mouth_activity": float(visual.get("mouth_activity", 0.0)),
+                        "visual_speaking_prob": float(visual.get("visual_speaking_prob", 0.0)),
+                        "visual_quality": float(visual.get("visual_quality", 0.0)),
+                        "motion_activity": float(visual.get("motion_activity", 0.0)),
+                        "landmark_presence": float(visual.get("landmark_presence", 0.0)),
+                        "visual_backend": str(visual.get("backend", "diff")),
                         "speaking": speaking,
                         "track_age_frames": int(track.age_frames),
                         "detector_backend": self._detector_kind,
@@ -222,7 +231,7 @@ class CameraTracker:
         if backend not in {"auto", "tflite", "facemesh", "diff"}:
             backend = "auto"
 
-        if backend in {"auto", "tflite"} and use_facemesh:
+        if backend in {"auto", "tflite"}:
             try:
                 self._tflite = TFLiteMouthEstimator(
                     min_activity=float(mouth_cfg.get("mesh_min_activity", 0.005)),
@@ -256,7 +265,7 @@ class CameraTracker:
                 self._mesh = None
                 self._logger.emit("warning", "vision.mouth_activity", "facemesh_unavailable", {"error": str(exc)})
 
-    def _estimate_activity(
+    def _estimate_visual_state(
         self,
         track_key: str,
         frame: np.ndarray,
@@ -264,19 +273,46 @@ class CameraTracker:
         width: int,
         height: int,
         mesh_faces: List[Dict[str, Any]],
-    ) -> float:
-        if self._tflite is not None and not _near_frame_edge(bbox, width, height, self._mesh_edge_margin):
+    ) -> Dict[str, Any]:
+        motion_activity = float(self._mouth.compute(track_key, frame, bbox))
+        near_edge = _near_frame_edge(bbox, width, height, self._mesh_edge_margin)
+        edge_quality = 0.6 if near_edge else 1.0
+        if self._tflite is not None and not near_edge:
             try:
-                tflite_activity = self._tflite.estimate_activity(frame, bbox)
+                tflite_state = self._tflite.estimate_state(frame, bbox)
             except Exception as exc:  # noqa: BLE001
                 self._logger.emit("warning", "vision.mouth_activity", "tflite_failed", {"error": str(exc)})
-                tflite_activity = None
-            if tflite_activity is not None:
-                return self._mouth.smooth(track_key, float(tflite_activity))
+                tflite_state = None
+            if tflite_state is not None:
+                return _visual_state_from_features(
+                    mouth_activity=float(tflite_state.get("activity", 0.0)),
+                    motion_activity=motion_activity,
+                    landmark_presence=float(tflite_state.get("presence", 0.0)),
+                    edge_quality=edge_quality,
+                    motion_weight=self._visual_motion_weight,
+                    quality_floor=self._visual_quality_floor,
+                    backend="tflite",
+                )
         mesh_match = _match_mesh_face(bbox, mesh_faces)
-        if mesh_match is not None and not _near_frame_edge(bbox, width, height, self._mesh_edge_margin):
-            return self._mouth.smooth(track_key, float(mesh_match.get("activity", 0.0)))
-        return self._mouth.compute(track_key, frame, bbox)
+        if mesh_match is not None and not near_edge:
+            return _visual_state_from_features(
+                mouth_activity=float(mesh_match.get("activity", 0.0)),
+                motion_activity=motion_activity,
+                landmark_presence=float(mesh_match.get("presence", 1.0)),
+                edge_quality=edge_quality,
+                motion_weight=self._visual_motion_weight,
+                quality_floor=self._visual_quality_floor,
+                backend=str(mesh_match.get("backend", "facemesh")),
+            )
+        return _visual_state_from_features(
+            mouth_activity=motion_activity,
+            motion_activity=motion_activity,
+            landmark_presence=0.0,
+            edge_quality=edge_quality,
+            motion_weight=1.0,
+            quality_floor=self._visual_quality_floor,
+            backend="diff",
+        )
 
     def _load_yunet_detector(self):
         if not hasattr(cv2, "FaceDetectorYN"):
@@ -562,6 +598,11 @@ def _ensure_yunet_model(model_path: Optional[str]) -> str:
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / "face_detection_yunet_2023mar.onnx"
     if not path.exists():
+        if not _runtime_downloads_allowed():
+            raise RuntimeError(
+                f"runtime model downloads disabled and YuNet model is missing: {path}. "
+                "Set vision.face.yunet_model_path to a bundled local asset."
+            )
         url = (
             "https://github.com/opencv/opencv_zoo/raw/main/models/"
             "face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -571,3 +612,36 @@ def _ensure_yunet_model(model_path: Optional[str]) -> str:
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"failed to download YuNet model: {exc}") from exc
     return str(path)
+
+
+def _visual_state_from_features(
+    mouth_activity: float,
+    motion_activity: float,
+    landmark_presence: float,
+    edge_quality: float,
+    motion_weight: float,
+    quality_floor: float,
+    backend: str,
+) -> Dict[str, Any]:
+    mouth = float(np.clip(mouth_activity, 0.0, 1.0))
+    motion = float(np.clip(motion_activity, 0.0, 1.0))
+    presence = float(np.clip(landmark_presence, 0.0, 1.0))
+    edge = float(np.clip(edge_quality, 0.0, 1.0))
+    motion_w = float(np.clip(motion_weight, 0.0, 1.0))
+    blended = ((1.0 - motion_w) * mouth) + (motion_w * motion)
+    presence_quality = max(presence, 0.4) if backend == "diff" else presence
+    quality = max(float(quality_floor), (0.7 * presence_quality) + (0.3 * edge))
+    visual_prob = float(np.clip((0.78 * blended) + (0.22 * quality), 0.0, 1.0))
+    return {
+        "mouth_activity": mouth,
+        "motion_activity": motion,
+        "landmark_presence": presence,
+        "visual_quality": float(np.clip(quality, 0.0, 1.0)),
+        "visual_speaking_prob": visual_prob,
+        "backend": backend,
+    }
+
+
+def _runtime_downloads_allowed() -> bool:
+    raw = str(os.environ.get("FOCUSFIELD_ALLOW_RUNTIME_DOWNLOADS", "1") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}

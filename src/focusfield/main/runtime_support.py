@@ -18,6 +18,9 @@ def build_bus(config: Dict[str, Any]) -> Bus:
     topic_queue_depths = bus_cfg.get("topic_queue_depths", {})
     if not isinstance(topic_queue_depths, dict):
         topic_queue_depths = {}
+    topic_queue_policies = bus_cfg.get("topic_queue_policies", {})
+    if not isinstance(topic_queue_policies, dict):
+        topic_queue_policies = {}
     parsed_topic_depths: Dict[str, int] = {}
     for key, value in topic_queue_depths.items():
         try:
@@ -27,6 +30,7 @@ def build_bus(config: Dict[str, Any]) -> Bus:
     return Bus(
         max_queue_depth=int(bus_cfg.get("max_queue_depth", 8)),
         topic_queue_depths=parsed_topic_depths,
+        topic_queue_policies={str(key): str(value) for key, value in topic_queue_policies.items()},
     )
 
 

@@ -78,6 +78,8 @@ class LockStateMachineTests(unittest.TestCase):
                 "track_id": "cam0-1",
                 "bearing_deg": 200.0,
                 "combined_score": 0.9,
+                "activity_score": 1.0,
+                "speaking_probability": 1.0,
                 "speaking": True,
                 "doa_peak_deg": 205.0,
                 "score_components": {"mouth_activity": 1.0, "doa_peak_score": 1.0},
@@ -86,6 +88,31 @@ class LockStateMachineTests(unittest.TestCase):
         msg = machine.update(cand, vad_state=None)
         self.assertEqual(msg["state"], "LOCKED")
         self.assertEqual(msg["mode"], "AV_LOCK")
+        self.assertEqual(msg["focus_score"], 0.9)
+        self.assertEqual(msg["activity_score"], 1.0)
+        self.assertEqual(msg["selection_mode"], "AV_LOCK")
+
+    def test_focus_score_beats_combined_score_alias(self) -> None:
+        config = {"fusion": {"thresholds": {"acquire_threshold": 0.40, "min_switch_interval_ms": 0}}}
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "cam0-1",
+                "bearing_deg": 25.0,
+                "focus_score": 0.87,
+                "combined_score": 0.12,
+                "activity_score": 0.62,
+                "speaking_probability": 0.62,
+                "speaking": True,
+                "doa_peak_deg": 25.0,
+                "score_components": {"visual_speaking_prob": 0.62, "doa_peak_score": 0.8},
+            }
+        ]
+        msg = machine.update(cand, vad_state=None)
+        self.assertEqual(msg["state"], "LOCKED")
+        self.assertAlmostEqual(msg["focus_score"], 0.87, places=6)
+        self.assertAlmostEqual(msg["confidence"], 0.87, places=6)
+        self.assertAlmostEqual(msg["activity_score"], 0.62, places=6)
 
 
 class AvAssociationSizingTests(unittest.TestCase):

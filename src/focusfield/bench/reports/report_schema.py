@@ -22,6 +22,10 @@ def create_report(
     drop_summary: dict[str, Any],
     lock_jitter: dict[str, Any],
     gates: dict[str, Any],
+    label_scene_metrics: Optional[list[dict[str, Any]]] = None,
+    label_summary: Optional[dict[str, Any]] = None,
+    conversation: Optional[dict[str, Any]] = None,
+    runtime: Optional[dict[str, Any]] = None,
     plots: Optional[dict[str, str]] = None,
 ) -> Dict[str, Any]:
     manifest_hash = _sha256_file(scene_manifest)
@@ -36,12 +40,16 @@ def create_report(
         },
         "summary": {
             "quality": quality_summary,
+            "labels": label_summary or {},
             "latency": latency_summary,
             "drops": drop_summary,
             "lock_jitter": lock_jitter,
+            "conversation": conversation or {},
+            "runtime": runtime or {},
             "gates": gates,
         },
         "scene_metrics": scene_metrics,
+        "label_scene_metrics": label_scene_metrics or [],
         "plots": plots or {},
     }
 

@@ -58,7 +58,7 @@ CONTRACT DETAILS (inline from src/focusfield/fusion/lock_state_machine.md):
 
 ## Priority policy
 
-- confidence_only: pick highest combined_score.
+- confidence_only: pick highest focus_score.
 - confidence_then_recency: break ties with recent speakers.
 - recency: prefer most recent speaker, break ties with confidence.
 - preferred_track_id overrides any policy when present in the candidate pool.
@@ -97,6 +97,9 @@ class LockStateMachine:
         self._target_bearing: Optional[float] = None
         self._target_mode: str = "NO_LOCK"
         self._last_score = 0.0
+        self._last_activity_score = 0.0
+        self._last_score_margin = 0.0
+        self._last_runner_up_score = 0.0
         self._last_seen_ns = 0
         self._last_speaking_ns = 0
         self._last_speaking_by_track: Dict[str, int] = {}
@@ -122,20 +125,7 @@ class LockStateMachine:
                     self._clear()
                     reason = "vad_silence"
                 self._seq += 1
-                return {
-                    "t_ns": t_ns,
-                    "seq": self._seq,
-                    "state": self._state,
-                    "mode": self._target_mode if self._state != "NO_LOCK" else "NO_LOCK",
-                    "target_id": self._target_id,
-                    "target_bearing_deg": self._target_bearing,
-                    "confidence": float(self._last_score) if self._state != "NO_LOCK" else 0.0,
-                    "reason": reason,
-                    "stability": {
-                        "hold_ms": self._hold_ms,
-                        "handoff_ms": self._handoff_min_ms,
-                    },
-                }
+                return self._build_output(t_ns, reason)
         if self._require_speaking and not (has_speaking or vad_speech):
             if self._state in {"LOCKED", "HOLD", "HANDOFF"} and self._within_speech_hold(t_ns):
                 reason = "silence_hold"
@@ -144,20 +134,7 @@ class LockStateMachine:
                 reason = "silence_drop"
                 self._clear()
             self._seq += 1
-            return {
-                "t_ns": t_ns,
-                "seq": self._seq,
-                "state": self._state,
-                "mode": self._target_mode if self._state != "NO_LOCK" else "NO_LOCK",
-                "target_id": self._target_id,
-                "target_bearing_deg": self._target_bearing,
-                "confidence": float(self._last_score) if self._state != "NO_LOCK" else 0.0,
-                "reason": reason,
-                "stability": {
-                    "hold_ms": self._hold_ms,
-                    "handoff_ms": self._handoff_min_ms,
-                },
-            }
+            return self._build_output(t_ns, reason)
 
         best = _best_candidate(
             candidates,
@@ -168,15 +145,17 @@ class LockStateMachine:
             self._last_speaking_by_track,
             self._recency_decay_ms,
         )
+        runner_up_score = _runner_up_focus_score(candidates, best)
         reason = "no_candidates"
 
         if self._state == "NO_LOCK":
             if best is None:
                 self._clear()
             else:
-                score = float(best.get("combined_score", 0.0))
+                score = _candidate_focus_score(best)
                 if score >= self._acquire:
                     if self._lock_to(best, t_ns):
+                        self._update_selected_metrics(best, runner_up_score)
                         reason = "acquired"
                     else:
                         reason = "switch_throttled"
@@ -187,6 +166,7 @@ class LockStateMachine:
                     self._target_id = str(best.get("track_id")) if best.get("track_id") is not None else None
                     self._target_bearing = float(best.get("bearing_deg", 0.0)) % 360.0
                     self._last_score = score
+                    self._update_selected_metrics(best, runner_up_score)
                     self._target_mode = _infer_mode(best)
                     reason = "acquire_start"
         elif self._state == "ACQUIRE":
@@ -198,9 +178,10 @@ class LockStateMachine:
                     self._clear()
                     reason = "acquire_timeout"
                 else:
-                    score = float(best.get("combined_score", 0.0))
+                    score = _candidate_focus_score(best)
                     if score >= self._acquire:
                         if self._lock_to(best, t_ns):
+                            self._update_selected_metrics(best, runner_up_score)
                             reason = "acquired"
                         else:
                             reason = "switch_throttled"
@@ -210,6 +191,7 @@ class LockStateMachine:
                         self._target_id = str(best.get("track_id")) if best.get("track_id") is not None else None
                         self._target_bearing = float(best.get("bearing_deg", 0.0)) % 360.0
                         self._last_score = score
+                        self._update_selected_metrics(best, runner_up_score)
                         self._target_mode = _infer_mode(best)
                         reason = "acquire_wait"
         else:
@@ -223,14 +205,19 @@ class LockStateMachine:
             elif best["track_id"] == self._target_id:
                 self._state = "LOCKED"
                 self._last_seen_ns = t_ns
-                self._last_score = float(best["combined_score"])
+                self._last_score = _candidate_focus_score(best)
+                self._update_selected_metrics(best, runner_up_score)
                 self._target_bearing = _smooth_angle(self._target_bearing, float(best.get("bearing_deg", 0.0)), self._bearing_alpha)
                 self._target_mode = _infer_mode(best)
                 reason = "maintain"
             else:
-                reason = self._maybe_handoff(best, t_ns)
+                reason = self._maybe_handoff(best, t_ns, runner_up_score)
 
         self._seq += 1
+        return self._build_output(t_ns, reason)
+
+    def _build_output(self, t_ns: int, reason: str) -> Dict[str, Any]:
+        focus_score = float(self._last_score) if self._state != "NO_LOCK" else 0.0
         return {
             "t_ns": t_ns,
             "seq": self._seq,
@@ -238,7 +225,13 @@ class LockStateMachine:
             "mode": self._target_mode if self._state != "NO_LOCK" else "NO_LOCK",
             "target_id": self._target_id,
             "target_bearing_deg": self._target_bearing,
-            "confidence": float(self._last_score) if self._state != "NO_LOCK" else 0.0,
+            "angle_deg": self._target_bearing,
+            "confidence": focus_score,
+            "focus_score": focus_score,
+            "activity_score": float(self._last_activity_score) if self._state != "NO_LOCK" else 0.0,
+            "selection_mode": self._target_mode if self._state != "NO_LOCK" else "NO_LOCK",
+            "score_margin": float(self._last_score_margin) if self._state != "NO_LOCK" else 0.0,
+            "runner_up_focus_score": float(self._last_runner_up_score) if self._state != "NO_LOCK" else 0.0,
             "reason": reason,
             "stability": {
                 "hold_ms": self._hold_ms,
@@ -254,7 +247,7 @@ class LockStateMachine:
         self._target_id = candidate["track_id"]
         self._target_bearing = _smooth_angle(self._target_bearing, float(candidate.get("bearing_deg", 0.0)), self._bearing_alpha)
         self._target_mode = _infer_mode(candidate)
-        self._last_score = float(candidate["combined_score"])
+        self._last_score = _candidate_focus_score(candidate)
         self._last_seen_ns = t_ns
         self._handoff_id = None
         self._handoff_start_ns = 0
@@ -262,12 +255,20 @@ class LockStateMachine:
         self._last_switch_ns = t_ns
         return True
 
+    def _update_selected_metrics(self, candidate: Dict[str, Any], runner_up_score: float) -> None:
+        self._last_activity_score = _candidate_activity_score(candidate)
+        self._last_runner_up_score = float(max(0.0, runner_up_score))
+        self._last_score_margin = max(0.0, _candidate_focus_score(candidate) - self._last_runner_up_score)
+
     def _clear(self) -> None:
         self._state = "NO_LOCK"
         self._target_id = None
         self._target_bearing = None
         self._target_mode = "NO_LOCK"
         self._last_score = 0.0
+        self._last_activity_score = 0.0
+        self._last_score_margin = 0.0
+        self._last_runner_up_score = 0.0
         self._last_seen_ns = 0
         self._last_speaking_ns = 0
         self._handoff_id = None
@@ -288,8 +289,8 @@ class LockStateMachine:
             if cand.get("speaking") or _candidate_speaking_probability(cand) >= self._speak_on:
                 self._last_speaking_by_track[str(track_id)] = t_ns
 
-    def _maybe_handoff(self, best: Dict[str, Any], t_ns: int) -> str:
-        score = float(best["combined_score"])
+    def _maybe_handoff(self, best: Dict[str, Any], t_ns: int, runner_up_score: float) -> str:
+        score = _candidate_focus_score(best)
         if score < self._drop and not self._within_hold(t_ns):
             self._clear()
             return "drop_low_confidence"
@@ -300,6 +301,7 @@ class LockStateMachine:
             return "handoff_start"
         if (t_ns - self._handoff_start_ns) >= int(self._handoff_min_ms * 1_000_000) and score >= self._acquire:
             if self._lock_to(best, t_ns):
+                self._update_selected_metrics(best, runner_up_score)
                 return "handoff_commit"
             self._state = "LOCKED"
             return "switch_throttled"
@@ -370,15 +372,15 @@ def _best_candidate(
             pool,
             key=lambda cand: (
                 _priority_score(cand, policy, preferred_track_id, last_speaking_by_track, recency_decay_ms),
-                float(cand.get("combined_score", 0.0)),
+                _candidate_focus_score(cand),
             ),
         )
     if policy == "confidence_only":
-        return max(pool, key=lambda cand: float(cand.get("combined_score", 0.0)))
+        return max(pool, key=_candidate_focus_score)
     return max(
         pool,
         key=lambda cand: (
-            float(cand.get("combined_score", 0.0)),
+            _candidate_focus_score(cand),
             _priority_score(cand, policy, preferred_track_id, last_speaking_by_track, recency_decay_ms),
         ),
     )
@@ -465,3 +467,29 @@ def _candidate_speaking_probability(candidate: Dict[str, Any]) -> float:
     if probability > 1.0:
         return 1.0
     return probability
+
+
+def _candidate_focus_score(candidate: Dict[str, Any]) -> float:
+    raw = candidate.get("focus_score", candidate.get("combined_score", 0.0))
+    try:
+        score = float(raw or 0.0)
+    except Exception:
+        return 0.0
+    return float(max(0.0, min(1.0, score)))
+
+
+def _candidate_activity_score(candidate: Dict[str, Any]) -> float:
+    raw = candidate.get("activity_score", candidate.get("speaking_probability", 0.0))
+    try:
+        score = float(raw or 0.0)
+    except Exception:
+        return 0.0
+    return float(max(0.0, min(1.0, score)))
+
+
+def _runner_up_focus_score(candidates: List[Dict[str, Any]], best: Optional[Dict[str, Any]]) -> float:
+    if best is None:
+        return 0.0
+    best_id = best.get("track_id")
+    scores = [_candidate_focus_score(cand) for cand in candidates if cand.get("track_id") != best_id]
+    return max(scores) if scores else 0.0

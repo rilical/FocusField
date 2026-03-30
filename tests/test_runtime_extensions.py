@@ -13,13 +13,15 @@ import numpy as np
 
 from focusfield.audio.enhance.denoise import _RnnoiseNativeState, _rnnoise_native_denoise, start_denoise
 from focusfield.core.bus import Bus
-from focusfield.core.config import validate_config
+from focusfield.core.config import load_config, validate_config
 from focusfield.core.logging import LogEmitter
 import focusfield.main.runtime_multiprocess as runtime_multiprocess
 import focusfield.main.runtime_support as runtime_support
 from focusfield.main.runtime_multiprocess import _decode_payload, _encode_payload  # noqa: PLC2701
 from focusfield.main.runtime_support import apply_runtime_os_tuning
-from focusfield.vision.mouth.mouth_activity import TFLiteMouthEstimator, _ensure_tflite_model_path  # noqa: PLC2701
+from focusfield.vision.mouth.mouth_activity import TFLiteMouthEstimator, _ensure_task_model_path, _ensure_tflite_model_path  # noqa: PLC2701
+from focusfield.vision.tracking.face_track import CameraTracker, _ensure_yunet_model, _visual_state_from_features  # noqa: PLC2701
+from focusfield.vision.tracking.track_smoothing import TrackSmoother
 
 
 class RuntimeExtensionsTests(unittest.TestCase):
@@ -41,6 +43,32 @@ class RuntimeExtensionsTests(unittest.TestCase):
         self.assertTrue(any("vision.mouth.backend" in e for e in errs))
         self.assertTrue(any("vision.mouth.tflite_threads" in e for e in errs))
 
+    def test_validate_config_rejects_invalid_bus_queue_policies(self) -> None:
+        cfg = {
+            "runtime": {"enable_validation": True},
+            "bus": {
+                "topic_queue_policies": {
+                    "audio.frames": "latest",
+                    "vision.frames.*": 123,
+                }
+            },
+        }
+        errs = validate_config(cfg)
+        self.assertTrue(any("bus.topic_queue_policies.audio.frames" in e for e in errs))
+        self.assertTrue(any("bus.topic_queue_policies.vision.frames.*" in e for e in errs))
+
+    def test_mode_example_configs_load_with_expected_modes(self) -> None:
+        cases = [
+            ("configs/meeting_peripheral.yaml", "meeting_peripheral", "usb_mic"),
+            ("configs/mac_loopback_dev.yaml", "mac_loopback_dev", "host_loopback"),
+            ("configs/appliance_fastboot.yaml", "appliance_fastboot", "usb_mic"),
+            ("configs/bench.yaml", "bench", "file"),
+        ]
+        for path, expected_mode, expected_sink in cases:
+            cfg = load_config(path)
+            self.assertEqual(cfg["runtime"]["mode"], expected_mode)
+            self.assertEqual(cfg["output"]["sink"], expected_sink)
+
     def test_tflite_model_is_extracted_from_task_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -54,6 +82,68 @@ class RuntimeExtensionsTests(unittest.TestCase):
             )
             self.assertTrue(Path(model_path).exists())
             self.assertEqual(Path(model_path).read_bytes(), b"fake-model")
+
+    def test_runtime_download_guards_fail_fast_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with patch.dict("os.environ", {"FOCUSFIELD_ALLOW_RUNTIME_DOWNLOADS": "0"}, clear=False):
+                with self.assertRaises(RuntimeError):
+                    _ensure_task_model_path(str(tmp_path / "missing.task"))
+                with self.assertRaises(RuntimeError):
+                    _ensure_yunet_model(str(tmp_path / "missing.onnx"))
+
+    def test_visual_state_blends_face_motion_and_presence(self) -> None:
+        speechy = _visual_state_from_features(
+            mouth_activity=0.15,
+            motion_activity=0.85,
+            landmark_presence=0.95,
+            edge_quality=1.0,
+            motion_weight=0.35,
+            quality_floor=0.2,
+            backend="tflite",
+        )
+        weak = _visual_state_from_features(
+            mouth_activity=0.05,
+            motion_activity=0.05,
+            landmark_presence=0.0,
+            edge_quality=0.6,
+            motion_weight=0.35,
+            quality_floor=0.2,
+            backend="diff",
+        )
+        self.assertGreater(float(speechy["visual_speaking_prob"]), float(weak["visual_speaking_prob"]))
+        self.assertGreater(float(speechy["visual_quality"]), float(weak["visual_quality"]))
+
+    def test_tflite_is_attempted_even_when_facemesh_is_disabled(self) -> None:
+        tracker = CameraTracker.__new__(CameraTracker)
+        tracker._mouth_backend = "auto"
+        tracker._logger = MagicMock()
+        tracker._camera_id = "cam0"
+        tracker._tflite = None
+        tracker._mesh = None
+
+        tflite_stub = MagicMock()
+        facemesh_stub = MagicMock()
+
+        with (
+            patch("focusfield.vision.tracking.face_track.TFLiteMouthEstimator", return_value=tflite_stub) as tflite_ctor,
+            patch("focusfield.vision.tracking.face_track.FaceMeshMouthEstimator", return_value=facemesh_stub) as facemesh_ctor,
+        ):
+            CameraTracker._init_mouth_model(tracker, {"use_facemesh": False})
+
+        tflite_ctor.assert_called_once()
+        facemesh_ctor.assert_not_called()
+        self.assertIs(tracker._tflite, tflite_stub)
+        self.assertIsNone(tracker._mesh)
+
+    def test_track_smoother_keeps_track_id_through_lateral_motion(self) -> None:
+        smoother = TrackSmoother(iou_threshold=0.3, center_gate_px=180.0, velocity_alpha=0.45)
+        first = smoother.update([((10, 10, 40, 40), 0.9)])
+        self.assertEqual(first[0].track_id, 1)
+        second = smoother.update([((60, 10, 40, 40), 0.9)])
+        matched = [track for track in second if track.matched]
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0].track_id, 1)
 
     def test_rnnoise_onnx_backend_falls_back_when_model_missing(self) -> None:
         config = {
@@ -109,6 +199,29 @@ class RuntimeExtensionsTests(unittest.TestCase):
         self.assertTrue(np.array_equal(decoded["nested"][0]["fft"], payload["nested"][0]["fft"]))
         self.assertEqual(decoded["tuple"][0], "x")
         self.assertTrue(np.array_equal(decoded["tuple"][1], payload["tuple"][1]))
+
+    def test_multiprocess_queue_policy_preserves_latency_for_new_audio(self) -> None:
+        q_oldest = queue.Queue(maxsize=1)
+        q_oldest.put("stale")
+        runtime_multiprocess._put_queue_with_policy(q_oldest, "fresh", "drop_oldest")  # noqa: PLC2701
+        self.assertEqual(q_oldest.get_nowait(), "fresh")
+
+        q_newest = queue.Queue(maxsize=1)
+        q_newest.put("stale")
+        runtime_multiprocess._put_queue_with_policy(q_newest, "fresh", "drop_newest")  # noqa: PLC2701
+        self.assertEqual(q_newest.get_nowait(), "stale")
+
+    def test_topic_queue_policy_honors_exact_and_wildcard_rules(self) -> None:
+        config = {
+            "bus": {
+                "topic_queue_policies": {
+                    "audio.frames": "drop_oldest",
+                    "audio.*": "drop_newest",
+                }
+            }
+        }
+        self.assertEqual(runtime_multiprocess._topic_queue_policy(config, "audio.frames"), "drop_oldest")  # noqa: PLC2701
+        self.assertEqual(runtime_multiprocess._topic_queue_policy(config, "audio.enhanced.final"), "drop_newest")  # noqa: PLC2701
 
     def test_tflite_mouth_backend_initializes_when_runtime_is_available(self) -> None:
         try:

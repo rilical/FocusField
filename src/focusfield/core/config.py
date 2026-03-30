@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from focusfield.main.modes import KNOWN_RUNTIME_MODES, apply_mode_defaults
 from focusfield.vision.calibration.runtime_overlay import apply_camera_calibration_sidecar
 
 
@@ -49,6 +50,7 @@ def load_config(path: str) -> Dict[str, Any]:
         data = yaml.safe_load(handle) or {}
     defaults = _default_config()
     merged = _merge_dicts(defaults, data)
+    apply_mode_defaults(merged)
     _apply_thresholds_preset(merged, path)
     apply_camera_calibration_sidecar(merged)
     runtime_cfg = merged.setdefault("runtime", {})
@@ -81,10 +83,18 @@ def _default_config() -> Dict[str, Any]:
     return {
         "runtime": {
             "run_id": "",
+            "mode": "mac_loopback_dev",
             "fail_fast": True,
             "perf_profile": "default",
             "process_mode": "threaded",
             "enable_validation": False,
+            "startup": {
+                "audio_first": False,
+                "vision_start_delay_ms": 0,
+                "validate_runtime_models": False,
+                "defer_ui_until_vision": False,
+                "overload_shed_enabled": False,
+            },
             "realtime": {
                 "enabled": False,
                 "allow_best_effort": True,
@@ -114,6 +124,7 @@ def _default_config() -> Dict[str, Any]:
             },
         },
         "ui": {
+            "enabled": True,
             "host": "0.0.0.0",
             "port": 8080,
             "telemetry_hz": 15,
@@ -157,6 +168,9 @@ def _default_config() -> Dict[str, Any]:
             },
         },
         "vision": {
+            "models": {
+                "allow_runtime_downloads": True,
+            },
             "face": {
                 "backend": "auto",
                 "min_confidence": 0.6,
@@ -207,6 +221,9 @@ def _default_config() -> Dict[str, Any]:
         },
         "fusion": {
             "thresholds_preset": "balanced",
+            "telemetry": {
+                "top_k": 3,
+            },
             "weights": {
                 "bias": -0.35,
                 "mouth": 1.05,
@@ -235,6 +252,7 @@ def _default_config() -> Dict[str, Any]:
         "bus": {
             "max_queue_depth": 8,
             "topic_queue_depths": {},
+            "topic_queue_policies": {},
         },
         "logging": {
             "level": "info",
@@ -245,12 +263,16 @@ def _default_config() -> Dict[str, Any]:
             },
         },
         "audio": {
+            "models": {
+                "allow_runtime_downloads": True,
+            },
             "yaw_offset_deg": 0.0,
             "capture": {
                 # If true, allow audio.capture to fall back to mono when the requested
                 # multichannel input can't be opened (useful for laptop baseline runs).
                 "allow_mono_fallback": True,
                 "publish_fft": True,
+                "reconnect_delay_ms": 1000,
             },
             "mic_health": {
                 "enabled": True,
@@ -298,6 +320,15 @@ def _default_config() -> Dict[str, Any]:
                     "postfilter_strength": 0.5,
                 },
             },
+            "agc_post": {
+                "enabled": False,
+                "target_rms": 0.1,
+                "max_gain": 4.0,
+                "min_gain": 0.4,
+                "attack_alpha": 0.3,
+                "release_alpha": 0.94,
+                "limiter_threshold": 0.92,
+            },
         },
         "output": {
             "sink": "file",
@@ -305,9 +336,37 @@ def _default_config() -> Dict[str, Any]:
                 "dir": "artifacts",
                 "write_raw_multich": False,
             },
-            "virtual_mic": {
+            "host_loopback": {
                 # Prefer a loopback device (macOS: BlackHole/Loopback).
                 "channels": 2,
+                "buffer_blocks": 16,
+                "target_buffer_blocks": 6,
+                "reconnect_delay_ms": 750,
+                "drift_correction_ppm": 500.0,
+                "device_selector": {
+                    "match_substring": "BlackHole",
+                },
+            },
+            "virtual_mic": {
+                "channels": 2,
+                "buffer_blocks": 16,
+                "target_buffer_blocks": 6,
+                "reconnect_delay_ms": 750,
+                "drift_correction_ppm": 500.0,
+                "device_selector": {
+                    "match_substring": "BlackHole",
+                },
+            },
+            "usb_mic": {
+                "channels": 1,
+                "buffer_blocks": 24,
+                "target_buffer_blocks": 8,
+                "reconnect_delay_ms": 500,
+                "drift_correction_ppm": 800.0,
+                "backend": "sounddevice",
+                "device_selector": {
+                    "match_substring": "USB",
+                },
             },
         },
         "perf": {
@@ -324,6 +383,11 @@ def _default_config() -> Dict[str, Any]:
                 "latency_p99_ms_max": 220.0,
                 "audio_queue_full_max": 25.0,
                 "audio_underrun_rate_max": 0.005,
+                "lock_jitter_rms_max": 12.0,
+                "handoff_latency_p95_ms_max": 900.0,
+                "false_handoff_rate_max": 0.20,
+                "no_lock_during_speech_ratio_max": 0.20,
+                "output_underrun_rate_max": 0.02,
             }
         },
     }
@@ -417,6 +481,9 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     runtime_cfg = config.get("runtime", {})
     if not isinstance(runtime_cfg, dict):
         runtime_cfg = {}
+    mode = str(runtime_cfg.get("mode", "mac_loopback_dev") or "mac_loopback_dev").strip().lower()
+    if mode not in KNOWN_RUNTIME_MODES:
+        errors.append(f"runtime.mode must be one of: {', '.join(KNOWN_RUNTIME_MODES)}")
     req_cfg = runtime_cfg.get("requirements", {})
     if not isinstance(req_cfg, dict):
         req_cfg = {}
@@ -505,6 +572,16 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
                 continue
             if depth_i <= 0:
                 errors.append(f"bus.topic_queue_depths.{topic} must be > 0")
+    topic_queue_policies = bus_cfg.get("topic_queue_policies", {})
+    if topic_queue_policies is not None and not isinstance(topic_queue_policies, dict):
+        errors.append("bus.topic_queue_policies must be a mapping when provided")
+    elif isinstance(topic_queue_policies, dict):
+        for topic, policy in topic_queue_policies.items():
+            policy_name = str(policy or "").strip().lower()
+            if policy_name not in {"drop_oldest", "drop_newest", "newest"}:
+                errors.append(
+                    f"bus.topic_queue_policies.{topic} must be one of: drop_oldest, drop_newest, newest"
+                )
 
     ui_cfg = config.get("ui", {})
     if ui_cfg is not None and not isinstance(ui_cfg, dict):
@@ -646,6 +723,11 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         "latency_p99_ms_max",
         "audio_queue_full_max",
         "audio_underrun_rate_max",
+        "lock_jitter_rms_max",
+        "handoff_latency_p95_ms_max",
+        "false_handoff_rate_max",
+        "no_lock_during_speech_ratio_max",
+        "output_underrun_rate_max",
     ):
         if key not in bench_targets:
             continue
@@ -661,22 +743,31 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     if not isinstance(output_cfg, dict):
         output_cfg = {}
     sink = str(output_cfg.get("sink", "") or "").lower()
-    if sink in {"virtual_mic", "virtual"}:
-        vm = output_cfg.get("virtual_mic")
-        if vm is None:
-            errors.append("output.sink is virtual_mic but output.virtual_mic is missing")
-        elif not isinstance(vm, dict):
-            errors.append("output.virtual_mic must be a dict")
+    if sink in {"virtual_mic", "virtual", "host_loopback", "usb_mic"}:
+        section_name = "host_loopback" if sink in {"virtual_mic", "virtual", "host_loopback"} else "usb_mic"
+        device_cfg = output_cfg.get(section_name)
+        if section_name == "host_loopback" and device_cfg is None:
+            device_cfg = output_cfg.get("virtual_mic")
+        if device_cfg is None:
+            errors.append(f"output.sink is {sink} but output.{section_name} is missing")
+        elif not isinstance(device_cfg, dict):
+            errors.append(f"output.{section_name} must be a dict")
         else:
-            ch = vm.get("channels")
+            ch = device_cfg.get("channels")
             if ch is not None and int(ch) <= 0:
-                errors.append("output.virtual_mic.channels must be > 0")
-            sr = vm.get("sample_rate_hz")
+                errors.append(f"output.{section_name}.channels must be > 0")
+            sr = device_cfg.get("sample_rate_hz")
             if sr is not None and int(sr) <= 0:
-                errors.append("output.virtual_mic.sample_rate_hz must be > 0")
-            device_index = vm.get("device_index")
+                errors.append(f"output.{section_name}.sample_rate_hz must be > 0")
+            device_index = device_cfg.get("device_index")
             if device_index is not None and int(device_index) < 0:
-                errors.append("output.virtual_mic.device_index must be >= 0")
+                errors.append(f"output.{section_name}.device_index must be >= 0")
+            buffer_blocks = device_cfg.get("buffer_blocks")
+            if buffer_blocks is not None and int(buffer_blocks) <= 0:
+                errors.append(f"output.{section_name}.buffer_blocks must be > 0")
+            target_blocks = device_cfg.get("target_buffer_blocks")
+            if target_blocks is not None and int(target_blocks) <= 0:
+                errors.append(f"output.{section_name}.target_buffer_blocks must be > 0")
 
     uma8_cfg = config.get("uma8_leds", {})
     if uma8_cfg is not None and not isinstance(uma8_cfg, dict):

@@ -50,12 +50,18 @@ def start_telemetry(
     config: Dict[str, Any],
     logger: Any,
     stop_event: threading.Event,
-) -> threading.Thread:
-    telemetry_hz = float(config.get("ui", {}).get("telemetry_hz", 10.0))
+) -> Optional[threading.Thread]:
+    ui_cfg = config.get("ui", {})
+    if not isinstance(ui_cfg, dict):
+        ui_cfg = {}
+    if not bool(ui_cfg.get("enabled", True)):
+        return None
+    telemetry_hz = float(ui_cfg.get("telemetry_hz", 10.0))
     q_heatmap = bus.subscribe("vision.speaker_heatmap")
     q_audio = bus.subscribe("audio.doa_heatmap")
     q_faces = bus.subscribe("vision.face_tracks")
     q_faces_debug = bus.subscribe("vision.face_tracks.debug")
+    q_candidates = bus.subscribe("fusion.candidates")
     q_lock = bus.subscribe("fusion.target_lock")
     q_uma8_leds = bus.subscribe("uma8_leds.state")
     q_logs = bus.subscribe("log.events")
@@ -64,6 +70,7 @@ def start_telemetry(
     q_perf = bus.subscribe("runtime.perf")
     q_vad = bus.subscribe("audio.vad")
     q_mic_health = bus.subscribe("audio.mic_health")
+    q_output = bus.subscribe("audio.output.stats")
     q_camera_calibration = bus.subscribe("vision.camera_calibration")
     configured_cameras = [
         cam.get("id", f"cam{idx}")
@@ -87,6 +94,7 @@ def start_telemetry(
         "audio_heatmap": None,
         "faces": [],
         "lock": None,
+        "candidates": [],
         "uma8_leds": None,
         "logs": [],
         "beam": None,
@@ -94,6 +102,7 @@ def start_telemetry(
         "perf": None,
         "vad": None,
         "mic_health": None,
+        "output": None,
         "runtime_cfg": config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {},
         "runtime_profile": str(config.get("runtime", {}).get("perf_profile", "") or ""),
         "strict_requirements_passed": bool(config.get("runtime", {}).get("requirements_passed", False)),
@@ -141,6 +150,9 @@ def start_telemetry(
             lock_msg = _drain(q_lock)
             if lock_msg is not None:
                 state["lock"] = lock_msg
+            cand_msg = _drain(q_candidates)
+            if cand_msg is not None:
+                state["candidates"] = cand_msg
             led_msg = _drain(q_uma8_leds)
             if led_msg is not None:
                 state["uma8_leds"] = led_msg
@@ -166,6 +178,9 @@ def start_telemetry(
             mic_health_msg = _drain(q_mic_health)
             if mic_health_msg is not None:
                 state["mic_health"] = mic_health_msg
+            output_msg = _drain(q_output)
+            if output_msg is not None:
+                state["output"] = output_msg
             calibration_msg = _drain(q_camera_calibration)
             if isinstance(calibration_msg, dict):
                 state["configured_camera_map"] = _merge_camera_map(
@@ -199,6 +214,10 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     led_state = state.get("uma8_leds") or {}
     faces = state.get("faces") or []
     vad_state = state.get("vad") or {}
+    candidates = state.get("candidates") or []
+    if not isinstance(candidates, list):
+        candidates = []
+    output_state = state.get("output") or {}
     logs: List[Dict[str, Any]] = state.get("logs", [])
     no_candidates: Dict[str, Any] = {}
     for event in reversed(logs):
@@ -217,6 +236,7 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     if isinstance(peaks, list) and peaks and isinstance(peaks[0], dict):
         top_peak_score = float(peaks[0].get("score", 0.0) or 0.0)
     doa_confidence = float(heatmap.get("confidence", 0.0) or 0.0)
+    vad_confidence = float(vad_state.get("confidence", vad_state.get("speech_probability", 0.0)) or 0.0)
     perf_state = state.get("perf") or {}
     perf_summary = perf_state.get("summary") if isinstance(perf_state, dict) else {}
     if not isinstance(perf_summary, dict):
@@ -248,6 +268,9 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     configured_cameras = [str(cam) for cam in (state.get("configured_cameras") or [])]
     cameras = configured_cameras if configured_cameras else active_face_cameras
     mic_health_summary = _summarize_mic_health(state.get("mic_health") or {})
+    top_candidates = _summarize_candidates(candidates)
+    top_focus_score = float(top_candidates[0].get("focus_score", 0.0)) if top_candidates else 0.0
+    runner_up_focus_score = float(top_candidates[1].get("focus_score", 0.0)) if len(top_candidates) > 1 else 0.0
     return {
         "t_ns": now_ns(),
         "seq": seq,
@@ -270,6 +293,11 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "mode": lock_state.get("mode", "NO_LOCK"),
             "target_bearing_deg": lock_state.get("target_bearing_deg"),
             "confidence": lock_state.get("confidence", 0.0),
+            "focus_score": lock_state.get("focus_score", lock_state.get("confidence", 0.0)),
+            "activity_score": lock_state.get("activity_score", 0.0),
+            "selection_mode": lock_state.get("selection_mode", lock_state.get("mode", "NO_LOCK")),
+            "score_margin": lock_state.get("score_margin", 0.0),
+            "runner_up_focus_score": lock_state.get("runner_up_focus_score", runner_up_focus_score),
             "reason": lock_state.get("reason", ""),
             "target_id": lock_state.get("target_id"),
         },
@@ -283,12 +311,18 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
                 "bbox": face.get("bbox"),
                 "camera_id": face.get("camera_id"),
                 "confidence": face.get("confidence"),
+                "visual_quality": face.get("visual_quality"),
+                "motion_activity": face.get("motion_activity"),
+                "landmark_presence": face.get("landmark_presence"),
+                "visual_backend": face.get("visual_backend"),
             }
             for face in faces
         ],
+        "top_candidates": top_candidates,
         "beamformer": state.get("beam"),
         "mic_health": state.get("mic_health") or {},
         "mic_health_summary": mic_health_summary,
+        "output_summary": output_state if isinstance(output_state, dict) else {},
         "uma8_leds": {
             "enabled": bool(led_state.get("enabled", False)),
             "backend": led_state.get("backend", "none"),
@@ -309,8 +343,12 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "faces_present": bool(no_candidates.get("faces_present", bool(faces))),
             "faces_fresh": bool(no_candidates.get("faces_fresh", bool(faces))),
             "vad_speech": bool(vad_state.get("speech", False)),
+            "vad_confidence": vad_confidence,
             "doa_confidence": doa_confidence,
             "doa_peak_score": top_peak_score,
+            "focus_score": lock_state.get("focus_score", top_focus_score),
+            "score_margin": lock_state.get("score_margin", max(0.0, top_focus_score - runner_up_focus_score)),
+            "runner_up_focus_score": lock_state.get("runner_up_focus_score", runner_up_focus_score),
         },
         "health_summary": state.get("health") or {},
         "perf_summary": perf_state,
@@ -348,7 +386,32 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
                 "audio_yaw_offset_deg": float(runtime_cfg.get("audio_yaw_offset_deg", 0.0) or 0.0),
             },
         },
-    }
+}
+
+
+def _summarize_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    summarized: List[Dict[str, Any]] = []
+    for cand in sorted(candidates, key=lambda item: float(item.get("focus_score", item.get("combined_score", 0.0)) or 0.0), reverse=True)[:3]:
+        score_components = cand.get("score_components", {})
+        if not isinstance(score_components, dict):
+            score_components = {}
+        summarized.append(
+            {
+                "track_id": cand.get("track_id"),
+                "bearing_deg": cand.get("bearing_deg"),
+                "focus_score": float(cand.get("focus_score", cand.get("combined_score", 0.0)) or 0.0),
+                "activity_score": float(cand.get("activity_score", cand.get("speaking_probability", 0.0)) or 0.0),
+                "selection_mode": str(cand.get("selection_mode", "")),
+                "speaking": bool(cand.get("speaking", False)),
+                "score_components": {
+                    "visual_speaking_prob": float(score_components.get("visual_speaking_prob", score_components.get("mouth_activity", 0.0)) or 0.0),
+                    "doa_peak_score": float(score_components.get("doa_peak_score", 0.0) or 0.0),
+                    "doa_confidence": float(score_components.get("doa_confidence", 0.0) or 0.0),
+                    "audio_speech_prob": float(score_components.get("audio_speech_prob", 0.0) or 0.0),
+                },
+            }
+        )
+    return summarized
 
 
 def _merge_camera_map(current: List[Dict[str, Any]], updates: Any) -> List[Dict[str, Any]]:

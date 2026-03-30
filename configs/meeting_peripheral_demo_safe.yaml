@@ -1,0 +1,122 @@
+build: full
+
+runtime:
+  mode: meeting_peripheral
+  fail_fast: false
+  perf_profile: realtime_pi_max
+  enable_validation: true
+  requirements:
+    strict: false
+    min_cameras: 3
+    min_audio_channels: 8
+    camera_scope: usb
+
+trace:
+  enabled: true
+  level: medium
+  thumbnails:
+    enabled: true
+    fps: 1
+  record_raw_audio: true
+
+bench:
+  targets:
+    latency_p95_ms_max: 150.0
+    latency_p99_ms_max: 220.0
+    output_underrun_rate_max: 0.02
+    queue_pressure_max: 25.0
+
+audio:
+  channels: 8
+  sample_rate_hz: 48000
+  block_size: 960
+  device_profile: minidsp_uma8_raw_7p1
+  capture:
+    allow_mono_fallback: false
+    queue_depth: 24
+    reconnect_delay_ms: 750
+  device_selector:
+    match_substring: miniDSP
+    require_input_channels: 8
+  models:
+    allow_runtime_downloads: false
+
+vision:
+  models:
+    allow_runtime_downloads: false
+  face:
+    backend: auto
+    detect_width: 416
+    detect_every_n: 1
+  mouth:
+    backend: tflite
+    use_facemesh: true
+    mesh_every_n: 1
+    tflite_min_presence: 0.35
+
+video:
+  cameras:
+    - id: cam0
+      hfov_deg: 160
+      yaw_offset_deg: 0
+      width: 640
+      height: 360
+      fps: 15
+    - id: cam1
+      hfov_deg: 160
+      yaw_offset_deg: 120
+      width: 640
+      height: 360
+      fps: 15
+    - id: cam2
+      hfov_deg: 160
+      yaw_offset_deg: 240
+      width: 640
+      height: 360
+      fps: 15
+
+fusion:
+  thresholds_preset: balanced
+  weights:
+    mouth: 0.42
+    face: 0.18
+    doa: 0.28
+    angle: 0.12
+  require_vad: true
+  vad_max_age_ms: 500
+  require_speaking: true
+  audio_fallback:
+    enabled: true
+    require_vad: true
+    allow_when_faces_missing: true
+    face_staleness_ms: 700
+    min_doa_confidence: 0.45
+    min_peak_score: 0.30
+    score_mode: confidence
+
+bus:
+  max_queue_depth: 24
+  topic_queue_depths:
+    audio.frames: 16
+    audio.vad: 64
+    audio.enhanced.beamformed: 24
+    audio.enhanced.final: 24
+    runtime.perf: 16
+    vision.frames.*: 4
+    vision.frames.cam0: 4
+    vision.frames.cam1: 4
+    vision.frames.cam2: 4
+    vision.face_tracks: 4
+
+ui:
+  enabled: false
+  telemetry_hz: 2
+  frame_max_hz: 1
+
+output:
+  sink: usb_mic
+  usb_mic:
+    channels: 1
+    reconnect_delay_ms: 750
+    device_selector:
+      match_substring: USB

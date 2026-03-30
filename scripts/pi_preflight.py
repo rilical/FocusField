@@ -482,6 +482,7 @@ def main() -> int:
         help="Camera hardware scope: usb for external UVC cameras only, any for all capture nodes.",
     )
     parser.add_argument("--require-led-hid", action="store_true")
+    parser.add_argument("--audio-only", action="store_true", help="Skip camera and face-detector readiness checks.")
     parser.add_argument("--led-vendor-id", type=int, default=None)
     parser.add_argument("--led-product-id", type=int, default=None)
     parser.add_argument("--json-out", type=str, default="", help="Optional JSON output path for machine-readable preflight report.")
@@ -502,18 +503,43 @@ def main() -> int:
         args.camera_scope or configured_scope or ("usb" if args.strict else "any")
     )
 
-    rc |= check_cv2()
-    face_backend_rc, face_backend_details = check_face_detector_backend(config)
-    rc |= face_backend_rc
+    if not args.audio_only:
+        rc |= check_cv2()
+    if args.audio_only:
+        face_backend_details = {
+            "requested_backend": "skipped",
+            "active_backend": "skipped",
+            "yunet_available": False,
+            "haar_available": False,
+            "degraded": False,
+            "operational": True,
+            "fallback_backend": "",
+            "per_camera_active_backend": [],
+            "skipped": True,
+        }
+    else:
+        face_backend_rc, face_backend_details = check_face_detector_backend(config)
+        rc |= face_backend_rc
     audio_rc, audio_details = check_audio(config)
     rc |= audio_rc
-    camera_rc, camera_details = check_cameras(
-        config,
-        camera_source=args.camera_source,
-        strict_capture=args.strict,
-        camera_scope=camera_scope,
-    )
-    rc |= camera_rc
+    if args.audio_only:
+        camera_details = {
+            "scope": camera_scope,
+            "discovered_sources": 0,
+            "capture_capable_sources": 0,
+            "openable_sources": 0,
+            "configured_cameras": 0,
+            "configured_openable": 0,
+            "skipped": True,
+        }
+    else:
+        camera_rc, camera_details = check_cameras(
+            config,
+            camera_source=args.camera_source,
+            strict_capture=args.strict,
+            camera_scope=camera_scope,
+        )
+        rc |= camera_rc
 
     uma8_cfg = config.get("uma8_leds", {}) if isinstance(config, dict) else {}
     if not isinstance(uma8_cfg, dict):
@@ -554,7 +580,7 @@ def main() -> int:
             "required UMA8 HID device not available "
             f"(vid=0x{vendor_id:04x}, pid=0x{product_id:04x})"
         )
-    if not bool(face_backend_details.get("operational", False)):
+    if not args.audio_only and not bool(face_backend_details.get("operational", False)):
         contract_failures.append("no operational face detector backend available")
 
     print("=== Alignment Summary ===")
@@ -600,6 +626,7 @@ def main() -> int:
 
     print("=== Contract Summary ===")
     print(f"strict={args.strict}")
+    print(f"audio_only={args.audio_only}")
     print(f"camera_scope={camera_scope}")
     print(f"required_cameras={required_cameras} observed_cameras={observed_cameras}")
     print(
@@ -628,6 +655,7 @@ def main() -> int:
         "config_loaded": bool(config_loaded),
         "config_path": str(args.config or ""),
         "strict": bool(args.strict),
+        "audio_only": bool(args.audio_only),
         "camera_scope": str(camera_scope),
         "face_detector": {
             "requested_backend": face_backend_details.get("requested_backend"),

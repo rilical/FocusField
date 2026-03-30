@@ -376,6 +376,10 @@ def start_mvdr(
                             "frame_samples": int(y.shape[0]),
                             "channels": 1,
                             "data": y.astype(np.float32),
+                            "stage_timestamps": {
+                                **(frame_msg.get("stage_timestamps", {}) if isinstance(frame_msg.get("stage_timestamps"), dict) else {}),
+                                "beamformed_t_ns": now_ns(),
+                            },
                             "stats": {
                                 "rms": float(np.sqrt(np.mean(y**2))) if y.size else 0.0,
                             },

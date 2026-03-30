@@ -80,7 +80,36 @@ Pass condition:
 If the raw-array device only reports 2 channels, it is in DSP mode and strict full-target will fail.
 Switch UMA-8 to RAW firmware first.
 
-### Strict full-target config generation (recommended for production)
+### Meeting-peripheral production path (recommended)
+
+Use this for the shipping appliance path where FocusField should come up audio-first
+and present a host-facing meeting microphone as soon as possible:
+
+- `configs/meeting_peripheral.yaml`
+
+Provision and validate the production path with the guided workflow:
+
+```bash
+set -euo pipefail
+python3 scripts/provision_focusfield.py \
+  --config configs/meeting_peripheral.yaml \
+  --json
+
+python3 -m focusfield.main.run --config configs/meeting_peripheral.yaml
+```
+
+Install the service with the meeting-peripheral config:
+
+```bash
+cd /home/focus/FocusField
+sudo scripts/install_systemd_service.sh focusfield /home/focus/FocusField/configs/meeting_peripheral.yaml
+sudo systemctl enable --now focusfield
+```
+
+Use `configs/full_3cam_8mic_pi*.yaml` only for strict bring-up, diagnostics, and
+bench/perf work.
+
+### Strict full-target config generation (bring-up and diagnostics)
 
 Use this base config for Pi bring-up, root-cause work, and the stable local service:
 - `configs/full_3cam_8mic_pi.yaml`
@@ -117,7 +146,7 @@ python3 scripts/list_cameras.py
 Then verify:
 
 ```bash
-python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml --mode vision
+python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml
 ```
 
 ### Camera + UMA-8 directional alignment
@@ -229,25 +258,28 @@ If strict full-target is required, do not proceed when smoke/preflight reports f
 ### Strict full-target run
 
 ```bash
-python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml --mode vision
+python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml
 ```
 
 ### Auto-start at boot (Raspberry Pi)
 
-Once `configs/full_3cam_working_local.yaml` is valid on the device, install a systemd service:
+Once the target config is valid on the device, install a systemd service:
 
 ```bash
 cd /home/focus/FocusField
-sudo scripts/install_systemd_service.sh focusfield /home/focus/FocusField/configs/full_3cam_working_local.yaml
+sudo scripts/install_systemd_service.sh focusfield /home/focus/FocusField/configs/meeting_peripheral.yaml
 sudo systemctl enable --now focusfield
 ```
 
 The installer sets a boot-time wrapper that:
 
-- waits for USB/video to settle,
+- validates bundled model assets before installation when runtime downloads are disabled,
+- waits for USB/video to settle only for full vision modes,
 - runs `scripts/pi_preflight.py` up to 15 times before giving up,
-- starts `focusfield.main.run --mode vision`,
+- starts `focusfield.main.run` using the mode already declared in the config,
 - auto-restarts the service if it exits.
+
+For `meeting_peripheral` and `appliance_fastboot`, boot is audio-first: the service starts without waiting on cameras, and the preflight step skips vision readiness so the host can see a microphone immediately.
 
 Useful checks:
 
@@ -325,10 +357,129 @@ Production calibration checklist:
 - confirm LED ring bearing mapping
 - confirm lock bearing against known speaker positions at `0`, `120`, and `240` degrees
 
+## Demo-safe Zoom workflow
+
+Use the dedicated demo profile when the goal is a reliable live Zoom demo plus
+engineering-grade evidence capture:
+
+```bash
+python3 -m focusfield.main.run \
+  --config configs/meeting_peripheral_demo_safe.yaml \
+  --mode meeting_peripheral
+```
+
+Behavioral intent of this profile:
+
+- stable switching over aggressive handoff
+- `require_vad: true` and `require_speaking: true`
+- audio-only fallback when vision confidence is weak
+- tracing enabled for later benchmark and incident review
+- UI disabled to preserve demo stability
+
+Target environment for claims:
+
+- one validated noisier office room
+- fixed 3-camera + 8-mic rig geometry
+- seated participants
+- normal meeting distances
+
+### Demo rehearsal gate
+
+After a 30-minute rehearsal run and a Zoom evidence capture:
+
+```bash
+python3 scripts/demo_rehearsal_gate.py \
+  --config configs/meeting_peripheral_demo_safe.yaml \
+  --run-dir artifacts/LATEST \
+  --host-gate-evidence artifacts/demo/zoom_host_gate.json \
+  --output artifacts/demo/demo_readiness.json
+```
+
+Expected outputs in `demo_readiness.json`:
+
+- boot to host-visible mic
+- Zoom device-selection proof
+- reconnect time
+- latency p50/p95/p99
+- output underrun totals/rate
+- queue pressure peak
+- crash-free soak verdict
+
+### Same-session A/B benchmark assembly
+
+Capture the FocusField candidate run, the MacBook built-in mic WAV, and the
+close-talk reference WAV from the same session. Then assemble the benchmark:
+
+```bash
+python3 scripts/demo_ab_capture.py \
+  --candidate-run artifacts/LATEST \
+  --baseline-audio /path/to/macbook_built_in.wav \
+  --reference-audio /path/to/close_talk_reference.wav \
+  --scene-spec /path/to/demo_scenes.yaml \
+  --output-dir artifacts/demo/ab_bundle \
+  --video-path /path/to/cam0.mp4 \
+  --video-path /path/to/cam1.mp4 \
+  --video-path /path/to/cam2.mp4
+```
+
+This writes:
+
+- `capture_bundle.json`
+- `scene_manifest.yaml`
+- `scene_timing_metadata.json`
+
+Use the generated manifest with FocusBench:
+
+```bash
+python3 scripts/focusbench_ab.py \
+  --baseline-run artifacts/LATEST \
+  --candidate-run artifacts/LATEST \
+  --scene-manifest artifacts/demo/ab_bundle/scene_manifest.yaml \
+  --config configs/meeting_peripheral_demo_safe.yaml \
+  --output-dir artifacts/demo/focusbench
+```
+
+For same-session A/B runs, the manifest carries explicit
+`baseline_audio_path`, `candidate_audio_path`, and `reference_audio_path`
+overrides, so the benchmark can score the MacBook baseline against the
+FocusField candidate while still reusing candidate runtime traces.
+
+### Engineering panel packet
+
+Generate a concise scorecard and collect the plots into one folder:
+
+```bash
+python3 scripts/demo_panel_report.py \
+  --bench-report artifacts/demo/focusbench/BenchReport.json \
+  --demo-readiness artifacts/demo/demo_readiness.json \
+  --output-dir artifacts/demo/panel_packet
+```
+
+The panel packet should show:
+
+- clarity deltas: `SI-SDR`, `STOI`, `WER relative improvement`, `SIR`
+- runtime: latency p50/p95/p99
+- stability: output underrun rate and queue pressure
+- meeting path: boot-to-host-visible mic and reconnect time
+
+### Claim language
+
+Allowed claim language:
+
+- "In this validated noisy office room, FocusField produced clearer speech than the MacBook built-in microphone."
+- "These latency values are internal pipeline measurements."
+- "Boot-to-host-visible mic and reconnect timings were measured on the demo appliance."
+
+Do not claim:
+
+- broad room portability
+- network latency
+- end-to-end meeting round-trip latency
+
 ### Degraded debug run
 
 ```bash
-python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml --mode vision
+python3 -m focusfield.main.run --config configs/full_3cam_working_local.yaml
 ```
 
 Open the UI:
@@ -348,7 +499,21 @@ Each run creates:
 - `thumbs/*.jpg` (1fps thumbnails)
 - `crash/crash.json` (only on crash)
 
-If something goes wrong, zip the run folder and share it.
+Generate a portable support bundle instead of manually zipping files:
+
+```bash
+python3 scripts/support_bundle.py \
+  --config configs/meeting_peripheral.yaml \
+  --run-dir artifacts/LATEST \
+  --output focusfield_support_bundle.zip
+```
+
+Useful guided workflows:
+
+```bash
+python3 scripts/calibration_workflow.py --config configs/meeting_peripheral.yaml
+python3 scripts/recover_focusfield.py --config configs/meeting_peripheral.yaml --run-dir artifacts/LATEST
+```
 
 ## Common failure modes
 

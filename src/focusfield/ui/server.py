@@ -252,10 +252,12 @@ def start_ui_server(
     config: Dict[str, Any],
     logger: Any,
     stop_event: threading.Event,
-) -> threading.Thread:
+) -> Optional[threading.Thread]:
     ui_cfg = config.get("ui", {})
     if not isinstance(ui_cfg, dict):
         ui_cfg = {}
+    if not bool(ui_cfg.get("enabled", True)):
+        return None
     host = ui_cfg.get("host", "0.0.0.0")
     port = int(ui_cfg.get("port", 8080))
     jpeg_quality = int(ui_cfg.get("frame_jpeg_quality", 65) or 65)

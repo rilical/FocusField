@@ -1,0 +1,29 @@
+build: bench
+
+runtime:
+  mode: bench
+  enable_validation: true
+
+audio:
+  channels: 2
+  sample_rate_hz: 48000
+  block_size: 1024
+
+video:
+  cameras:
+    - id: cam0
+      hfov_deg: 90
+      yaw_offset_deg: 0
+
+output:
+  sink: file
+  file_sink:
+    dir: artifacts
+    write_raw_multich: false
+
+trace:
+  enabled: true
+
+ui:
+  enabled: false
+

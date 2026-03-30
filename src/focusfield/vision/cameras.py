@@ -176,7 +176,7 @@ def _camera_loop(
     if not cap.isOpened():
         logger.emit("error", "vision.cameras", "camera_missing", {"camera_id": camera_id})
         _publish_camera_status(bus, camera_id, False)
-        if fail_fast and strict_capture:
+        if fail_fast:
             stop_event.set()
             return
         # Enter reconnect loop instead of giving up

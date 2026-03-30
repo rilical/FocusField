@@ -83,11 +83,15 @@ def start_file_sink(
 
     q_final = bus.subscribe("audio.enhanced.final")
     q_raw = bus.subscribe("audio.frames") if write_raw else None
+    q_shed = bus.subscribe("runtime.shed_state")
 
     def _run() -> None:
         enhanced_writer: Optional[_WavWriter] = None
         raw_writer: Optional[_WavWriter] = None
         last_raw: Optional[Dict[str, Any]] = None
+        latest_shed_state: Dict[str, Any] = {"active": False, "level": 0, "reason": "normal", "targets": []}
+        last_heartbeat_s = time.time()
+        processed_writes = 0
         if not meta_path.exists():
             try:
                 audio_device = None
@@ -118,6 +122,14 @@ def start_file_sink(
         logger.emit("info", "audio.output.file_sink", "started", {"dir": str(out_dir)})
 
         while not stop_event.is_set():
+            shed_msg = None
+            try:
+                while True:
+                    shed_msg = q_shed.get_nowait()
+            except queue.Empty:
+                pass
+            if isinstance(shed_msg, dict):
+                latest_shed_state = dict(shed_msg)
             if q_raw is not None:
                 last_raw = _drain_latest(q_raw) or last_raw
                 if last_raw is not None and raw_writer is None:
@@ -126,12 +138,39 @@ def start_file_sink(
             try:
                 msg = q_final.get(timeout=0.1)
             except queue.Empty:
+                now_s = time.time()
+                if now_s - last_heartbeat_s >= 1.0:
+                    bus.publish(
+                        "runtime.worker_loop",
+                        {
+                            "t_ns": now_ns(),
+                            "module": "audio.output.file_sink",
+                            "idle_cycles": 0,
+                            "processed_cycles": int(processed_writes),
+                            "shed_level": int(latest_shed_state.get("level", 0) or 0),
+                        },
+                    )
+                    last_heartbeat_s = now_s
                 continue
             if enhanced_writer is None:
                 enhanced_writer = _open_wav(out_dir / "enhanced.wav", msg, channels=1)
             _write_audio(enhanced_writer, msg, logger)
             if write_raw and raw_writer is not None and last_raw is not None:
                 _write_audio(raw_writer, last_raw, logger)
+            processed_writes += 1
+            now_s = time.time()
+            if now_s - last_heartbeat_s >= 1.0:
+                bus.publish(
+                    "runtime.worker_loop",
+                    {
+                        "t_ns": now_ns(),
+                        "module": "audio.output.file_sink",
+                        "idle_cycles": 0,
+                        "processed_cycles": int(processed_writes),
+                        "shed_level": int(latest_shed_state.get("level", 0) or 0),
+                    },
+                )
+                last_heartbeat_s = now_s
 
         _close_writer(enhanced_writer)
         _close_writer(raw_writer)

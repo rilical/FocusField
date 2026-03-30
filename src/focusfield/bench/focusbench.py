@@ -13,13 +13,18 @@ from focusfield.bench.metrics.metrics import (
     compute_drop_stats,
     compute_latency_stats,
     compute_lock_jitter,
+    compute_conversation_metrics,
+    compute_label_scene_metrics,
+    compute_runtime_summary,
     compute_scene_metric,
     scene_metric_to_dict,
+    summarize_label_scene_metrics,
     summarize_scene_metrics,
 )
 from focusfield.bench.metrics.scoring import evaluate_gates, normalize_thresholds
 from focusfield.bench.reports.plots import generate_required_plots
 from focusfield.bench.reports.report_schema import create_report, write_report
+from focusfield.bench.scenes.manifest import load_scene_manifest
 
 
 def run_focusbench(
@@ -28,6 +33,7 @@ def run_focusbench(
     scene_manifest: str,
     output_dir: str,
     thresholds: Dict[str, Any] | None = None,
+    strict_truth: bool = False,
 ) -> Dict[str, Any]:
     scenes = _load_scenes(scene_manifest)
     if not scenes:
@@ -52,11 +58,32 @@ def run_focusbench(
         Path(candidate_run) / "logs" / "perf.jsonl",
     )
     lock_summary = compute_lock_jitter(Path(candidate_run) / "traces" / "lock.jsonl")
+    conversation_summary = compute_conversation_metrics(
+        Path(candidate_run) / "traces" / "lock.jsonl",
+        Path(candidate_run) / "traces" / "faces.jsonl",
+        Path(candidate_run) / "logs" / "events.jsonl",
+    )
+    runtime_summary = compute_runtime_summary(Path(candidate_run) / "logs" / "perf.jsonl")
+    label_scene_metrics = [
+        compute_label_scene_metrics(
+            scene,
+            Path(candidate_run) / "traces" / "lock.jsonl",
+            Path(candidate_run) / "traces" / "faces.jsonl",
+            conversation_summary=conversation_summary,
+        )
+        for scene in scenes
+    ]
+    label_summary = summarize_label_scene_metrics(label_scene_metrics)
     gates = evaluate_gates(
         quality_summary=quality_summary,
         latency_summary=latency_summary,
         drop_summary=drop_summary,
         thresholds=normalize_thresholds(thresholds),
+        lock_summary=lock_summary,
+        conversation_summary=conversation_summary,
+        runtime_summary=runtime_summary,
+        label_summary=label_summary,
+        strict_truth=strict_truth,
     )
 
     report = create_report(
@@ -64,10 +91,14 @@ def run_focusbench(
         candidate_run=candidate_run,
         scene_manifest=scene_manifest,
         scene_metrics=[scene_metric_to_dict(item) for item in scene_metrics],
+        label_scene_metrics=label_scene_metrics,
         quality_summary=quality_summary,
+        label_summary=label_summary,
         latency_summary=latency_summary,
         drop_summary=drop_summary,
         lock_jitter=lock_summary,
+        conversation=conversation_summary,
+        runtime=runtime_summary,
         gates=gates,
     )
 
@@ -87,6 +118,7 @@ def main() -> int:
     parser.add_argument("--scene-manifest", required=True, help="Scene manifest YAML path.")
     parser.add_argument("--output-dir", required=True, help="Output directory for BenchReport and plots.")
     parser.add_argument("--thresholds-json", default="", help="Optional JSON object to override gate thresholds.")
+    parser.add_argument("--strict-truth", action="store_true", help="Require label-backed truth metrics in release runs.")
     args = parser.parse_args()
 
     threshold_overrides = _parse_threshold_overrides(args.thresholds_json)
@@ -96,6 +128,7 @@ def main() -> int:
         scene_manifest=args.scene_manifest,
         output_dir=args.output_dir,
         thresholds=threshold_overrides,
+        strict_truth=bool(args.strict_truth),
     )
 
     gates = report.get("summary", {}).get("gates", {})
@@ -125,22 +158,17 @@ def _parse_threshold_overrides(text: str) -> Dict[str, Any]:
 
 
 def _load_scenes(path: str | Path) -> List[Dict[str, Any]]:
-    manifest_path = Path(path)
-    with manifest_path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if isinstance(data, dict):
-        scenes = data.get("scenes", [])
-        if isinstance(scenes, list):
-            return [item for item in scenes if isinstance(item, dict)]
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    return []
+    normalized = load_scene_manifest(path, require_release_fields=False)
+    scenes = normalized.get("scenes", [])
+    return [item for item in scenes if isinstance(item, dict)]
 
 
 def _resolve_audio_path(scene: Dict[str, Any], run_dir: str, role: str) -> Path:
     override_key = f"{role}_audio_path"
     if override_key in scene:
         return Path(str(scene[override_key])).expanduser().resolve()
+    if role == "candidate" and scene.get("audio_path"):
+        return Path(str(scene["audio_path"])).expanduser().resolve()
     default_name = "enhanced.wav"
     if role == "baseline":
         default_name = str(scene.get("baseline_audio_file", default_name))

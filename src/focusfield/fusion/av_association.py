@@ -263,6 +263,7 @@ def _build_candidates(
         if size_scale <= 0.0 and doa_peak_score <= 0.0 and audio_speech_prob <= 0.0:
             combined = 0.0
             speaking_probability = 0.0
+        selection_mode = "AUDIO_ONLY" if doa_peak_score > 0.0 and mouth_activity <= 0.0 else ("AV_LOCK" if doa_peak_score > 0.0 and mouth_activity > 0.0 else "VISION_ONLY")
         candidates.append(
             {
                 "t_ns": now_ns(),
@@ -283,9 +284,12 @@ def _build_candidates(
                     "size_scale": float(size_scale),
                     "bbox_area": int(bbox_area),
                 },
+                "focus_score": combined,
                 "combined_score": combined,
                 "bearing_deg": face_bearing,
+                "activity_score": speaking_probability,
                 "speaking_probability": speaking_probability,
+                "selection_mode": selection_mode,
                 "speaking": bool(track.get("speaking", False)) or speaking_probability >= 0.5,
             }
         )
@@ -392,9 +396,12 @@ def _build_audio_only_candidate(
             "fallback_evidence": float(evidence),
             "score_mode": mode,
         },
+        "focus_score": float(combined),
         "combined_score": float(combined),
         "bearing_deg": bearing,
+        "activity_score": float(max(audio_speech_prob, peak_score)),
         "speaking_probability": float(max(audio_speech_prob, peak_score)),
+        "selection_mode": "AUDIO_ONLY",
         "speaking": bool(vad_speaking),
     }
 

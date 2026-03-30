@@ -1,0 +1,27 @@
+build: mvp
+
+runtime:
+  mode: mac_loopback_dev
+  enable_validation: true
+
+audio:
+  channels: 1
+  sample_rate_hz: 48000
+  block_size: 1024
+
+video:
+  cameras:
+    - id: cam0
+      hfov_deg: 90
+      yaw_offset_deg: 0
+
+output:
+  sink: host_loopback
+  host_loopback:
+    channels: 2
+    device_selector:
+      match_substring: BlackHole
+
+ui:
+  enabled: true
+

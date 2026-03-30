@@ -478,8 +478,8 @@ def main() -> int:
         runtime_cfg = {}
         cfg["runtime"] = runtime_cfg
     runtime_cfg["generated_for_pi"] = True
-    runtime_cfg["generated_from_base_config"] = str(base_config)
-    runtime_cfg["generated_from_base_basename"] = Path(base_config).name
+    runtime_cfg["generated_from_base_config"] = str(args.base_config)
+    runtime_cfg["generated_from_base_basename"] = Path(args.base_config).name
 
     output_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     print(f"wrote: {output_path}")

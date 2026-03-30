@@ -86,6 +86,7 @@ def start_audio_capture(
     stats_period_s = 1.0 / stats_emit_hz
     status_log_interval_s = float(capture_cfg.get("status_log_interval_s", 1.0))
     status_log_interval_s = max(0.25, min(5.0, status_log_interval_s))
+    reconnect_delay_ms = max(100, int(capture_cfg.get("reconnect_delay_ms", 1000) or 1000))
 
     frame_queue: queue.Queue[tuple[int, int, np.ndarray]] = queue.Queue(maxsize=capture_queue_depth)
     stats_lock = threading.Lock()
@@ -100,55 +101,80 @@ def start_audio_capture(
     status_counts = {"input_overflow": 0}
 
     def _run() -> None:
-        if device_index is None:
-            logger.emit(
-                "error",
-                "audio.capture",
-                "device_not_found",
-                {"criteria": "input device could not be resolved"},
-            )
-            if fail_fast:
-                stop_event.set()
-            return
-        stream = _open_stream(logger, channels, sample_rate, block_size, device_index)
-        if stream is None:
-            return
-        with stream:
-            logger.emit("info", "audio.capture", "started", {"channels": stream.channels, "sample_rate_hz": sample_rate})
-            next_stats_emit = time.time() + stats_period_s
-            while not stop_event.is_set():
-                try:
-                    t_ns, frames, frame = frame_queue.get(timeout=0.05)
-                    nonlocal_seq[0] += 1
-                    msg = {
-                        "t_ns": t_ns,
-                        "seq": nonlocal_seq[0],
-                        "sample_rate_hz": sample_rate,
-                        "frame_samples": frames,
-                        "channels": frame.shape[1] if frame.ndim > 1 else 1,
-                        "data": frame,
-                    }
-                    if publish_fft:
-                        msg["fft_n"] = fft_n
-                        msg["data_fft"] = rfft(frame, n=fft_n, axis=0).astype(np.complex64)
-                    bus.publish("audio.frames", msg)
-                    with stats_lock:
-                        stats["frames_published"] += 1
-                except queue.Empty:
-                    pass
-                now_s = time.time()
-                if now_s >= next_stats_emit:
-                    with stats_lock:
-                        snapshot = dict(stats)
-                    bus.publish(
-                        "audio.capture.stats",
-                        {
-                            "t_ns": now_ns(),
-                            "queue_depth": frame_queue.qsize(),
-                            **snapshot,
-                        },
+        next_stats_emit = time.time() + stats_period_s
+        while not stop_event.is_set():
+            resolved_device_index = resolve_input_device_index(config, logger)
+            if resolved_device_index is None:
+                logger.emit(
+                    "warning",
+                    "audio.capture",
+                    "device_not_found",
+                    {"criteria": "input device could not be resolved", "retry_in_ms": reconnect_delay_ms},
+                )
+                if fail_fast:
+                    stop_event.set()
+                    return
+                time.sleep(reconnect_delay_ms / 1000.0)
+                continue
+            stream = _open_stream(logger, channels, sample_rate, block_size, resolved_device_index)
+            if stream is None:
+                if fail_fast:
+                    return
+                time.sleep(reconnect_delay_ms / 1000.0)
+                continue
+            try:
+                with stream:
+                    logger.emit(
+                        "info",
+                        "audio.capture",
+                        "started",
+                        {"channels": stream.channels, "sample_rate_hz": sample_rate, "device_index": resolved_device_index},
                     )
-                    next_stats_emit = now_s + stats_period_s
+                    while not stop_event.is_set():
+                        try:
+                            t_ns, frames, frame = frame_queue.get(timeout=0.05)
+                            nonlocal_seq[0] += 1
+                            msg = {
+                                "t_ns": t_ns,
+                                "seq": nonlocal_seq[0],
+                                "sample_rate_hz": sample_rate,
+                                "frame_samples": frames,
+                                "channels": frame.shape[1] if frame.ndim > 1 else 1,
+                                "data": frame,
+                                "stage_timestamps": {
+                                    "captured_t_ns": t_ns,
+                                    "published_t_ns": now_ns(),
+                                },
+                            }
+                            if publish_fft:
+                                msg["fft_n"] = fft_n
+                                msg["data_fft"] = rfft(frame, n=fft_n, axis=0).astype(np.complex64)
+                            bus.publish("audio.frames", msg)
+                            with stats_lock:
+                                stats["frames_published"] += 1
+                        except queue.Empty:
+                            pass
+                        now_s = time.time()
+                        if now_s >= next_stats_emit:
+                            with stats_lock:
+                                snapshot = dict(stats)
+                            bus.publish(
+                                "audio.capture.stats",
+                                {
+                                    "t_ns": now_ns(),
+                                    "queue_depth": frame_queue.qsize(),
+                                    **snapshot,
+                                },
+                            )
+                            next_stats_emit = now_s + stats_period_s
+            except Exception as exc:  # noqa: BLE001
+                logger.emit(
+                    "warning",
+                    "audio.capture",
+                    "disconnect",
+                    {"error": str(exc), "retry_in_ms": reconnect_delay_ms, "device_index": resolved_device_index},
+                )
+                time.sleep(reconnect_delay_ms / 1000.0)
 
     last_status_log_ns = [0]
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import urllib.request
 import zipfile
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -142,7 +143,7 @@ class FaceMeshMouthEstimator:
             bbox = (x1, y1, max(1, x2 - x1), max(1, y2 - y1))
             activity = _mouth_aspect_ratio(pts)
             scaled = _scale(activity, self._min_activity, self._max_activity)
-            outputs.append({"bbox": bbox, "activity": scaled})
+            outputs.append({"bbox": bbox, "activity": scaled, "presence": 1.0, "backend": "facemesh"})
         return outputs
 
 
@@ -183,7 +184,7 @@ class TFLiteMouthEstimator:
         if self._landmarks_output_index is None:
             raise RuntimeError("tflite landmark model output layout is unsupported")
 
-    def estimate_activity(self, frame_bgr: np.ndarray, bbox: BBox) -> Optional[float]:
+    def estimate_state(self, frame_bgr: np.ndarray, bbox: BBox) -> Optional[Dict[str, float]]:
         crop = _extract_face_crop(frame_bgr, bbox, self._crop_scale)
         if crop is None:
             return None
@@ -215,7 +216,17 @@ class TFLiteMouthEstimator:
             input_height=self._input_h,
         )
         activity = _mouth_aspect_ratio(points)
-        return _scale(activity, self._min_activity, self._max_activity)
+        return {
+            "activity": _scale(activity, self._min_activity, self._max_activity),
+            "presence": float(np.clip(presence, 0.0, 1.0)),
+            "quality": float(np.clip(presence, 0.0, 1.0)),
+        }
+
+    def estimate_activity(self, frame_bgr: np.ndarray, bbox: BBox) -> Optional[float]:
+        state = self.estimate_state(frame_bgr, bbox)
+        if state is None:
+            return None
+        return float(state.get("activity", 0.0))
 
 
 def _mouth_aspect_ratio(points: List[Tuple[int, int]]) -> float:
@@ -289,6 +300,11 @@ def _ensure_task_model_path(model_path: Optional[str]) -> str:
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / "face_landmarker.task"
     if not path.exists():
+        if not _runtime_downloads_allowed():
+            raise RuntimeError(
+                f"runtime model downloads disabled and FaceLandmarker model is missing: {path}. "
+                "Set vision.mouth.mesh_model_path to a bundled local asset."
+            )
         url = (
             "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
             "face_landmarker/float16/latest/face_landmarker.task"
@@ -401,3 +417,8 @@ def _landmarks_to_points(
         for x, y in zip(xs.tolist(), ys.tolist())
     ]
     return points
+
+
+def _runtime_downloads_allowed() -> bool:
+    raw = str(os.environ.get("FOCUSFIELD_ALLOW_RUNTIME_DOWNLOADS", "1") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}

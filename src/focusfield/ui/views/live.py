@@ -105,6 +105,15 @@ def live_page() -> str:
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    #focus-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-sec);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
     #perf-badge {
       font-size: 11px; color: var(--text-sec);
       font-variant-numeric: tabular-nums;
@@ -330,6 +339,7 @@ def live_page() -> str:
   <div id="ws-dot"></div>
   <div id="ws-label">connecting…</div>
   <div id="header-right">
+    <div id="focus-badges"></div>
     <div id="runtime-badges"></div>
     <div id="perf-badge">queue age: —</div>
     <div id="health-pill">ok</div>
@@ -467,6 +477,7 @@ const wsDot          = document.getElementById('ws-dot');
 const wsLabel        = document.getElementById('ws-label');
 const healthPill     = document.getElementById('health-pill');
 const perfBadge      = document.getElementById('perf-badge');
+const focusBadges    = document.getElementById('focus-badges');
 const runtimeBadges  = document.getElementById('runtime-badges');
 const heatmapCanvas  = document.getElementById('heatmapCanvas');
 const heatCtx        = heatmapCanvas.getContext('2d');
@@ -978,7 +989,7 @@ function updateAudioMeters(micHealth, fusionDebug) {
 
   // VAD
   const vadSpeech = fusionDebug && fusionDebug.vad_speech;
-  const vadConf   = fusionDebug && fusionDebug.doa_confidence;
+  const vadConf   = fusionDebug && fusionDebug.vad_confidence;
   const vadDot    = document.getElementById('vad-dot');
   const vadLabel  = document.getElementById('vad-label');
   const vadFill   = document.getElementById('vad-conf-fill');
@@ -1105,6 +1116,19 @@ function updateHeader(data) {
     ? enhancedFinal.pipeline_queue_age_ms
     : enhancedFinal.last_latency_ms;
   perfBadge.textContent = queueAge != null ? 'queue age: ' + Math.round(queueAge) + ' ms' : 'queue age: —';
+  const lock = (data && data.lock_state) || {};
+  const focusScore = lock.focus_score != null ? Number(lock.focus_score) : null;
+  const activityScore = lock.activity_score != null ? Number(lock.activity_score) : null;
+  const scoreMargin = lock.score_margin != null ? Number(lock.score_margin) : null;
+  const runnerUpScore = lock.runner_up_focus_score != null ? Number(lock.runner_up_focus_score) : null;
+  if (focusBadges) {
+    const badges = [];
+    badges.push('focus=' + (focusScore != null ? focusScore.toFixed(2) : '—'));
+    badges.push('activity=' + (activityScore != null ? activityScore.toFixed(2) : '—'));
+    badges.push('margin=' + (scoreMargin != null ? scoreMargin.toFixed(2) : '—'));
+    if (runnerUpScore != null) badges.push('runner-up=' + runnerUpScore.toFixed(2));
+    focusBadges.textContent = badges.join(' | ');
+  }
   const badges = [];
   if (data && data.runtime_profile) badges.push('profile=' + data.runtime_profile);
   if (data && data.audio_fallback_active) badges.push('AUDIO_ONLY');

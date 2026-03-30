@@ -36,8 +36,11 @@
 - track_id
 - doa_peak_deg
 - angular_distance_deg
-- score_components: mouth_activity, face_confidence, doa_peak_score
-- combined_score
+- score_components: mouth_activity, face_confidence, doa_peak_score, doa_confidence, audio_speech_prob, track_continuity, mic_health_score
+- focus_score
+- combined_score: compatibility alias for focus_score
+- activity_score
+- selection_mode
 
 ## DoaHeatmap
 
@@ -61,6 +64,11 @@
 - mode: NO_LOCK, VISION_ONLY, AUDIO_ONLY, AV_LOCK
 - target_id or target_bearing_deg
 - confidence
+- focus_score
+- activity_score
+- selection_mode
+- score_margin
+- runner_up_focus_score
 - reason: human-readable reason string
 - stability: optional jitter/hold stats
 
@@ -81,8 +89,10 @@
 
 - t_ns, seq
 - heatmap_summary (bins, peaks, confidence)
-- lock_state (state, mode, target_bearing_deg, confidence, reason)
-- face_summaries (track_id, bearing_deg, mouth_activity, speaking)
+- lock_state (state, mode, target_bearing_deg, confidence, focus_score, activity_score, selection_mode, score_margin, runner_up_focus_score, reason)
+- face_summaries (track_id, bearing_deg, mouth_activity, visual_speaking_prob, visual_quality, motion_activity, landmark_presence, speaking)
+- top_candidates (track_id, bearing_deg, focus_score, activity_score, selection_mode, score_components)
+- output_summary (sink health, drift, underrun, occupancy)
 - health_summary (module status, degraded flags)
 
 ## BenchScene

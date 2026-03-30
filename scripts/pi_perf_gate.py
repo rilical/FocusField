@@ -6,9 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+for candidate in (REPO_ROOT, SRC_ROOT):
+    candidate_str = str(candidate)
+    if candidate_str not in sys.path:
+        sys.path.insert(0, candidate_str)
 
 from focusfield.bench.profile_loader import default_pi_nightly_profile_path, load_pi_perf_gate_thresholds
 

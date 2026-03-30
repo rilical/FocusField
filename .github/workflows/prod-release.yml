@@ -1,0 +1,33 @@
+name: prod-release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Run focused release verification
+        run: >
+          python -m pytest -q
+          tests/test_prod_release_gate.py
+          tests/test_boot_validation.py
+          tests/test_focusbench_metrics.py
+          tests/test_output_path_hardening.py
+          tests/test_runtime_extensions.py

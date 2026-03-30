@@ -264,7 +264,13 @@ def _validate_face_detector_requirements(
     try:
         import cv2  # type: ignore
 
-        has_yunet = bool(hasattr(cv2, "FaceDetectorYN_create"))
+        has_yunet = bool(
+            hasattr(cv2, "FaceDetectorYN_create")
+            or (
+                hasattr(cv2, "FaceDetectorYN")
+                and hasattr(cv2.FaceDetectorYN, "create")
+            )
+        )
         haar_path = getattr(cv2.data, "haarcascades", "") + "haarcascade_frontalface_default.xml"
         has_haar = bool(haar_path) and os.path.exists(haar_path)
     except Exception:

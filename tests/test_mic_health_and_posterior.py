@@ -1,7 +1,12 @@
 import unittest
+import threading
+import time
 
 import numpy as np
 
+from focusfield.audio.sync.drift_check import start_drift_check
+from focusfield.core.bus import Bus
+from focusfield.core.logging import LogEmitter
 from focusfield.audio.mic_health import MicHealthAnalyzer
 from focusfield.fusion.av_association import _build_candidates  # noqa: PLC2701
 from focusfield.fusion.speaker_posterior import estimate_speaker_posterior
@@ -21,6 +26,73 @@ class MicHealthTests(unittest.TestCase):
         self.assertIn("dead", str(channels[0]["bad_reason"]))
         self.assertLess(float(channels[1]["score"]), 0.3)
         self.assertIn("clipping", str(channels[1]["bad_reason"]))
+
+    def test_profile_active_channel_order_ignores_spare_lane(self) -> None:
+        analyzer = MicHealthAnalyzer(
+            {
+                "audio": {
+                    "channels": 8,
+                    "device_profile": "minidsp_uma8_raw_7p1",
+                    "mic_health": {"enabled": True},
+                }
+            }
+        )
+        frame = 0.02 * np.random.randn(512, 8).astype(np.float32)
+        frame[:, 7] = 0.0
+        msg = analyzer.update({"t_ns": 1, "seq": 1, "data": frame})
+        self.assertIsNotNone(msg)
+        channels = [int(entry["channel"]) for entry in msg["channels"]]
+        self.assertEqual(channels, [0, 1, 2, 3, 4, 5, 6])
+        self.assertNotIn(7, channels)
+        self.assertNotIn(7, [int(ch) for ch in msg["active_channels"]])
+
+
+class DriftCheckTests(unittest.TestCase):
+    def test_drift_check_ignores_inactive_profile_spare_lane(self) -> None:
+        bus = Bus(max_queue_depth=8)
+        logger = LogEmitter(bus, min_level="error", run_id="drift-test")
+        stop_event = threading.Event()
+        q_logs = bus.subscribe("log.events")
+        config = {
+            "audio": {
+                "channels": 8,
+                "device_profile": "minidsp_uma8_raw_7p1",
+                "sync": {
+                    "enabled": True,
+                    "drift_check": {
+                        "max_offset_samples": 6,
+                        "check_every_s": 0.2,
+                    }
+                },
+            }
+        }
+        thread = start_drift_check(bus, config, logger, stop_event)
+        self.assertIsNotNone(thread)
+
+        try:
+            base = 0.02 * np.random.randn(1024).astype(np.float32)
+            frame = np.repeat(base[:, None], 8, axis=1)
+            frame[:, 7] = np.roll(base, 64)
+            bus.publish("audio.frames", {"t_ns": 1, "seq": 1, "data": frame})
+            time.sleep(0.35)
+
+            events = []
+            while True:
+                try:
+                    events.append(q_logs.get_nowait())
+                except Exception:
+                    break
+            drift_events = [
+                event
+                for event in events
+                if isinstance(event, dict)
+                and str(((event.get("context") or {}).get("module") or "")) == "audio.sync.drift_check"
+                and str(((event.get("context") or {}).get("event") or "")) == "drift_exceeded"
+            ]
+            self.assertEqual(drift_events, [])
+        finally:
+            stop_event.set()
+            time.sleep(0.05)
 
 
 class SpeakerPosteriorTests(unittest.TestCase):

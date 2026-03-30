@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from focusfield.audio.doa.geometry import load_active_channel_order
 from focusfield.audio.fft_backend import rfft
 from focusfield.audio.sync.drift_check import _estimate_offset_samples
 from focusfield.core.clock import now_ns
@@ -70,6 +71,7 @@ class MicHealthAnalyzer:
         self._max_drift_samples = int(health_cfg.get("max_drift_samples", 8))
         self._min_active_score = float(health_cfg.get("min_active_score", 0.35))
         self._drift_every_n = max(1, int(health_cfg.get("drift_every_n", 6)))
+        self._configured_active_channels = [int(ch) for ch in load_active_channel_order(config)]
         self._state = _MicHealthState()
 
     def update(self, frame_msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -82,13 +84,18 @@ class MicHealthAnalyzer:
         if x.ndim != 2 or x.shape[1] == 0:
             return None
 
-        channels = int(x.shape[1])
-        rms = np.sqrt(np.mean(x**2, axis=0)).astype(np.float32)
-        clip_fraction = np.mean(np.abs(x) >= 0.999, axis=0).astype(np.float32)
-        dc_offset = np.abs(np.mean(x, axis=0)).astype(np.float32)
-        dropout_fraction = np.mean(np.abs(x) <= self._dead_rms_threshold, axis=0).astype(np.float32)
-        coherence = self._estimate_coherence(frame_msg, x)
-        drift = self._estimate_drift(x)
+        active_raw_channels = self._active_raw_channels(int(x.shape[1]))
+        if not active_raw_channels:
+            return None
+        x_active = x[:, active_raw_channels]
+
+        channels = int(x_active.shape[1])
+        rms = np.sqrt(np.mean(x_active**2, axis=0)).astype(np.float32)
+        clip_fraction = np.mean(np.abs(x_active) >= 0.999, axis=0).astype(np.float32)
+        dc_offset = np.abs(np.mean(x_active, axis=0)).astype(np.float32)
+        dropout_fraction = np.mean(np.abs(x_active) <= self._dead_rms_threshold, axis=0).astype(np.float32)
+        coherence = self._estimate_coherence(frame_msg, x_active, active_raw_channels)
+        drift = self._estimate_drift(x_active)
         noise_floor = self._update_noise_floor(rms)
         snr_db = 20.0 * np.log10((rms + 1e-8) / (noise_floor + 1e-8))
 
@@ -116,10 +123,11 @@ class MicHealthAnalyzer:
         self._state.seq += 1
         scores = np.clip(self._state.score_ema, 0.0, 1.0).astype(np.float32)
         trust = np.clip(self._state.trust_ema, 0.0, 1.0).astype(np.float32)
-        active_channels = [int(idx) for idx, score in enumerate(scores) if float(score) >= self._min_active_score]
+        active_channels = [int(active_raw_channels[idx]) for idx, score in enumerate(scores) if float(score) >= self._min_active_score]
 
         channels_out: List[Dict[str, Any]] = []
         for idx in range(channels):
+            raw_idx = int(active_raw_channels[idx])
             bad_reason = _bad_reason(
                 rms=float(rms[idx]),
                 clip_fraction=float(clip_fraction[idx]),
@@ -136,7 +144,7 @@ class MicHealthAnalyzer:
             )
             channels_out.append(
                 {
-                    "channel": idx,
+                    "channel": raw_idx,
                     "score": float(scores[idx]),
                     "trust": float(trust[idx]),
                     "rms": float(rms[idx]),
@@ -160,12 +168,14 @@ class MicHealthAnalyzer:
             "mean_trust": float(np.mean(trust)) if trust.size else 0.0,
         }
 
-    def _estimate_coherence(self, frame_msg: Dict[str, Any], x: np.ndarray) -> np.ndarray:
+    def _estimate_coherence(self, frame_msg: Dict[str, Any], x: np.ndarray, active_raw_channels: List[int]) -> np.ndarray:
         x_fft = frame_msg.get("data_fft")
         if x_fft is None:
             spectrum = rfft(x, axis=0).astype(np.complex64)
         else:
             spectrum = np.asarray(x_fft).astype(np.complex64)
+            if spectrum.ndim == 2 and spectrum.shape[1] > max(active_raw_channels, default=-1):
+                spectrum = spectrum[:, active_raw_channels]
         if spectrum.ndim != 2 or spectrum.shape[1] != x.shape[1]:
             spectrum = rfft(x, axis=0).astype(np.complex64)
         ref_idx = _reference_channel(x.shape[1])
@@ -194,6 +204,13 @@ class MicHealthAnalyzer:
             drift[ch] = int(_estimate_offset_samples(ref, x[:, ch].astype(np.float32)))
         self._state.drift_samples = drift
         return drift
+
+    def _active_raw_channels(self, capture_channels: int) -> List[int]:
+        if self._configured_active_channels:
+            active = [int(ch) for ch in self._configured_active_channels if 0 <= int(ch) < capture_channels]
+            if active:
+                return active
+        return list(range(capture_channels))
 
     def _update_noise_floor(self, rms: np.ndarray) -> np.ndarray:
         if self._state.noise_floor is None or self._state.noise_floor.shape[0] != rms.shape[0]:

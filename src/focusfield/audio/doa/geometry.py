@@ -57,12 +57,7 @@ def load_mic_positions(config: Dict[str, object]) -> Tuple[List[MicPosition], Li
     profile_yaw_offset_deg = float(profile.get("yaw_offset_deg", 0.0) or 0.0)
     runtime_yaw_offset_deg = float(audio_cfg.get("yaw_offset_deg", 0.0) or 0.0)
     yaw_offset_deg = profile_yaw_offset_deg + runtime_yaw_offset_deg
-    channel_order = profile.get("channel_order") or list(range(channels))
-    channel_order = [int(ch) for ch in channel_order]
-    if channels and len(channel_order) > channels:
-        raise ValueError("channel_order length exceeds channel count")
-    if channels and any(ch < 0 or ch >= channels for ch in channel_order):
-        raise ValueError("channel_order contains channel outside capture width")
+    channel_order = _resolve_channel_order(profile, channels)
 
     if geometry == "circular":
         radius_m = float(profile.get("radius_m", 0.0))
@@ -83,6 +78,25 @@ def load_mic_positions(config: Dict[str, object]) -> Tuple[List[MicPosition], Li
         return positions, list(channel_order)
 
     raise ValueError(f"unsupported geometry: {geometry}")
+
+
+def load_active_channel_order(config: Dict[str, object]) -> List[int]:
+    """Return the active raw capture channels for the configured device profile."""
+    audio_cfg = config.get("audio", {}) if isinstance(config, dict) else {}
+    if not isinstance(audio_cfg, dict):
+        audio_cfg = {}
+    channels = int(audio_cfg.get("channels", 0) or 0)
+    if channels <= 0:
+        return []
+    profile_name = str(audio_cfg.get("device_profile", "") or "")
+    if not profile_name:
+        return list(range(channels))
+    profiles = _load_device_profiles()
+    mic_arrays = profiles.get("mic_arrays", {})
+    profile = mic_arrays.get(profile_name)
+    if not isinstance(profile, dict):
+        return list(range(channels))
+    return _resolve_channel_order(profile, channels)
 
 
 def _circular_positions(count: int, radius_m: float) -> List[MicPosition]:
@@ -122,3 +136,13 @@ def _load_device_profiles() -> Dict[str, Dict[str, object]]:
     config_path = Path(__file__).resolve().parents[4] / "configs" / "device_profiles.yaml"
     with open(config_path, "r", encoding="utf-8") as handle:
         return yaml.safe_load(handle) or {}
+
+
+def _resolve_channel_order(profile: Dict[str, object], channels: int) -> List[int]:
+    channel_order = profile.get("channel_order") or list(range(channels))
+    channel_order = [int(ch) for ch in channel_order]
+    if channels and len(channel_order) > channels:
+        raise ValueError("channel_order length exceeds channel count")
+    if channels and any(ch < 0 or ch >= channels for ch in channel_order):
+        raise ValueError("channel_order contains channel outside capture width")
+    return channel_order

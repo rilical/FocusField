@@ -31,6 +31,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from focusfield.audio.doa.geometry import load_active_channel_order
 from focusfield.audio.fft_backend import irfft, rfft
 
 
@@ -51,6 +52,7 @@ def start_drift_check(
     max_offset = int(drift_cfg.get("max_offset_samples", 6))
     check_every_s = float(drift_cfg.get("check_every_s", 2.0))
     check_every_s = max(0.2, check_every_s)
+    active_channels = load_active_channel_order(config)
 
     q = bus.subscribe("audio.frames")
 
@@ -79,21 +81,35 @@ def start_drift_check(
             x = np.asarray(data)
             if x.ndim != 2 or x.shape[1] < 2:
                 continue
-            ref = x[:, 0].astype(np.float32)
+            channel_order = [int(ch) for ch in active_channels if 0 <= int(ch) < x.shape[1]]
+            if len(channel_order) < 2:
+                channel_order = list(range(x.shape[1]))
+            ref_idx = int(channel_order[0])
+            ref = x[:, ref_idx].astype(np.float32)
             if not np.any(np.isfinite(ref)):
                 continue
             offsets = []
-            for ch in range(1, x.shape[1]):
+            offset_channels = []
+            for ch in channel_order:
+                if ch == ref_idx:
+                    continue
                 sig = x[:, ch].astype(np.float32)
                 off = _estimate_offset_samples(ref, sig)
                 offsets.append(int(off))
+                offset_channels.append(int(ch))
             worst = int(max(abs(o) for o in offsets)) if offsets else 0
             if worst > max_offset:
                 logger.emit(
                     "warning",
                     "audio.sync.drift_check",
                     "drift_exceeded",
-                    {"max_offset_samples": worst, "offsets": offsets, "threshold": max_offset},
+                    {
+                        "max_offset_samples": worst,
+                        "offsets": offsets,
+                        "channels": offset_channels,
+                        "reference_channel": ref_idx,
+                        "threshold": max_offset,
+                    },
                 )
 
     thread = threading.Thread(target=_run, name="drift-check", daemon=True)

@@ -114,6 +114,39 @@ class LockStateMachineTests(unittest.TestCase):
         self.assertAlmostEqual(msg["confidence"], 0.87, places=6)
         self.assertAlmostEqual(msg["activity_score"], 0.62, places=6)
 
+    def test_acquire_persist_can_commit_stable_single_face_below_primary_threshold(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {
+                    "acquire_threshold": 0.50,
+                    "acquire_persist_ms": 100,
+                    "acquire_floor_ratio": 0.50,
+                    "min_switch_interval_ms": 0,
+                },
+                "require_speaking": False,
+                "require_vad": False,
+            }
+        }
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "cam2-1",
+                "bearing_deg": 243.0,
+                "focus_score": 0.30,
+                "activity_score": 0.20,
+                "speaking_probability": 0.20,
+                "speaking": False,
+                "score_components": {"visual_speaking_prob": 0.20},
+            }
+        ]
+        msg1 = machine.update(cand, vad_state=None)
+        self.assertEqual(msg1["state"], "ACQUIRE")
+        machine._acquire_start_ns = now_ns() - 200_000_000
+        msg2 = machine.update(cand, vad_state=None)
+        self.assertEqual(msg2["state"], "LOCKED")
+        self.assertEqual(msg2["reason"], "acquired_persist")
+        self.assertEqual(msg2["mode"], "VISION_ONLY")
+
 
 class AvAssociationSizingTests(unittest.TestCase):
     def test_size_scale_downweights_small_faces(self) -> None:

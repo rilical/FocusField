@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 from focusfield.core.config import load_config
 
@@ -22,6 +24,30 @@ class ProductionDefaultTests(unittest.TestCase):
         self.assertEqual(cfg["fusion"]["thresholds_preset"], "balanced")
         self.assertEqual(cfg["fusion"]["audio_fallback"]["score_mode"], "confidence")
         self.assertFalse(bool(cfg["ui"]["enabled"]))
+
+    def test_threshold_preset_preserves_explicit_threshold_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "thresholds_presets.yaml").write_text(
+                "balanced:\n"
+                "  acquire_threshold: 0.65\n"
+                "  hold_ms: 800\n"
+                "  min_switch_interval_ms: 500\n",
+                encoding="utf-8",
+            )
+            (root / "config.yaml").write_text(
+                "fusion:\n"
+                "  thresholds_preset: balanced\n"
+                "  thresholds:\n"
+                "    acquire_threshold: 0.20\n"
+                "    hold_ms: 1500\n",
+                encoding="utf-8",
+            )
+            cfg = load_config(str(root / "config.yaml"))
+            self.assertEqual(cfg["fusion"]["thresholds_preset"], "balanced")
+            self.assertAlmostEqual(float(cfg["fusion"]["thresholds"]["acquire_threshold"]), 0.20, places=6)
+            self.assertEqual(int(cfg["fusion"]["thresholds"]["hold_ms"]), 1500)
+            self.assertEqual(int(cfg["fusion"]["thresholds"]["min_switch_interval_ms"]), 500)
 
 
 if __name__ == "__main__":

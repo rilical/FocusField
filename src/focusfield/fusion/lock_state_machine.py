@@ -80,6 +80,8 @@ class LockStateMachine:
         thresholds = config.get("fusion", {}).get("thresholds", {})
         self._acquire = float(thresholds.get("acquire_threshold", 0.65))
         self._acquire_timeout_ms = float(thresholds.get("acquire_timeout_ms", 500))
+        self._acquire_persist_ms = max(0.0, float(thresholds.get("acquire_persist_ms", 0.0)))
+        self._acquire_floor_ratio = min(1.0, max(0.0, float(thresholds.get("acquire_floor_ratio", 1.0))))
         self._hold_ms = float(thresholds.get("hold_ms", 800))
         self._handoff_min_ms = float(thresholds.get("handoff_min_ms", 700))
         self._drop = float(thresholds.get("drop_threshold", self._acquire * 0.6))
@@ -183,6 +185,13 @@ class LockStateMachine:
                         if self._lock_to(best, t_ns):
                             self._update_selected_metrics(best, runner_up_score)
                             reason = "acquired"
+                        else:
+                            reason = "switch_throttled"
+                        self._acquire_start_ns = 0
+                    elif self._can_acquire_persist(best, score, t_ns):
+                        if self._lock_to(best, t_ns):
+                            self._update_selected_metrics(best, runner_up_score)
+                            reason = "acquired_persist"
                         else:
                             reason = "switch_throttled"
                         self._acquire_start_ns = 0
@@ -307,6 +316,19 @@ class LockStateMachine:
             return "switch_throttled"
         self._state = "HANDOFF"
         return "handoff_wait"
+
+    def _can_acquire_persist(self, candidate: Dict[str, Any], score: float, t_ns: int) -> bool:
+        if self._acquire_persist_ms <= 0.0 or self._acquire_floor_ratio >= 1.0:
+            return False
+        if self._acquire_start_ns <= 0:
+            return False
+        if self._target_id is None or str(candidate.get("track_id")) != self._target_id:
+            return False
+        elapsed_ns = t_ns - self._acquire_start_ns
+        if elapsed_ns < int(self._acquire_persist_ms * 1_000_000):
+            return False
+        acquire_floor = self._acquire * self._acquire_floor_ratio
+        return score >= acquire_floor
 
 
 def start_lock_state_machine(

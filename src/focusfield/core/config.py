@@ -416,7 +416,10 @@ def _apply_thresholds_preset(config: Dict[str, Any], config_path: str) -> None:
     if not preset_values:
         return
     config.setdefault("fusion", {})
-    config["fusion"]["thresholds"] = preset_values
+    explicit_thresholds = config["fusion"].get("thresholds", {})
+    if not isinstance(explicit_thresholds, dict):
+        explicit_thresholds = {}
+    config["fusion"]["thresholds"] = _merge_dicts(preset_values, explicit_thresholds)
 
 
 def validate_config(config: Dict[str, Any]) -> List[str]:

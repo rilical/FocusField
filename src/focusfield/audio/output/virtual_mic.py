@@ -76,11 +76,26 @@ def resolve_output_device_index(
     selector = section.get("device_selector", {})
     if not isinstance(selector, dict):
         selector = {}
+    devices = list_output_devices()
+    hostapi = selector.get("hostapi")
+    if hostapi is not None:
+        hostapi_target = str(hostapi).strip().lower()
+        if hostapi_target:
+            devices = [device for device in devices if str(device.hostapi or "").strip().lower() == hostapi_target]
+    exact_name = selector.get("exact_name")
+    if exact_name is not None:
+        target = str(exact_name).strip()
+        if target:
+            matches = [device for device in devices if device.name.strip() == target]
+            if matches:
+                chosen = max(matches, key=lambda item: item.max_output_channels)
+                _log(logger, "info", _module_name(section_name), "device_selected", {"device": asdict(chosen)})
+                return chosen.index
     match_substring = selector.get("match_substring")
     if match_substring is not None:
         target = str(match_substring).strip().lower()
         if target:
-            matches = [device for device in list_output_devices() if target in device.name.lower()]
+            matches = [device for device in devices if target in device.name.lower()]
             if matches:
                 chosen = max(matches, key=lambda item: item.max_output_channels)
                 _log(logger, "info", _module_name(section_name), "device_selected", {"device": asdict(chosen)})
@@ -344,13 +359,23 @@ def _start_device_sink(
             if device_index is None and sink_cfg.get("device_index") is None:
                 # Use default output when no selector exists. If a selector exists and failed, retry.
                 selector = sink_cfg.get("device_selector", {})
+                exact_name = selector.get("exact_name") if isinstance(selector, dict) else None
                 match_substring = selector.get("match_substring") if isinstance(selector, dict) else None
-                if match_substring:
+                selector_requested = bool(str(exact_name or "").strip()) or bool(str(match_substring or "").strip())
+                if selector_requested:
+                    payload = {"retry_in_ms": reconnect_delay_ms}
+                    if exact_name:
+                        payload["exact_name"] = str(exact_name)
+                    if match_substring:
+                        payload["match_substring"] = str(match_substring)
+                    hostapi = selector.get("hostapi") if isinstance(selector, dict) else None
+                    if hostapi:
+                        payload["hostapi"] = str(hostapi)
                     logger.emit(
                         "warning",
                         module_name,
                         "device_not_found",
-                        {"match_substring": str(match_substring), "retry_in_ms": reconnect_delay_ms},
+                        payload,
                     )
                     time.sleep(reconnect_delay_ms / 1000.0)
                     continue

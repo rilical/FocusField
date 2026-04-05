@@ -57,6 +57,25 @@ class RuntimeExtensionsTests(unittest.TestCase):
         self.assertTrue(any("bus.topic_queue_policies.audio.frames" in e for e in errs))
         self.assertTrue(any("bus.topic_queue_policies.vision.frames.*" in e for e in errs))
 
+    def test_validate_config_rejects_invalid_output_device_selector_fields(self) -> None:
+        cfg = {
+            "output": {
+                "sink": "usb_mic",
+                "usb_mic": {
+                    "channels": 1,
+                    "device_selector": {
+                        "match_substring": 123,
+                        "exact_name": ["FocusField USB Mic"],
+                        "hostapi": {"name": "ALSA"},
+                    },
+                },
+            }
+        }
+        errs = validate_config(cfg)
+        self.assertTrue(any("output.usb_mic.device_selector.match_substring" in e for e in errs))
+        self.assertTrue(any("output.usb_mic.device_selector.exact_name" in e for e in errs))
+        self.assertTrue(any("output.usb_mic.device_selector.hostapi" in e for e in errs))
+
     def test_mode_example_configs_load_with_expected_modes(self) -> None:
         cases = [
             ("configs/meeting_peripheral.yaml", "meeting_peripheral", "usb_mic"),

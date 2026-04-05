@@ -768,6 +768,14 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             target_blocks = device_cfg.get("target_buffer_blocks")
             if target_blocks is not None and int(target_blocks) <= 0:
                 errors.append(f"output.{section_name}.target_buffer_blocks must be > 0")
+            selector = device_cfg.get("device_selector")
+            if selector is not None and not isinstance(selector, dict):
+                errors.append(f"output.{section_name}.device_selector must be a dict")
+            elif isinstance(selector, dict):
+                for key in ("match_substring", "exact_name", "hostapi"):
+                    value = selector.get(key)
+                    if value is not None and not isinstance(value, str):
+                        errors.append(f"output.{section_name}.device_selector.{key} must be string")
 
     uma8_cfg = config.get("uma8_leds", {})
     if uma8_cfg is not None and not isinstance(uma8_cfg, dict):

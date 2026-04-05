@@ -8,6 +8,7 @@ import numpy as np
 
 from focusfield.audio.enhance.agc_post import AdaptiveGainLimiter
 from focusfield.audio.output import sink as output_sink
+from focusfield.audio.output import virtual_mic
 from focusfield.core.bus import Bus
 from focusfield.core.logging import LogEmitter
 from focusfield.core.perf_monitor import start_perf_monitor
@@ -49,6 +50,171 @@ class OutputPathHardeningTests(unittest.TestCase):
                 "loopback-thread",
             )
             host_sink.assert_called_once()
+
+    def test_output_device_selector_exact_name_takes_precedence_over_substring(self) -> None:
+        config = {
+            "output": {
+                "usb_mic": {
+                    "device_selector": {
+                        "exact_name": "FocusField USB Mic",
+                        "match_substring": "USB",
+                    }
+                }
+            }
+        }
+        devices = [
+            virtual_mic.AudioOutputDeviceInfo(
+                index=1,
+                name="Generic USB Speaker",
+                hostapi="CoreAudio",
+                max_output_channels=8,
+                default_samplerate_hz=48_000.0,
+            ),
+            virtual_mic.AudioOutputDeviceInfo(
+                index=2,
+                name="FocusField USB Mic",
+                hostapi="CoreAudio",
+                max_output_channels=2,
+                default_samplerate_hz=48_000.0,
+            ),
+            virtual_mic.AudioOutputDeviceInfo(
+                index=3,
+                name="FocusField USB Mic",
+                hostapi="CoreAudio",
+                max_output_channels=4,
+                default_samplerate_hz=48_000.0,
+            ),
+        ]
+
+        with patch.object(virtual_mic, "list_output_devices", return_value=devices):
+            chosen = virtual_mic.resolve_output_device_index(config, section_name="usb_mic")
+
+        self.assertEqual(chosen, 3)
+
+    def test_output_device_selector_hostapi_filters_exact_name_candidates(self) -> None:
+        config = {
+            "output": {
+                "usb_mic": {
+                    "device_selector": {
+                        "exact_name": "FocusField USB Mic",
+                        "hostapi": "CoreAudio",
+                    }
+                }
+            }
+        }
+        devices = [
+            virtual_mic.AudioOutputDeviceInfo(
+                index=4,
+                name="FocusField USB Mic",
+                hostapi="WASAPI",
+                max_output_channels=8,
+                default_samplerate_hz=48_000.0,
+            ),
+            virtual_mic.AudioOutputDeviceInfo(
+                index=5,
+                name="FocusField USB Mic",
+                hostapi="CoreAudio",
+                max_output_channels=2,
+                default_samplerate_hz=48_000.0,
+            ),
+            virtual_mic.AudioOutputDeviceInfo(
+                index=6,
+                name="FocusField USB Mic",
+                hostapi="CoreAudio",
+                max_output_channels=4,
+                default_samplerate_hz=48_000.0,
+            ),
+        ]
+
+        with patch.object(virtual_mic, "list_output_devices", return_value=devices):
+            chosen = virtual_mic.resolve_output_device_index(config, section_name="usb_mic")
+
+        self.assertEqual(chosen, 6)
+
+    def test_output_device_selector_hostapi_filters_substring_candidates(self) -> None:
+        config = {
+            "output": {
+                "usb_mic": {
+                    "device_selector": {
+                        "match_substring": "USB",
+                        "hostapi": "WASAPI",
+                    }
+                }
+            }
+        }
+        devices = [
+            virtual_mic.AudioOutputDeviceInfo(
+                index=7,
+                name="USB Output A",
+                hostapi="CoreAudio",
+                max_output_channels=8,
+                default_samplerate_hz=48_000.0,
+            ),
+            virtual_mic.AudioOutputDeviceInfo(
+                index=8,
+                name="USB Output B",
+                hostapi="WASAPI",
+                max_output_channels=2,
+                default_samplerate_hz=48_000.0,
+            ),
+            virtual_mic.AudioOutputDeviceInfo(
+                index=9,
+                name="USB Output C",
+                hostapi="WASAPI",
+                max_output_channels=6,
+                default_samplerate_hz=48_000.0,
+            ),
+        ]
+
+        with patch.object(virtual_mic, "list_output_devices", return_value=devices):
+            chosen = virtual_mic.resolve_output_device_index(config, section_name="usb_mic")
+
+        self.assertEqual(chosen, 9)
+
+    def test_usb_mic_sink_retries_when_exact_name_selector_finds_no_device(self) -> None:
+        bus = Bus(max_queue_depth=4)
+        logger = MagicMock()
+        stop_event = threading.Event()
+        config = {
+            "audio": {
+                "sample_rate_hz": 48_000,
+                "block_size": 256,
+            },
+            "output": {
+                "usb_mic": {
+                    "channels": 1,
+                    "reconnect_delay_ms": 100,
+                    "device_selector": {
+                        "exact_name": "FocusField USB Mic",
+                        "hostapi": "ALSA",
+                    },
+                }
+            },
+        }
+        fake_sd = MagicMock()
+        fake_sd.OutputStream.side_effect = AssertionError("should not open default output stream")
+
+        with (
+            patch.object(virtual_mic, "sd", fake_sd),
+            patch.object(virtual_mic, "list_output_devices", return_value=[]),
+        ):
+            thread = virtual_mic.start_usb_mic_sink(bus, config, logger, stop_event)
+            self.assertIsNotNone(thread)
+            time.sleep(0.15)
+            stop_event.set()
+            time.sleep(0.05)
+
+        fake_sd.OutputStream.assert_not_called()
+        logger.emit.assert_any_call(
+            "warning",
+            "audio.output.usb_mic",
+            "device_not_found",
+            {
+                "exact_name": "FocusField USB Mic",
+                "hostapi": "ALSA",
+                "retry_in_ms": 100,
+            },
+        )
 
     def test_perf_monitor_includes_output_stage_metrics(self) -> None:
         bus = Bus(max_queue_depth=8)

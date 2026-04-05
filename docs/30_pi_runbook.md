@@ -357,6 +357,154 @@ Production calibration checklist:
 - confirm LED ring bearing mapping
 - confirm lock bearing against known speaker positions at `0`, `120`, and `240` degrees
 
+## Direct USB-to-Mac final demo workflow
+
+Use this path when the Raspberry Pi appliance should enumerate directly to macOS as
+`FocusField USB Mic`, the existing FocusField UI should stay visible during the demo,
+and Zoom will be the live A/B switch point against the Mac built-in microphone.
+
+Final demo profile:
+
+- `configs/meeting_peripheral_demo_ui.yaml`
+
+Operator rules for this profile:
+
+- direct cable only from the Pi device-capable connector (`usb-c-otg`), never from a host-only USB-A port
+- exactly one browser client against the UI
+- do not touch calibration controls during the demo
+- Zoom input switching is the A/B comparison, not a custom dashboard
+
+### Appliance-side feasibility gate
+
+Collect the appliance snapshot before installing or rehearsing:
+
+```bash
+python3 scripts/check_usb_demo_feasibility.py appliance \
+  --connector-port usb-c-otg \
+  --output artifacts/demo/appliance_usb_gate.json
+```
+
+Hard no-go conditions:
+
+- the cable path originates from a host-only USB-A port
+- `/sys/class/udc` is empty and no USB device controller is available
+- the gadget path cannot create the host-visible mic device
+
+Install the final demo services with the gadget connector declared explicitly:
+
+```bash
+sudo FOCUSFIELD_USB_GADGET_CONNECTOR_PORT=usb-c-otg \
+  scripts/install_systemd_service.sh \
+  focusfield \
+  /home/focus/FocusField/configs/meeting_peripheral_demo_ui.yaml
+
+sudo systemctl enable --now focusfield-usb-gadget focusfield
+sudo systemctl status focusfield-usb-gadget focusfield
+```
+
+The installer fails fast with exit code `5` if the selected connector is host-only.
+
+### macOS verification gate
+
+Capture host inventories before and after attaching the cable:
+
+```bash
+python3 scripts/check_usb_demo_feasibility.py macos-snapshot \
+  --output artifacts/demo/macos_before.json
+```
+
+Attach the direct cable from the Pi `usb-c-otg` port to the Mac, then collect:
+
+```bash
+python3 scripts/check_usb_demo_feasibility.py macos-snapshot \
+  --output artifacts/demo/macos_after.json
+
+python3 scripts/check_usb_demo_feasibility.py macos-compare \
+  --before artifacts/demo/macos_before.json \
+  --after artifacts/demo/macos_after.json \
+  --expected-device-name "FocusField USB Mic" \
+  --output artifacts/demo/zoom_host_gate.json
+```
+
+Hard no-go conditions:
+
+- macOS never shows `FocusField USB Mic` in the USB inventory
+- macOS never shows `FocusField USB Mic` in the audio input inventory
+- Zoom cannot keep `FocusField USB Mic` selected after cable attach or replug
+
+### Live demo bring-up
+
+Run the final demo profile:
+
+```bash
+python3 -m focusfield.main.run \
+  --config configs/meeting_peripheral_demo_ui.yaml \
+  --mode meeting_peripheral
+```
+
+Open one browser tab only:
+
+- `http://<pi-ip>:8080/`
+
+What the UI should show during the story:
+
+- face tracks
+- speaker lock / target state
+- heatmap / directionality
+- mic health / output health
+- runtime pressure staying healthy
+
+### Zoom run-of-show
+
+Use this exact A/B order:
+
+1. Start Zoom on the Mac with `MacBook Pro Microphone` (or the current built-in mic) selected.
+2. Show the FocusField UI live and confirm the rig is locked on the active talker.
+3. Switch Zoom input to `FocusField USB Mic`.
+4. Run target speech plus interference.
+5. Switch Zoom input back to the Mac built-in mic for contrast.
+6. End with `FocusField USB Mic` selected again.
+
+### Final rehearsal gate
+
+Rehearse with the exact final cable, Mac, Zoom settings, and demo config:
+
+```bash
+python3 scripts/demo_rehearsal_gate.py \
+  --config configs/meeting_peripheral_demo_ui.yaml \
+  --run-dir artifacts/LATEST \
+  --host-gate-evidence artifacts/demo/zoom_host_gate.json \
+  --output artifacts/demo/demo_readiness.json
+```
+
+Required manual checks:
+
+- cold boot with the Mac already attached
+- Zoom can select `FocusField USB Mic`
+- cable replug recovers cleanly
+- UI remains responsive with one browser open
+- live A/B switching is audible and repeatable
+
+Required thresholds:
+
+- host-visible mic appears within `30s` of cold boot
+- reconnect recovery completes within `10s`
+- 30-minute rehearsal completes crash-free
+- `latency_p95_ms <= 150`
+- `latency_p99_ms <= 220`
+- `output_underrun_rate <= 0.02`
+- `queue_pressure_peak <= 25`
+
+If the UI-visible rehearsal misses performance targets, tune only in this order:
+
+1. lower `ui.frame_max_hz` to `0.25`
+2. lower `ui.telemetry_hz` to `0.5`
+3. lower `ui.frame_jpeg_quality` to `40`
+
+Do not loosen audio or fusion thresholds to compensate for UI cost.
+
+See `docs/final_demo_checklist.md` for the operator checklist.
+
 ## Demo-safe Zoom workflow
 
 Use the dedicated demo profile when the goal is a reliable live Zoom demo plus

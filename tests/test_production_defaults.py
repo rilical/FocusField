@@ -1,3 +1,4 @@
+import copy
 import unittest
 
 from focusfield.core.config import load_config
@@ -22,6 +23,31 @@ class ProductionDefaultTests(unittest.TestCase):
         self.assertEqual(cfg["fusion"]["thresholds_preset"], "balanced")
         self.assertEqual(cfg["fusion"]["audio_fallback"]["score_mode"], "confidence")
         self.assertFalse(bool(cfg["ui"]["enabled"]))
+
+    def test_demo_ui_profile_enables_low_rate_ui_without_changing_demo_safe_defaults(self) -> None:
+        safe_cfg = load_config("configs/meeting_peripheral_demo_safe.yaml")
+        demo_cfg = load_config("configs/meeting_peripheral_demo_ui.yaml")
+
+        self.assertTrue(bool(demo_cfg["ui"]["enabled"]))
+        self.assertEqual(demo_cfg["ui"]["telemetry_hz"], 1)
+        self.assertEqual(demo_cfg["ui"]["frame_max_hz"], 0.5)
+        self.assertEqual(demo_cfg["ui"]["frame_jpeg_quality"], 50)
+        self.assertEqual(
+            demo_cfg["output"]["usb_mic"]["device_selector"]["exact_name"],
+            "FocusField USB Mic",
+        )
+        self.assertFalse(demo_cfg["output"]["usb_mic"]["device_selector"].get("match_substring"))
+
+        normalized_safe = copy.deepcopy(safe_cfg)
+        normalized_demo = copy.deepcopy(demo_cfg)
+        normalized_safe["runtime"].pop("config_path", None)
+        normalized_safe["runtime"].pop("config_basename", None)
+        normalized_demo["runtime"].pop("config_path", None)
+        normalized_demo["runtime"].pop("config_basename", None)
+        normalized_demo["ui"] = normalized_safe["ui"]
+        normalized_safe["output"]["usb_mic"]["device_selector"]["match_substring"] = None
+        normalized_demo["output"]["usb_mic"]["device_selector"].pop("exact_name", None)
+        self.assertEqual(normalized_demo, normalized_safe)
 
 
 if __name__ == "__main__":

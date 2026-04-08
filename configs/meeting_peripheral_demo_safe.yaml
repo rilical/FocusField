@@ -18,6 +18,7 @@ trace:
     enabled: true
     fps: 1
   record_raw_audio: true
+  record_heatmap_full: false
 
 bench:
   targets:
@@ -29,17 +30,36 @@ bench:
 audio:
   channels: 8
   sample_rate_hz: 48000
-  block_size: 960
+  block_size: 2048
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
-    queue_depth: 24
+    queue_depth: 16
+    stats_emit_hz: 1
     reconnect_delay_ms: 750
+    latency: high
+  mic_health:
+    enabled: false
   device_selector:
     match_substring: miniDSP
     require_input_channels: 8
   models:
     allow_runtime_downloads: false
+  vad:
+    enabled: false
+    mode: 1
+    frame_ms: 30
+    min_speech_ratio: 0.3
+    update_hz: 4
+  doa:
+    method: srp_phat
+    bins: 18
+    update_hz: 2
+    freq_low_hz: 200
+    freq_high_hz: 4500
+    continuity_weight: 0.18
+    continuity_sigma_bins: 5.0
+    max_jump_deg: 65.0
 
 vision:
   models:
@@ -47,67 +67,85 @@ vision:
   face:
     backend: auto
     min_area: 120
-    detect_width: 416
-    detect_every_n: 1
+    detect_width: 256
+    detect_every_n: 2
   mouth:
-    backend: tflite
-    use_facemesh: true
-    mesh_every_n: 1
-    tflite_min_presence: 0.35
+    backend: diff
+    use_facemesh: false
+    mesh_every_n: 2
 
 video:
   cameras:
     - id: cam0
       hfov_deg: 160
       yaw_offset_deg: 0
-      width: 640
-      height: 360
-      fps: 15
+      width: 352
+      height: 198
+      fps: 6
     - id: cam1
       hfov_deg: 160
       yaw_offset_deg: 120
-      width: 640
-      height: 360
-      fps: 15
+      width: 352
+      height: 198
+      fps: 6
     - id: cam2
       hfov_deg: 160
       yaw_offset_deg: 240
-      width: 640
-      height: 360
-      fps: 15
+      width: 352
+      height: 198
+      fps: 6
 
 fusion:
-  thresholds_preset: balanced
+  thresholds_preset: ''
   weights:
-    mouth: 0.42
-    face: 0.18
-    doa: 0.28
-    angle: 0.12
-  require_vad: true
+    bias: -0.35
+    mouth: 0.55
+    face: 0.25
+    continuity: 0.70
+    mic_health: 0.0
+    doa: 0.22
+    doa_confidence: 0.35
+    angle: 0.10
+    audio: 0.0
+    agreement_bonus: 0.25
+  require_vad: false
   vad_max_age_ms: 500
-  require_speaking: true
+  require_speaking: false
   audio_fallback:
-    enabled: true
-    require_vad: true
-    allow_when_faces_missing: true
-    face_staleness_ms: 700
-    min_doa_confidence: 0.45
-    min_peak_score: 0.30
-    score_mode: confidence
+    enabled: false
+  thresholds:
+    acquire_threshold: 0.28
+    acquire_timeout_ms: 1200
+    acquire_persist_ms: 250
+    acquire_floor_ratio: 0.55
+    drop_threshold: 0.12
+    hold_ms: 1400
+    handoff_min_ms: 1200
+    min_switch_interval_ms: 1000
+    speak_on_threshold: 0.20
+    bearing_smoothing_alpha: 0.75
 
 bus:
   max_queue_depth: 24
   topic_queue_depths:
     audio.frames: 16
-    audio.vad: 64
-    audio.enhanced.beamformed: 24
-    audio.enhanced.final: 24
-    runtime.perf: 16
+    audio.vad: 16
+    audio.doa_heatmap: 8
+    audio.enhanced.beamformed: 12
+    audio.enhanced.final: 12
+    runtime.perf: 8
     vision.frames.*: 4
     vision.frames.cam0: 4
     vision.frames.cam1: 4
     vision.frames.cam2: 4
     vision.face_tracks: 4
+    fusion.target_lock: 8
+
+uma8_leds:
+  enabled: false
+  enabled_fallback: false
+  strict_transport: false
+  backend: none
 
 ui:
   enabled: false

@@ -48,9 +48,14 @@ def load_config(path: str) -> Dict[str, Any]:
     """Load YAML config and apply defaults."""
     with open(path, "r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        data = {}
+    # Expand runtime mode defaults before layering on global defaults so the
+    # selected mode can intentionally override the generic baseline.
+    mode_expanded = copy.deepcopy(data)
+    apply_mode_defaults(mode_expanded)
     defaults = _default_config()
-    merged = _merge_dicts(defaults, data)
-    apply_mode_defaults(merged)
+    merged = _merge_dicts(defaults, mode_expanded)
     _apply_thresholds_preset(merged, path)
     apply_camera_calibration_sidecar(merged)
     runtime_cfg = merged.setdefault("runtime", {})

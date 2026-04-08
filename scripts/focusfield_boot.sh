@@ -100,5 +100,53 @@ while :; do
   sleep "$DELAY_SECONDS"
 done
 
+CONFIG_RUNTIME="$CONFIG_EFFECTIVE"
+GENERATE_LOCAL_CONFIG=$("$PYTHON_BIN" - "$CONFIG_EFFECTIVE" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+cfg = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
+runtime = cfg.get("runtime", {}) if isinstance(cfg, dict) else {}
+generated = bool(runtime.get("generated_for_pi", False)) if isinstance(runtime, dict) else False
+video = cfg.get("video", {}) if isinstance(cfg, dict) else {}
+cameras = video.get("cameras", []) if isinstance(video, dict) else []
+needs = False
+if isinstance(cameras, list) and cameras:
+    for cam in cameras:
+        if not isinstance(cam, dict):
+            continue
+        path = str(cam.get("device_path", "") or "").strip()
+        if not path:
+            needs = True
+            break
+print("0" if generated or not needs else "1")
+PY
+)
+
+if [[ "$GENERATE_LOCAL_CONFIG" == "1" ]]; then
+  CAMERA_COUNT=$("$PYTHON_BIN" - "$CONFIG_EFFECTIVE" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+cfg = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
+video = cfg.get("video", {}) if isinstance(cfg, dict) else {}
+cameras = video.get("cameras", []) if isinstance(video, dict) else []
+print(len(cameras) if isinstance(cameras, list) and cameras else 0)
+PY
+)
+  if [[ "$CAMERA_COUNT" =~ ^[0-9]+$ ]] && (( CAMERA_COUNT > 0 )); then
+    CONFIG_RUNTIME=$(mktemp /tmp/focusfield-runtime.XXXXXX.yaml)
+    "$PYTHON_BIN" scripts/prepare_pi_local_config.py \
+      --base-config "$CONFIG_EFFECTIVE" \
+      --output "$CONFIG_RUNTIME" \
+      --camera-source by-path \
+      --camera-scope usb \
+      --max-cameras "$CAMERA_COUNT"
+    echo "Generated Pi-local runtime config: $CONFIG_RUNTIME"
+  fi
+fi
+
 "$PYTHON_BIN" -m focusfield.main.run \
-  --config "$CONFIG_EFFECTIVE"
+  --config "$CONFIG_RUNTIME"

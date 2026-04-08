@@ -43,11 +43,12 @@ bench:
     audio_underrun_rate_max: 0.01
 audio:
   channels: 8
-  sample_rate_hz: 48000
+  sample_rate_hz: 44100
   block_size: 2048
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
+    latency: high
     queue_depth: 16
     stats_emit_hz: 1
     reconnect_delay_ms: 750

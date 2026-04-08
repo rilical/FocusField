@@ -218,6 +218,55 @@ python3 scripts/prepare_pi_local_config.py \
 python3 scripts/pi_preflight.py --config configs/full_3cam_working_local.yaml --camera-source auto
 ```
 
+### Demo-ready Pi profiles
+
+Use the dedicated demo profiles when the goal is a stable live run, not maximum
+observability:
+
+- `configs/full_3cam_8mic_pi_demo_live.yaml`
+  - strict full rig
+  - trace off
+  - UI off
+  - LEDs off
+  - lower camera and DOA cadence
+  - visual-first single-speaker lock tuning
+- `configs/full_3cam_8mic_pi_demo_observe.yaml`
+  - same core pipeline as `demo_live`
+  - low-rate UI enabled for one operator client only
+  - `telemetry_hz: 2`
+  - `frame_max_hz: 1`
+
+Use the helper launcher so you do not accidentally double-open the cameras with
+`systemd` plus a foreground run:
+
+```bash
+set -euo pipefail
+cd /home/focus/FocusField
+source .venv/bin/activate
+
+# Actual demo run: lowest load.
+scripts/pi_demo_launch.sh --mode live
+```
+
+```bash
+set -euo pipefail
+cd /home/focus/FocusField
+source .venv/bin/activate
+
+# Rehearsal / operator visibility: one low-rate dashboard client only.
+scripts/pi_demo_launch.sh --mode observe
+```
+
+Important:
+
+- Do not run `pi_preflight.py` or `list_cameras.py` while FocusField is already up.
+- Do not run `systemd` and a foreground `python3 -m focusfield.main.run` at the same time.
+- Regenerate `full_3cam_working_local.yaml` any time the hub topology changes.
+- Keep each camera on the same hub downstream port. The stable identity is the
+  `/dev/v4l/by-path/...-video-index0` path, not `/dev/videoN`.
+- Use only one browser tab against the observe profile. Opening multiple tabs
+  multiplies JPEG encode work in the UI server.
+
 ## UMA-8 calibration
 
 Channel-order and yaw alignment are critical for DOA/beamforming.

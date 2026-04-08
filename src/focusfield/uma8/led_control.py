@@ -489,10 +489,6 @@ def start_uma8_led_service(
     period = 1.0 / update_hz
     smoothing_alpha = _clamp01(float(cfg.get("smoothing_alpha", 0.35) or 0.35))
     strict_transport = bool(cfg.get("strict_transport", False))
-
-    q_lock = bus.subscribe("fusion.target_lock")
-    q_doa = bus.subscribe("audio.doa_heatmap")
-    q_vad = bus.subscribe("audio.vad")
     doa_fallback_enabled = bool(cfg.get("doa_fallback_enabled", True))
     doa_min_confidence = float(cfg.get("doa_min_confidence", 0.05) or 0.05)
     doa_use_without_vad = bool(cfg.get("doa_use_without_vad", False))
@@ -504,6 +500,10 @@ def start_uma8_led_service(
         thread = threading.Thread(target=_disabled, name="uma8-leds", daemon=True)
         thread.start()
         return thread
+
+    q_lock = bus.subscribe("fusion.target_lock")
+    q_doa = bus.subscribe("audio.doa_heatmap")
+    q_vad = bus.subscribe("audio.vad")
 
     logger.emit(
         "info",

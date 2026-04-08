@@ -631,6 +631,14 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         backend = str(vad_cfg.get("backend", "auto") or "auto").strip().lower()
         if backend not in {"auto", "silero", "webrtc"}:
             errors.append("audio.vad.backend must be one of: auto, silero, webrtc")
+        if "update_hz" in vad_cfg:
+            try:
+                update_hz = float(vad_cfg.get("update_hz", 0.0))
+            except Exception:
+                errors.append("audio.vad.update_hz must be numeric")
+            else:
+                if update_hz <= 0.0:
+                    errors.append("audio.vad.update_hz must be > 0")
 
     vision_cfg = config.get("vision", {})
     if isinstance(vision_cfg, dict):

@@ -87,6 +87,9 @@ def start_audio_capture(
     status_log_interval_s = float(capture_cfg.get("status_log_interval_s", 1.0))
     status_log_interval_s = max(0.25, min(5.0, status_log_interval_s))
     reconnect_delay_ms = max(100, int(capture_cfg.get("reconnect_delay_ms", 1000) or 1000))
+    stream_latency = str(capture_cfg.get("latency", "high") or "high").strip().lower()
+    if stream_latency not in {"low", "high"}:
+        stream_latency = "high"
 
     frame_queue: queue.Queue[tuple[int, int, np.ndarray]] = queue.Queue(maxsize=capture_queue_depth)
     stats_lock = threading.Lock()
@@ -116,7 +119,7 @@ def start_audio_capture(
                     return
                 time.sleep(reconnect_delay_ms / 1000.0)
                 continue
-            stream = _open_stream(logger, channels, sample_rate, block_size, resolved_device_index)
+            stream = _open_stream(logger, channels, sample_rate, block_size, resolved_device_index, stream_latency)
             if stream is None:
                 if fail_fast:
                     return
@@ -227,7 +230,7 @@ def start_audio_capture(
 
     nonlocal_seq = [0]
 
-    def _open_stream(logger_obj, requested_channels, sr, block, device):
+    def _open_stream(logger_obj, requested_channels, sr, block, device, latency):
         try:
             return sd.InputStream(
                 samplerate=sr,
@@ -235,6 +238,7 @@ def start_audio_capture(
                 channels=requested_channels,
                 dtype="float32",
                 device=device,
+                latency=latency,
                 callback=_callback,
             )
         except Exception as exc:  # noqa: BLE001
@@ -262,6 +266,7 @@ def start_audio_capture(
                         channels=1,
                         dtype="float32",
                         device=device,
+                        latency=latency,
                         callback=_callback,
                     )
                 except Exception as exc2:  # noqa: BLE001

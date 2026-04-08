@@ -13,6 +13,7 @@ CONFIG KEYS:
   - audio.vad.mode: aggressiveness 0..3 for WebRTC fallback
   - audio.vad.frame_ms: frame size (10/20/30) for WebRTC fallback
   - audio.vad.min_speech_ratio: WebRTC fallback threshold
+  - audio.vad.update_hz: optional publish-rate cap for audio.vad state
   - audio.vad.silero.threshold: posterior threshold for silero backend
 """
 
@@ -168,6 +169,7 @@ def start_audio_vad(
     frame_ms = int(vad_cfg.get("frame_ms", 20))
     mode = int(vad_cfg.get("mode", 2))
     min_ratio = float(vad_cfg.get("min_speech_ratio", 0.3))
+    update_hz = float(vad_cfg.get("update_hz", 0.0) or 0.0)
     silero_cfg = vad_cfg.get("silero", {}) if isinstance(vad_cfg, dict) else {}
     if not isinstance(silero_cfg, dict):
         silero_cfg = {}
@@ -215,6 +217,8 @@ def start_audio_vad(
         idle_cycles = 0
         processed_cycles = 0
         next_stats_emit = time.time() + 1.0
+        min_period_ns = int(1e9 / update_hz) if update_hz > 0.0 else 0
+        last_publish_ns = 0
         while not stop_event.is_set():
             frame = _wait_and_drain_latest(q)
             if frame is None:
@@ -223,7 +227,10 @@ def start_audio_vad(
                 data = frame.get("data")
                 if data is not None:
                     msg = processor.process(np.asarray(data))
-                    bus.publish("audio.vad", msg)
+                    msg_t_ns = int(msg.get("t_ns", now_ns()))
+                    if min_period_ns <= 0 or (msg_t_ns - last_publish_ns) >= min_period_ns:
+                        bus.publish("audio.vad", msg)
+                        last_publish_ns = msg_t_ns
                     processed_cycles += 1
             now_s = time.time()
             if now_s >= next_stats_emit:

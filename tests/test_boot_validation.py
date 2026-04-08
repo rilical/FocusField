@@ -36,12 +36,12 @@ class BootValidationTests(unittest.TestCase):
             "audio": {"models": {"allow_runtime_downloads": False}},
         }
         with unittest.mock.patch(
-            "scripts.boot_validation.DEFAULT_YUNET_MODEL",
-            Path("/tmp/missing-yunet.onnx"),
+            "scripts.boot_validation.default_yunet_model",
+            return_value=Path("/tmp/missing-yunet.onnx"),
         ):
             with unittest.mock.patch(
-                "scripts.boot_validation.DEFAULT_FACE_LANDMARKER_TASK",
-                Path("/tmp/missing-face-landmarker.task"),
+                "scripts.boot_validation.default_face_landmarker_task",
+                return_value=Path("/tmp/missing-face-landmarker.task"),
             ):
                 errors = validate_local_model_assets(cfg, "/tmp/focusfield.yaml")
         self.assertTrue(any("vision.face.yunet_model_path" in err for err in errors))
@@ -85,15 +85,14 @@ class BootValidationTests(unittest.TestCase):
                 },
                 "audio": {"models": {"allow_runtime_downloads": False}},
             }
-            with unittest.mock.patch("scripts.boot_validation.DEFAULT_MODEL_CACHE", cache):
+            with unittest.mock.patch(
+                "scripts.boot_validation.default_yunet_model",
+                return_value=cache / "face_detection_yunet_2023mar.onnx",
+            ):
                 with unittest.mock.patch(
-                    "scripts.boot_validation.DEFAULT_YUNET_MODEL",
-                    cache / "face_detection_yunet_2023mar.onnx",
+                    "scripts.boot_validation.default_face_landmarker_task",
+                    return_value=task,
                 ):
-                    with unittest.mock.patch(
-                        "scripts.boot_validation.DEFAULT_FACE_LANDMARKER_TASK",
-                        task,
-                    ):
                         errors = validate_local_model_assets(cfg, str(root / "config.yaml"))
             self.assertEqual(errors, [])
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import pwd
 import sys
 import zipfile
 from pathlib import Path
@@ -15,9 +17,28 @@ from focusfield.main.modes import normalize_runtime_mode
 
 
 FAST_BOOT_MODES = {"meeting_peripheral", "appliance_fastboot"}
-DEFAULT_MODEL_CACHE = Path.home() / ".cache" / "focusfield"
-DEFAULT_YUNET_MODEL = DEFAULT_MODEL_CACHE / "face_detection_yunet_2023mar.onnx"
-DEFAULT_FACE_LANDMARKER_TASK = DEFAULT_MODEL_CACHE / "face_landmarker.task"
+
+
+def _service_user_home() -> Path:
+    sudo_user = str(os.environ.get("SUDO_USER", "") or "").strip()
+    if sudo_user:
+        try:
+            return Path(pwd.getpwnam(sudo_user).pw_dir)
+        except KeyError:
+            pass
+    return Path.home()
+
+
+def default_model_cache() -> Path:
+    return _service_user_home() / ".cache" / "focusfield"
+
+
+def default_yunet_model() -> Path:
+    return default_model_cache() / "face_detection_yunet_2023mar.onnx"
+
+
+def default_face_landmarker_task() -> Path:
+    return default_model_cache() / "face_landmarker.task"
 
 
 def load_effective_config(config_path: str) -> Dict[str, Any]:
@@ -91,14 +112,14 @@ def validate_local_model_assets(config: Dict[str, Any], config_path: str) -> Lis
 
     face_backend = str(face_cfg.get("backend", "auto") or "auto").strip().lower()
     if face_backend in {"auto", "yunet"}:
-        yunet_model = face_cfg.get("yunet_model_path", "") or str(DEFAULT_YUNET_MODEL)
+        yunet_model = face_cfg.get("yunet_model_path", "") or str(default_yunet_model())
         _require_file(yunet_model, "vision.face.yunet_model_path")
 
     mouth_backend = str(mouth_cfg.get("backend", "auto") or "auto").strip().lower()
     use_facemesh = bool(mouth_cfg.get("use_facemesh", True))
     if use_facemesh or mouth_backend in {"tflite", "facemesh"}:
         tflite_model_path = mouth_cfg.get("tflite_model_path", "")
-        mesh_model_path = mouth_cfg.get("mesh_model_path", "") or str(DEFAULT_FACE_LANDMARKER_TASK)
+        mesh_model_path = mouth_cfg.get("mesh_model_path", "") or str(default_face_landmarker_task())
         if tflite_model_path:
             _require_file(tflite_model_path, "vision.mouth.tflite_model_path")
         elif mesh_model_path:

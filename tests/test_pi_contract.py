@@ -214,6 +214,12 @@ class PiContractTests(unittest.TestCase):
                 out = hardware_probe.candidate_sources("/dev/v4l/by-path/p1", strict_capture=True)
         self.assertEqual(out, [])
 
+    def test_source_to_open_target_preserves_video_device_path(self) -> None:
+        self.assertEqual(
+            hardware_probe.source_to_open_target("/dev/video0"),
+            "/dev/video0",
+        )
+
     def test_runtime_requirements_fail_when_usb_cameras_below_target(self) -> None:
         cfg = {
             "runtime": {

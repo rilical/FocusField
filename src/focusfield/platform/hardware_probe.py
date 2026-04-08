@@ -261,15 +261,10 @@ def _finalize_candidates(values: list[object], strict_capture: bool, camera_scop
 
 
 def source_to_open_target(source: object) -> object:
-    if not isinstance(source, str):
-        return source
-    match = re.search(r"/dev/video(\d+)$", source)
-    if match is None:
-        return source
-    try:
-        return int(match.group(1))
-    except Exception:
-        return source
+    # OpenCV on the Pi can treat integer sources as camera indices rather than
+    # concrete V4L2 device nodes. Preserve explicit /dev/videoN paths so
+    # CAP_V4L2 opens the actual node instead of probing "camera 0/1/2".
+    return source
 
 
 def try_open_camera_any_backend(

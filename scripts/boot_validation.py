@@ -15,6 +15,9 @@ from focusfield.main.modes import normalize_runtime_mode
 
 
 FAST_BOOT_MODES = {"meeting_peripheral", "appliance_fastboot"}
+DEFAULT_MODEL_CACHE = Path.home() / ".cache" / "focusfield"
+DEFAULT_YUNET_MODEL = DEFAULT_MODEL_CACHE / "face_detection_yunet_2023mar.onnx"
+DEFAULT_FACE_LANDMARKER_TASK = DEFAULT_MODEL_CACHE / "face_landmarker.task"
 
 
 def load_effective_config(config_path: str) -> Dict[str, Any]:
@@ -88,13 +91,14 @@ def validate_local_model_assets(config: Dict[str, Any], config_path: str) -> Lis
 
     face_backend = str(face_cfg.get("backend", "auto") or "auto").strip().lower()
     if face_backend in {"auto", "yunet"}:
-        _require_file(face_cfg.get("yunet_model_path", ""), "vision.face.yunet_model_path")
+        yunet_model = face_cfg.get("yunet_model_path", "") or str(DEFAULT_YUNET_MODEL)
+        _require_file(yunet_model, "vision.face.yunet_model_path")
 
     mouth_backend = str(mouth_cfg.get("backend", "auto") or "auto").strip().lower()
     use_facemesh = bool(mouth_cfg.get("use_facemesh", True))
     if use_facemesh or mouth_backend in {"tflite", "facemesh"}:
         tflite_model_path = mouth_cfg.get("tflite_model_path", "")
-        mesh_model_path = mouth_cfg.get("mesh_model_path", "")
+        mesh_model_path = mouth_cfg.get("mesh_model_path", "") or str(DEFAULT_FACE_LANDMARKER_TASK)
         if tflite_model_path:
             _require_file(tflite_model_path, "vision.mouth.tflite_model_path")
         elif mesh_model_path:

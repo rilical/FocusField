@@ -35,7 +35,15 @@ class BootValidationTests(unittest.TestCase):
             },
             "audio": {"models": {"allow_runtime_downloads": False}},
         }
-        errors = validate_local_model_assets(cfg, "/tmp/focusfield.yaml")
+        with unittest.mock.patch(
+            "scripts.boot_validation.DEFAULT_YUNET_MODEL",
+            Path("/tmp/missing-yunet.onnx"),
+        ):
+            with unittest.mock.patch(
+                "scripts.boot_validation.DEFAULT_FACE_LANDMARKER_TASK",
+                Path("/tmp/missing-face-landmarker.task"),
+            ):
+                errors = validate_local_model_assets(cfg, "/tmp/focusfield.yaml")
         self.assertTrue(any("vision.face.yunet_model_path" in err for err in errors))
         self.assertTrue(any("vision.mouth" in err for err in errors))
 
@@ -57,6 +65,36 @@ class BootValidationTests(unittest.TestCase):
                 "audio": {"models": {"allow_runtime_downloads": False}},
             }
             errors = validate_local_model_assets(cfg, str(root / "config.yaml"))
+            self.assertEqual(errors, [])
+
+    def test_validate_local_model_assets_accepts_default_cached_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cache = root / ".cache" / "focusfield"
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "face_detection_yunet_2023mar.onnx").write_bytes(b"fake-yunet")
+            task = cache / "face_landmarker.task"
+            with zipfile.ZipFile(task, "w") as zf:
+                zf.writestr("face_landmarks_detector.tflite", b"fake-tflite")
+            cfg = {
+                "runtime": {"mode": "meeting_peripheral"},
+                "vision": {
+                    "models": {"allow_runtime_downloads": False},
+                    "face": {"backend": "yunet", "yunet_model_path": ""},
+                    "mouth": {"backend": "tflite", "use_facemesh": True, "mesh_model_path": "", "tflite_model_path": ""},
+                },
+                "audio": {"models": {"allow_runtime_downloads": False}},
+            }
+            with unittest.mock.patch("scripts.boot_validation.DEFAULT_MODEL_CACHE", cache):
+                with unittest.mock.patch(
+                    "scripts.boot_validation.DEFAULT_YUNET_MODEL",
+                    cache / "face_detection_yunet_2023mar.onnx",
+                ):
+                    with unittest.mock.patch(
+                        "scripts.boot_validation.DEFAULT_FACE_LANDMARKER_TASK",
+                        task,
+                    ):
+                        errors = validate_local_model_assets(cfg, str(root / "config.yaml"))
             self.assertEqual(errors, [])
 
 

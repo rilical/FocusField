@@ -214,6 +214,12 @@ class PiContractTests(unittest.TestCase):
                 out = hardware_probe.candidate_sources("/dev/v4l/by-path/p1", strict_capture=True)
         self.assertEqual(out, [])
 
+    def test_candidate_sources_strict_keeps_unknown_capture_metadata(self) -> None:
+        with patch("focusfield.platform.hardware_probe.os.path.realpath", return_value="/dev/video0"):
+            with patch("focusfield.platform.hardware_probe.is_capture_node", return_value=None):
+                out = hardware_probe.candidate_sources("/dev/v4l/by-path/p1", strict_capture=True)
+        self.assertEqual(out, ["/dev/video0"])
+
     def test_source_to_open_target_preserves_video_device_path(self) -> None:
         self.assertEqual(
             hardware_probe.source_to_open_target("/dev/video0"),

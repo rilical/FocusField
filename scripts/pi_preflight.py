@@ -254,7 +254,7 @@ def _source_capture_capable(path: str, camera_scope: str, strict_capture: bool =
         return True
     capture = is_capture_node(resolved)
     if strict_capture:
-        return capture is True
+        return capture is not False
     return capture is not False
 
 

@@ -194,7 +194,8 @@ def candidate_sources(source: object, strict_capture: bool = False, camera_scope
 
     if resolved and resolved != source:
         if resolved.startswith("/dev/video"):
-            if is_capture_node(resolved) is True:
+            capture = is_capture_node(resolved)
+            if capture is not False:
                 if resolved not in sources:
                     sources.append(resolved)
                 m = re.search(r"/dev/video(\d+)$", resolved)
@@ -242,7 +243,7 @@ def _finalize_candidates(values: list[object], strict_capture: bool, camera_scop
 
         if isinstance(value, int):
             capture = is_capture_node(f"/dev/video{value}")
-            if capture is not True:
+            if capture is False:
                 continue
             deduped.append(value)
             continue
@@ -251,7 +252,7 @@ def _finalize_candidates(values: list[object], strict_capture: bool, camera_scop
             match = re.search(r"/dev/video\d+$", value)
             if match is not None:
                 capture = is_capture_node(value)
-                if capture is not True:
+                if capture is False:
                     continue
             deduped.append(value)
             continue

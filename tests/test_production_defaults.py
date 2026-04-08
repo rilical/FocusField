@@ -14,6 +14,16 @@ class ProductionDefaultTests(unittest.TestCase):
         self.assertEqual(len(cfg["video"]["cameras"]), 3)
         self.assertEqual(cfg["output"]["sink"], "usb_mic")
         self.assertFalse(bool(cfg["runtime"]["fail_fast"]))
+        self.assertEqual(int(cfg["audio"]["block_size"]), 2048)
+        self.assertFalse(bool(cfg["audio"]["vad"]["enabled"]))
+        self.assertEqual(int(cfg["video"]["cameras"][0]["fps"]), 6)
+        self.assertEqual(int(cfg["vision"]["face"]["detect_every_n"]), 2)
+        self.assertEqual(str(cfg["vision"]["mouth"]["backend"]), "diff")
+        self.assertFalse(bool(cfg["fusion"]["audio_fallback"]["enabled"]))
+        self.assertEqual(float(cfg["fusion"]["weights"]["audio"]), 0.0)
+        self.assertEqual(int(cfg["bus"]["topic_queue_depths"]["audio.frames"]), 16)
+        self.assertEqual(int(cfg["bus"]["topic_queue_depths"]["fusion.target_lock"]), 8)
+        self.assertFalse(bool(cfg["uma8_leds"]["enabled"]))
 
     def test_demo_safe_profile_prefers_stability_and_evidence_collection(self) -> None:
         cfg = load_config("configs/meeting_peripheral_demo_safe.yaml")

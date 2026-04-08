@@ -20,6 +20,12 @@ FAST_BOOT_MODES = {"meeting_peripheral", "appliance_fastboot"}
 
 
 def _service_user_home() -> Path:
+    service_user = str(os.environ.get("FOCUSFIELD_SERVICE_USER", "") or "").strip()
+    if service_user:
+        try:
+            return Path(pwd.getpwnam(service_user).pw_dir)
+        except KeyError:
+            pass
     sudo_user = str(os.environ.get("SUDO_USER", "") or "").strip()
     if sudo_user:
         try:

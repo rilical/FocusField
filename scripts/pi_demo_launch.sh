@@ -66,6 +66,13 @@ pkill -f 'python3 -m focusfield.main.run' >/dev/null 2>&1 || true
 pkill -f 'python3 scripts/pi_preflight.py' >/dev/null 2>&1 || true
 sleep 2
 
+LOCK_PATH=${FOCUSFIELD_LOCK_PATH:-/tmp/focusfield-runtime.lock}
+exec 9>"$LOCK_PATH"
+if ! flock -n 9; then
+  echo "Another FocusField runtime is already active (lock: $LOCK_PATH)." >&2
+  exit 5
+fi
+
 echo "Generating local config from $BASE_CONFIG"
 "$PYTHON_BIN" scripts/prepare_pi_local_config.py \
   --base-config "$BASE_CONFIG" \

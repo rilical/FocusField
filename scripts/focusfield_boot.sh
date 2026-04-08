@@ -26,6 +26,13 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 3
 fi
 
+LOCK_PATH=${FOCUSFIELD_LOCK_PATH:-/tmp/focusfield-runtime.lock}
+exec 9>"$LOCK_PATH"
+if ! flock -n 9; then
+  echo "Another FocusField runtime is already active (lock: $LOCK_PATH)." >&2
+  exit 5
+fi
+
 MAX_RETRIES=${FOCUSFIELD_PRECHECK_RETRIES:-15}
 DELAY_SECONDS=${FOCUSFIELD_PRECHECK_DELAY_SECONDS:-5}
 CAMERA_SOURCE=${FOCUSFIELD_CAMERA_SOURCE:-by-path}

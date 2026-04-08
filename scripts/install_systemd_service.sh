@@ -31,7 +31,7 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
 fi
 
 eval "$("$PYTHON_BIN" scripts/boot_validation.py --config "$CONFIG_PATH" --emit-shell-vars)"
-if ! "$PYTHON_BIN" scripts/boot_validation.py --config "$CONFIG_PATH" --validate-local-models; then
+if ! FOCUSFIELD_SERVICE_USER="$SERVICE_USER" "$PYTHON_BIN" scripts/boot_validation.py --config "$CONFIG_PATH" --validate-local-models; then
   echo "Install validation failed: bundled model assets are missing or incomplete." >&2
   echo "Set local paths for the YuNet and mouth-landmark models before installing the service." >&2
   exit 1
@@ -81,6 +81,7 @@ Environment=FOCUSFIELD_ENABLE_UMA8_LEDS=$BOOT_ENABLE_UMA8_LEDS
 Environment=FOCUSFIELD_REQUIRE_LED_HID=$BOOT_REQUIRE_LED_HID
 Environment=FOCUSFIELD_LED_VENDOR_ID=$BOOT_LED_VENDOR_ID
 Environment=FOCUSFIELD_LED_PRODUCT_ID=$BOOT_LED_PRODUCT_ID
+Environment=FOCUSFIELD_SERVICE_USER=$SERVICE_USER
 Environment=OMP_NUM_THREADS=$BOOT_OMP_NUM_THREADS
 Environment=OPENBLAS_NUM_THREADS=$BOOT_OPENBLAS_NUM_THREADS
 Environment=MKL_NUM_THREADS=$BOOT_MKL_NUM_THREADS

@@ -6,10 +6,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.boot_validation import boot_plan, validate_local_model_assets
+from scripts.boot_validation import _service_user_home, boot_plan, validate_local_model_assets
 
 
 class BootValidationTests(unittest.TestCase):
+    def test_service_user_home_prefers_explicit_service_user(self) -> None:
+        with unittest.mock.patch.dict(
+            "os.environ",
+            {"FOCUSFIELD_SERVICE_USER": "focus", "SUDO_USER": "ignored-user"},
+            clear=False,
+        ):
+            with unittest.mock.patch("scripts.boot_validation.pwd.getpwnam") as getpwnam:
+                getpwnam.return_value.pw_dir = "/home/focus"
+                home = _service_user_home()
+        self.assertEqual(home, Path("/home/focus"))
+        getpwnam.assert_called_once_with("focus")
+
     def test_boot_plan_marks_fast_boot_modes_audio_only(self) -> None:
         cfg = {
             "runtime": {

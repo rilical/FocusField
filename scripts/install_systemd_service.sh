@@ -91,7 +91,7 @@ Restart=always
 RestartSec=5
 RestartPreventExitStatus=0
 KillSignal=SIGINT
-TimeoutStopSec=20
+TimeoutStopSec=45
 
 [Install]
 WantedBy=multi-user.target

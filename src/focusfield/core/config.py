@@ -341,6 +341,7 @@ def _default_config() -> Dict[str, Any]:
         },
         "output": {
             "sink": "file",
+            "source_topic": "audio.enhanced.final",
             "file_sink": {
                 "dir": "artifacts",
                 "write_raw_multich": False,
@@ -376,6 +377,16 @@ def _default_config() -> Dict[str, Any]:
                 "device_selector": {
                     "match_substring": "USB",
                 },
+            },
+            "rtp_pcm": {
+                "host": "",
+                "port": 5004,
+                "packet_samples": 960,
+                "sample_rate_hz": 48000,
+                "payload_type": 96,
+                "reconnect_delay_ms": 750,
+                "socket_send_buffer_bytes": 262144,
+                "source_topic": "audio.enhanced.final",
             },
         },
         "perf": {
@@ -820,6 +831,29 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             target_blocks = device_cfg.get("target_buffer_blocks")
             if target_blocks is not None and int(target_blocks) <= 0:
                 errors.append(f"output.{section_name}.target_buffer_blocks must be > 0")
+    if sink in {"rtp_pcm", "rtp"}:
+        rtp_cfg = output_cfg.get("rtp_pcm")
+        if not isinstance(rtp_cfg, dict):
+            errors.append("output.rtp_pcm must be a dict")
+        else:
+            host = str(rtp_cfg.get("host") or os.environ.get("FOCUSFIELD_RTP_HOST", "")).strip()
+            if not host:
+                errors.append("output.rtp_pcm.host must be set or FOCUSFIELD_RTP_HOST must be exported")
+            port = rtp_cfg.get("port")
+            if port is None or int(port) <= 0 or int(port) > 65535:
+                errors.append("output.rtp_pcm.port must be in [1, 65535]")
+            packet_samples = rtp_cfg.get("packet_samples")
+            if packet_samples is None or int(packet_samples) <= 0:
+                errors.append("output.rtp_pcm.packet_samples must be > 0")
+            payload_type = rtp_cfg.get("payload_type")
+            if payload_type is not None and (int(payload_type) < 0 or int(payload_type) > 127):
+                errors.append("output.rtp_pcm.payload_type must be in [0, 127]")
+            sample_rate = rtp_cfg.get("sample_rate_hz")
+            if sample_rate is not None and int(sample_rate) <= 0:
+                errors.append("output.rtp_pcm.sample_rate_hz must be > 0")
+            source_topic = str(rtp_cfg.get("source_topic", output_cfg.get("source_topic", "audio.enhanced.final")) or "").strip()
+            if not source_topic:
+                errors.append("output.rtp_pcm.source_topic must be non-empty")
 
     uma8_cfg = config.get("uma8_leds", {})
     if uma8_cfg is not None and not isinstance(uma8_cfg, dict):

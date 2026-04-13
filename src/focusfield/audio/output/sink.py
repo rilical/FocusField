@@ -21,6 +21,7 @@ import threading
 from typing import Any, Dict, Optional
 
 from focusfield.audio.output.file_sink import start_file_sink
+from focusfield.audio.output.rtp_pcm import start_rtp_pcm_sink
 from focusfield.audio.output.virtual_mic import start_host_loopback_sink, start_usb_mic_sink, start_virtual_mic_sink
 
 
@@ -51,4 +52,6 @@ def start_output_sink(
         return start_host_loopback_sink(bus, config, logger, stop_event)
     if normalized_sink in {"usb_mic", "usb"}:
         return start_usb_mic_sink(bus, config, logger, stop_event)
+    if normalized_sink in {"rtp_pcm", "rtp"}:
+        return start_rtp_pcm_sink(bus, config, logger, stop_event)
     return None

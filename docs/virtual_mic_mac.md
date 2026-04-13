@@ -4,6 +4,8 @@ FocusField can output `audio.enhanced.final` to a loopback audio device so confe
 
 This repo **does not** implement a kernel/driver-level virtual microphone. Instead, it writes to an existing loopback device using `sounddevice` (PortAudio).
 
+For Pi-to-Mac remote transport, use the RTP receiver flow in [docs/rtp_loopback_mac.md](/Users/omarghabyen/Desktop/FocusField/docs/rtp_loopback_mac.md).
+
 ## Recommended Loopback: BlackHole (2ch)
 
 1. Install BlackHole 2ch.

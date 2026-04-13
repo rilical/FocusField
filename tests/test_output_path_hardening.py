@@ -50,6 +50,13 @@ class OutputPathHardeningTests(unittest.TestCase):
             )
             host_sink.assert_called_once()
 
+        with patch.object(output_sink, "start_rtp_pcm_sink", return_value="rtp-thread") as rtp_sink:
+            self.assertEqual(
+                output_sink.start_output_sink(bus, {"output": {"sink": "rtp_pcm"}}, logger, stop_event),
+                "rtp-thread",
+            )
+            rtp_sink.assert_called_once()
+
     def test_perf_monitor_includes_output_stage_metrics(self) -> None:
         bus = Bus(max_queue_depth=8)
         logger = LogEmitter(bus, min_level="error", run_id="perf-output-test")

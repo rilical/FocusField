@@ -164,7 +164,7 @@ video:
     settle_ms: 150
     defaults:
       auto_exposure: 1
-      exposure_time_absolute: 48
+      exposure_time_absolute: 24
       exposure_dynamic_framerate: 0
       gain: 1024
       white_balance_automatic: 0

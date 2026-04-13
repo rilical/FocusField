@@ -83,6 +83,9 @@ def start_telemetry(
             "device_path": str(cam.get("device_path", "") or ""),
             "device_index": cam.get("device_index"),
             "yaw_offset_deg": float(cam.get("yaw_offset_deg", 0.0) or 0.0),
+            "bearing_model": str(cam.get("bearing_model", "linear") or "linear").lower(),
+            "bearing_offset_deg": float(cam.get("bearing_offset_deg", 0.0) or 0.0),
+            "bearing_lut_path": str(cam.get("bearing_lut_path", "") or ""),
             "hfov_deg": float(cam.get("hfov_deg", 0.0) or 0.0),
         }
         for idx, cam in enumerate(config.get("video", {}).get("cameras", []))
@@ -95,6 +98,7 @@ def start_telemetry(
         "faces": [],
         "lock": None,
         "candidates": [],
+        "candidates_evidence": {},
         "uma8_leds": None,
         "logs": [],
         "beam": None,
@@ -106,6 +110,7 @@ def start_telemetry(
         "runtime_cfg": config.get("runtime", {}) if isinstance(config.get("runtime", {}), dict) else {},
         "runtime_profile": str(config.get("runtime", {}).get("perf_profile", "") or ""),
         "strict_requirements_passed": bool(config.get("runtime", {}).get("requirements_passed", False)),
+        "audio_vad_enabled": bool(config.get("audio", {}).get("vad", {}).get("enabled", True)),
         "detector_backend_active": str(config.get("runtime", {}).get("detector_backend_active", "") or ""),
         "vision_debug": {
             "detector_backend": str(config.get("runtime", {}).get("detector_backend_active", "") or ""),
@@ -152,7 +157,14 @@ def start_telemetry(
                 state["lock"] = lock_msg
             cand_msg = _drain(q_candidates)
             if cand_msg is not None:
-                state["candidates"] = cand_msg
+                if isinstance(cand_msg, dict) and "candidates" in cand_msg:
+                    candidates = cand_msg.get("candidates", [])
+                    state["candidates"] = candidates if isinstance(candidates, list) else []
+                    evidence = cand_msg.get("evidence", {})
+                    state["candidates_evidence"] = evidence if isinstance(evidence, dict) else {}
+                else:
+                    state["candidates"] = cand_msg if isinstance(cand_msg, list) else []
+                    state["candidates_evidence"] = {}
             led_msg = _drain(q_uma8_leds)
             if led_msg is not None:
                 state["uma8_leds"] = led_msg
@@ -217,6 +229,9 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     candidates = state.get("candidates") or []
     if not isinstance(candidates, list):
         candidates = []
+    candidates_evidence = state.get("candidates_evidence") or {}
+    if not isinstance(candidates_evidence, dict):
+        candidates_evidence = {}
     output_state = state.get("output") or {}
     logs: List[Dict[str, Any]] = state.get("logs", [])
     no_candidates: Dict[str, Any] = {}
@@ -300,6 +315,10 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "runner_up_focus_score": lock_state.get("runner_up_focus_score", runner_up_focus_score),
             "reason": lock_state.get("reason", ""),
             "target_id": lock_state.get("target_id"),
+            "target_camera_id": lock_state.get("target_camera_id"),
+            "active_thresholds": lock_state.get("active_thresholds", {}),
+            "timing_window_ms": lock_state.get("timing_window_ms", {}),
+            "evidence_status": lock_state.get("evidence_status", {}),
         },
         "face_summaries": [
             {
@@ -339,9 +358,9 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "device_count": led_state.get("device_count"),
         },
         "fusion_debug": {
-            "no_candidate_reason": no_candidates.get("reason", lock_state.get("reason", "")),
-            "faces_present": bool(no_candidates.get("faces_present", bool(faces))),
-            "faces_fresh": bool(no_candidates.get("faces_fresh", bool(faces))),
+            "no_candidate_reason": candidates_evidence.get("reason", no_candidates.get("reason", lock_state.get("reason", ""))),
+            "faces_present": bool(candidates_evidence.get("faces_present", no_candidates.get("faces_present", bool(faces)))),
+            "faces_fresh": bool(candidates_evidence.get("faces_fresh", no_candidates.get("faces_fresh", bool(faces)))),
             "vad_speech": bool(vad_state.get("speech", False)),
             "vad_confidence": vad_confidence,
             "doa_confidence": doa_confidence,
@@ -349,6 +368,12 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             "focus_score": lock_state.get("focus_score", top_focus_score),
             "score_margin": lock_state.get("score_margin", max(0.0, top_focus_score - runner_up_focus_score)),
             "runner_up_focus_score": lock_state.get("runner_up_focus_score", runner_up_focus_score),
+            "audio_fresh": bool(candidates_evidence.get("audio_fresh", False)),
+            "audio_stale": bool(candidates_evidence.get("audio_stale", False)),
+            "visual_stale": bool(candidates_evidence.get("visual_stale", False)),
+            "disagreement_suppressed": bool(
+                candidates_evidence.get("disagreement_suppressed", (lock_state.get("evidence_status") or {}).get("disagreement_suppressed", False))
+            ),
         },
         "health_summary": state.get("health") or {},
         "perf_summary": perf_state,
@@ -368,9 +393,11 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
         "meta": {
             "cameras": cameras,
             "active_face_cameras": active_face_cameras,
+            "audio_vad_enabled": bool(state.get("audio_vad_enabled", True)),
             "camera_map": state.get("configured_camera_map") or [],
             "audio_device": runtime_cfg.get("selected_audio_device", {}),
             "camera_calibration_overlay": runtime_cfg.get("camera_calibration_overlay", {}),
+            "audio_calibration_overlay": runtime_cfg.get("audio_calibration_overlay", {}),
             "runtime_config": {
                 "config_path": runtime_cfg.get("config_path", ""),
                 "config_effective_path": runtime_cfg.get("config_effective_path", ""),
@@ -384,6 +411,7 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
                 "requirements": runtime_cfg.get("requirements", {}),
                 "audio_device_profile": runtime_cfg.get("audio_device_profile", ""),
                 "audio_yaw_offset_deg": float(runtime_cfg.get("audio_yaw_offset_deg", 0.0) or 0.0),
+                "audio_yaw_calibration": runtime_cfg.get("audio_yaw_calibration", {}),
             },
         },
 }
@@ -398,6 +426,7 @@ def _summarize_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, An
         summarized.append(
             {
                 "track_id": cand.get("track_id"),
+                "camera_id": cand.get("camera_id"),
                 "bearing_deg": cand.get("bearing_deg"),
                 "focus_score": float(cand.get("focus_score", cand.get("combined_score", 0.0)) or 0.0),
                 "activity_score": float(cand.get("activity_score", cand.get("speaking_probability", 0.0)) or 0.0),
@@ -409,6 +438,8 @@ def _summarize_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, An
                     "doa_confidence": float(score_components.get("doa_confidence", 0.0) or 0.0),
                     "audio_speech_prob": float(score_components.get("audio_speech_prob", 0.0) or 0.0),
                 },
+                "score_groups": cand.get("score_groups", {}),
+                "evidence_status": cand.get("evidence_status", {}),
             }
         )
     return summarized
@@ -434,6 +465,12 @@ def _merge_camera_map(current: List[Dict[str, Any]], updates: Any) -> List[Dict[
             by_id[camera_id] = target
         if "yaw_offset_deg" in item:
             target["yaw_offset_deg"] = float(item.get("yaw_offset_deg", target.get("yaw_offset_deg", 0.0)) or 0.0)
+        if "bearing_model" in item:
+            target["bearing_model"] = str(item.get("bearing_model", target.get("bearing_model", "linear")) or "linear").lower()
+        if "bearing_offset_deg" in item:
+            target["bearing_offset_deg"] = float(item.get("bearing_offset_deg", target.get("bearing_offset_deg", 0.0)) or 0.0)
+        if "bearing_lut_path" in item:
+            target["bearing_lut_path"] = str(item.get("bearing_lut_path", target.get("bearing_lut_path", "")) or "")
     return merged
 
 

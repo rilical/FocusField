@@ -6,7 +6,7 @@ INPUTS:
   - Topic: audio.doa_heatmap  Type: DoaHeatmap
   - Topic: vision.face_tracks  Type: FaceTrack[]
 OUTPUTS:
-  - Topic: fusion.candidates  Type: AssociationCandidate[]
+  - Topic: fusion.candidates  Type: FusionCandidatesEnvelope
 
 CONFIG KEYS:
   - fusion.max_assoc_deg: max angular distance
@@ -41,10 +41,15 @@ from __future__ import annotations
 
 import queue
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, TypedDict, Tuple
 
 from focusfield.core.clock import now_ns
 from focusfield.fusion.confidence import combine_scores
+
+
+class FusionCandidatesEnvelope(TypedDict):
+    candidates: List[Dict[str, Any]]
+    evidence: Dict[str, Any]
 
 
 def start_av_association(
@@ -73,6 +78,10 @@ def start_av_association(
     allow_when_faces_missing = bool(fallback_cfg.get("allow_when_faces_missing", True))
     face_staleness_ms = float(fallback_cfg.get("face_staleness_ms", 1200.0))
     vad_max_age_ms = float(fusion_cfg.get("vad_max_age_ms", fallback_cfg.get("vad_max_age_ms", 400.0)) or 400.0)
+    visual_freshness_ms = float(fusion_cfg.get("visual_freshness_ms", face_staleness_ms) or face_staleness_ms)
+    visual_override_min = float(fusion_cfg.get("visual_override_min", 0.6) or 0.6)
+    audio_rescue_min = float(fusion_cfg.get("audio_rescue_min", min_doa_confidence) or min_doa_confidence)
+    disagreement_penalty = float(fusion_cfg.get("disagreement_penalty", 0.25) or 0.25)
 
     vision_cfg = config.get("vision", {})
     if not isinstance(vision_cfg, dict):
@@ -82,6 +91,7 @@ def start_av_association(
         face_cfg = {}
     min_area = int(face_cfg.get("min_area", 900))
     area_soft_max = int(face_cfg.get("area_soft_max", max(min_area * 4, min_area + 1)))
+    camera_lookup = _camera_lookup_from_config(config)
 
     last_faces: Optional[List[Dict[str, Any]]] = None
     last_faces_update_ns: int = 0
@@ -132,10 +142,15 @@ def start_av_association(
             if trigger is None:
                 continue
 
-            faces_fresh = bool(last_faces_update_ns) and (now_ns() - last_faces_update_ns) <= int(face_staleness_ms * 1_000_000)
+            now_t_ns = now_ns()
+            faces_fresh = bool(last_faces_update_ns) and (now_t_ns - last_faces_update_ns) <= int(visual_freshness_ms * 1_000_000)
             faces_present = bool(last_faces) and len(last_faces) > 0
 
-            doa_fresh = bool(last_doa_update_ns) and (now_ns() - last_doa_update_ns) <= int(500.0 * 1_000_000)
+            doa_fresh = bool(last_doa_update_ns) and (now_t_ns - last_doa_update_ns) <= int(500.0 * 1_000_000)
+            vad_fresh = False
+            if isinstance(last_vad, dict):
+                vad_t_ns = int(last_vad.get("t_ns", 0) or 0)
+                vad_fresh = bool(vad_t_ns) and ((now_t_ns - vad_t_ns) <= int(vad_max_age_ms * 1_000_000))
             if trigger == "faces" and not doa_fresh:
                 candidates = _build_candidates(
                     last_faces or [],
@@ -146,10 +161,24 @@ def start_av_association(
                     weights,
                     min_area,
                     area_soft_max,
+                    camera_lookup=camera_lookup,
+                    visual_override_min=visual_override_min,
+                    disagreement_penalty=disagreement_penalty,
                 )
                 if not candidates:
                     logger.emit("debug", "fusion.av_association", "no_candidates", {"reason": "faces_only"})
-                bus.publish("fusion.candidates", candidates)
+                bus.publish("fusion.candidates", _candidate_message(
+                    candidates,
+                    _candidate_evidence(
+                        reason="faces_only",
+                        faces_present=faces_present,
+                        faces_fresh=faces_fresh,
+                        doa_fresh=doa_fresh,
+                        vad_fresh=vad_fresh,
+                        vad_speech=bool((last_vad or {}).get("speech", False)),
+                        candidates=candidates,
+                    ),
+                ))
                 continue
 
             # If DOA is healthy, only publish on DOA updates to keep cadence stable.
@@ -166,10 +195,24 @@ def start_av_association(
                     weights,
                     min_area,
                     area_soft_max,
+                    camera_lookup=camera_lookup,
+                    visual_override_min=visual_override_min,
+                    disagreement_penalty=disagreement_penalty,
                 )
                 if not candidates:
                     logger.emit("debug", "fusion.av_association", "no_candidates", {"reason": "no_assoc"})
-                bus.publish("fusion.candidates", candidates)
+                bus.publish("fusion.candidates", _candidate_message(
+                    candidates,
+                    _candidate_evidence(
+                        reason="no_assoc" if not candidates else "faces_and_audio",
+                        faces_present=faces_present,
+                        faces_fresh=faces_fresh,
+                        doa_fresh=doa_fresh,
+                        vad_fresh=vad_fresh,
+                        vad_speech=bool((last_vad or {}).get("speech", False)),
+                        candidates=candidates,
+                    ),
+                ))
                 continue
 
             # Vision missing/stale: optionally publish an audio-only candidate.
@@ -185,6 +228,7 @@ def start_av_association(
                     require_vad=require_vad,
                     weights=weights,
                     vad_max_age_ms=vad_max_age_ms,
+                    audio_rescue_min=audio_rescue_min,
                 )
                 if audio_cand is not None:
                     candidates = [audio_cand]
@@ -210,7 +254,18 @@ def start_av_association(
                         "score_mode": score_mode,
                     },
                 )
-            bus.publish("fusion.candidates", candidates)
+            bus.publish("fusion.candidates", _candidate_message(
+                candidates,
+                _candidate_evidence(
+                    reason=_missing_visual_reason(faces_present, faces_fresh, candidates),
+                    faces_present=faces_present,
+                    faces_fresh=faces_fresh,
+                    doa_fresh=doa_fresh,
+                    vad_fresh=vad_fresh,
+                    vad_speech=bool((last_vad or {}).get("speech", False)),
+                    candidates=candidates,
+                ),
+            ))
 
     thread = threading.Thread(target=_run, name="av-association", daemon=True)
     thread.start()
@@ -226,6 +281,9 @@ def _build_candidates(
     weights: Optional[Dict[str, float]] = None,
     min_area: int = 900,
     area_soft_max: int = 3600,
+    camera_lookup: Optional[Any] = None,
+    visual_override_min: float = 0.0,
+    disagreement_penalty: float = 0.0,
 ) -> List[Dict[str, Any]]:
     peaks = doa_heatmap.get("peaks", []) if doa_heatmap else []
     doa_confidence = float(doa_heatmap.get("confidence", 0.0) or 0.0) if doa_heatmap else 0.0
@@ -233,6 +291,7 @@ def _build_candidates(
     mic_health_score, mic_health_trust = _mic_health_summary(mic_health)
     if weights is None:
         weights = {}
+    camera_sectors = _normalize_camera_lookup(camera_lookup)
     candidates: List[Dict[str, Any]] = []
     for track in tracks:
         face_bearing = float(track.get("bearing_deg", 0.0))
@@ -243,6 +302,23 @@ def _build_candidates(
         mouth_activity = mouth_activity_raw * size_scale
         face_confidence = face_confidence_raw * size_scale
         doa_peak_deg, doa_peak_score, angle_error = _match_peak(face_bearing, peaks, max_assoc_deg)
+        camera_id = _candidate_camera_id(track)
+        steering_bearing_deg = _refine_steering_bearing(
+            face_bearing,
+            doa_peak_deg,
+            doa_peak_score,
+            camera_id,
+            camera_sectors,
+        )
+        visual_score = _visual_score(mouth_activity, face_confidence)
+        angle_match = _angle_match(angle_error)
+        audio_alignment_score = _audio_alignment_score(doa_peak_score, doa_confidence, audio_speech_prob, angle_match)
+        disagreement_gap = max(0.0, audio_alignment_score - visual_score)
+        disagreement_cost = (
+            float(disagreement_penalty) * disagreement_gap
+            if visual_score < float(visual_override_min) and disagreement_gap > 0.0
+            else 0.0
+        )
         combined = combine_scores(
             mouth_activity=mouth_activity,
             face_confidence=face_confidence,
@@ -254,6 +330,10 @@ def _build_candidates(
             mic_health_score=mic_health_score,
             weights=weights,
         )
+        if disagreement_cost > 0.0:
+            combined = max(0.0, float(combined) - disagreement_cost)
+        if visual_score >= float(visual_override_min) and mouth_activity > 0.0:
+            combined = max(float(combined), visual_score)
         speaking_probability = _speaking_probability(
             visual_speaking_prob=mouth_activity,
             audio_speech_prob=audio_speech_prob,
@@ -264,11 +344,20 @@ def _build_candidates(
             combined = 0.0
             speaking_probability = 0.0
         selection_mode = "AUDIO_ONLY" if doa_peak_score > 0.0 and mouth_activity <= 0.0 else ("AV_LOCK" if doa_peak_score > 0.0 and mouth_activity > 0.0 else "VISION_ONLY")
+        score_groups = {
+            "visual_score": float(visual_score),
+            "audio_alignment_score": float(audio_alignment_score),
+            "continuity_score": float(track_continuity),
+            "health_score": float(mic_health_score),
+            "agreement_bonus": float(max(0.0, min(1.0, mouth_activity * doa_peak_score * audio_speech_prob))),
+            "disagreement_penalty": float(disagreement_cost),
+        }
         candidates.append(
             {
                 "t_ns": now_ns(),
                 "seq": track.get("seq", 0),
                 "track_id": track.get("track_id"),
+                "camera_id": camera_id,
                 "doa_peak_deg": doa_peak_deg,
                 "angular_distance_deg": angle_error,
                 "score_components": {
@@ -283,14 +372,23 @@ def _build_candidates(
                     "mic_health_trust": mic_health_trust,
                     "size_scale": float(size_scale),
                     "bbox_area": int(bbox_area),
+                    "angle_match": float(angle_match),
+                    "disagreement_penalty_applied": float(disagreement_cost),
                 },
+                "score_groups": score_groups,
                 "focus_score": combined,
                 "combined_score": combined,
                 "bearing_deg": face_bearing,
+                "steering_bearing_deg": steering_bearing_deg,
                 "activity_score": speaking_probability,
                 "speaking_probability": speaking_probability,
                 "selection_mode": selection_mode,
                 "speaking": bool(track.get("speaking", False)) or speaking_probability >= 0.5,
+                "evidence_status": {
+                    "visual_fresh": True,
+                    "audio_fresh": doa_heatmap is not None,
+                    "disagreement_suppressed": bool(disagreement_cost > 0.0),
+                },
             }
         )
     return candidates
@@ -318,6 +416,44 @@ def _match_peak(
     return best_peak, best_score, abs(best_error)
 
 
+def _refine_steering_bearing(
+    face_bearing_deg: float,
+    doa_peak_deg: Optional[float],
+    doa_peak_score: float,
+    camera_id: Optional[Any],
+    camera_sectors: Dict[str, Dict[str, float]],
+) -> float:
+    if doa_peak_deg is None:
+        return face_bearing_deg % 360.0
+    if camera_id is None:
+        return face_bearing_deg % 360.0
+    sector = camera_sectors.get(str(camera_id))
+    if not sector:
+        return face_bearing_deg % 360.0
+    yaw_offset_deg = float(sector.get("yaw_offset_deg", 0.0) or 0.0)
+    hfov_deg = float(sector.get("hfov_deg", 0.0) or 0.0)
+    if hfov_deg <= 0.0:
+        return face_bearing_deg % 360.0
+    if abs(_wrap_delta(doa_peak_deg - yaw_offset_deg)) > (hfov_deg / 2.0):
+        return face_bearing_deg % 360.0
+    blend = max(0.0, min(1.0, float(doa_peak_score or 0.0)))
+    if blend <= 0.0:
+        return face_bearing_deg % 360.0
+    face = face_bearing_deg % 360.0
+    delta = _wrap_delta((doa_peak_deg % 360.0) - face)
+    return (face + (blend * delta)) % 360.0
+
+
+def _candidate_camera_id(track: Dict[str, Any]) -> Optional[str]:
+    raw = track.get("camera_id")
+    if raw:
+        return str(raw)
+    track_id = str(track.get("track_id", "") or "")
+    if track_id.startswith("cam") and "-" in track_id:
+        return track_id.split("-", 1)[0]
+    return None
+
+
 def _wrap_delta(delta: float) -> float:
     return (delta + 180.0) % 360.0 - 180.0
 
@@ -332,6 +468,7 @@ def _build_audio_only_candidate(
     require_vad: bool,
     weights: Dict[str, float],
     vad_max_age_ms: float = 400.0,
+    audio_rescue_min: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     if doa_heatmap is None:
         return None
@@ -380,6 +517,17 @@ def _build_audio_only_candidate(
         mic_health_score=mic_health_score,
         weights=weights,
     )
+    if float(combined) < float(audio_rescue_min):
+        return None
+    angle_match = _angle_match(0.0)
+    score_groups = {
+        "visual_score": 0.0,
+        "audio_alignment_score": float(_audio_alignment_score(peak_score, conf, audio_speech_prob, angle_match)),
+        "continuity_score": 0.65,
+        "health_score": float(mic_health_score),
+        "agreement_bonus": 0.0,
+        "disagreement_penalty": 0.0,
+    }
     return {
         "t_ns": now_ns(),
         "seq": int(doa_heatmap.get("seq", 0) or 0),
@@ -395,14 +543,22 @@ def _build_audio_only_candidate(
             "mic_health_trust": float(mic_health_trust),
             "fallback_evidence": float(evidence),
             "score_mode": mode,
+            "angle_match": float(angle_match),
         },
+        "score_groups": score_groups,
         "focus_score": float(combined),
         "combined_score": float(combined),
         "bearing_deg": bearing,
+        "steering_bearing_deg": bearing,
         "activity_score": float(max(audio_speech_prob, peak_score)),
         "speaking_probability": float(max(audio_speech_prob, peak_score)),
         "selection_mode": "AUDIO_ONLY",
         "speaking": bool(vad_speaking),
+        "evidence_status": {
+            "visual_fresh": False,
+            "audio_fresh": True,
+            "disagreement_suppressed": False,
+        },
     }
 
 
@@ -443,6 +599,38 @@ def _track_continuity(track: Dict[str, Any]) -> float:
     return float(max(0.05, min(1.0, age_frames / 6.0)))
 
 
+def _camera_lookup_from_config(config: Dict[str, Any]) -> Optional[Dict[str, Dict[str, float]]]:
+    video_cfg = config.get("video", {})
+    if not isinstance(video_cfg, dict):
+        return None
+    cameras = video_cfg.get("cameras", [])
+    return _normalize_camera_lookup(cameras)
+
+
+def _normalize_camera_lookup(camera_lookup: Optional[Any]) -> Dict[str, Dict[str, float]]:
+    if camera_lookup is None:
+        return {}
+    if isinstance(camera_lookup, dict):
+        items = camera_lookup.items()
+    elif isinstance(camera_lookup, list):
+        items = enumerate(camera_lookup)
+    else:
+        return {}
+    normalized: Dict[str, Dict[str, float]] = {}
+    for key, cam in items:
+        if isinstance(cam, dict):
+            camera_id = str(cam.get("id", key))
+            yaw_offset_deg = float(cam.get("yaw_offset_deg", 0.0) or 0.0)
+            hfov_deg = float(cam.get("hfov_deg", 0.0) or 0.0)
+        else:
+            continue
+        normalized[camera_id] = {
+            "yaw_offset_deg": yaw_offset_deg,
+            "hfov_deg": hfov_deg,
+        }
+    return normalized
+
+
 def _speaking_probability(
     visual_speaking_prob: float,
     audio_speech_prob: float,
@@ -453,3 +641,61 @@ def _speaking_probability(
     agreement = max(0.0, min(1.0, doa_peak_score * angle_match))
     score = 0.55 * visual_speaking_prob + 0.30 * audio_speech_prob + 0.15 * agreement
     return float(max(0.0, min(1.0, score)))
+
+
+def _visual_score(mouth_activity: float, face_confidence: float) -> float:
+    return float(max(0.0, min(1.0, (0.75 * float(mouth_activity)) + (0.25 * float(face_confidence)))))
+
+
+def _angle_match(angle_error_deg: float) -> float:
+    return float(max(0.0, min(1.0, 1.0 - (float(angle_error_deg) / 90.0))))
+
+
+def _audio_alignment_score(doa_peak_score: float, doa_confidence: float, audio_speech_prob: float, angle_match: float) -> float:
+    score = (0.40 * float(doa_peak_score)) + (0.25 * float(doa_confidence)) + (0.20 * float(audio_speech_prob)) + (0.15 * float(angle_match))
+    return float(max(0.0, min(1.0, score)))
+
+
+def _candidate_evidence(
+    *,
+    reason: str,
+    faces_present: bool,
+    faces_fresh: bool,
+    doa_fresh: bool,
+    vad_fresh: bool,
+    vad_speech: bool,
+    candidates: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "reason": str(reason),
+        "faces_present": bool(faces_present),
+        "faces_fresh": bool(faces_fresh),
+        "visual_stale": bool(faces_present and not faces_fresh),
+        "audio_fresh": bool(doa_fresh or vad_fresh),
+        "audio_stale": not bool(doa_fresh or vad_fresh),
+        "doa_fresh": bool(doa_fresh),
+        "vad_fresh": bool(vad_fresh),
+        "vad_speech": bool(vad_speech),
+        "disagreement_suppressed": any(
+            bool(((cand.get("score_groups") or {}).get("disagreement_penalty", 0.0)) > 0.0)
+            for cand in candidates
+            if isinstance(cand, dict)
+        ),
+    }
+
+
+def _candidate_message(candidates: List[Dict[str, Any]], evidence: Dict[str, Any]) -> FusionCandidatesEnvelope:
+    return {
+        "candidates": candidates,
+        "evidence": evidence,
+    }
+
+
+def _missing_visual_reason(faces_present: bool, faces_fresh: bool, candidates: List[Dict[str, Any]]) -> str:
+    if candidates:
+        return "audio_rescue"
+    if faces_present and not faces_fresh:
+        return "visual_stale_no_audio_rescue"
+    if not faces_present:
+        return "visual_missing_no_audio_rescue"
+    return "no_candidates"

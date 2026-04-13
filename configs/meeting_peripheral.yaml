@@ -43,15 +43,16 @@ audio:
   models:
     allow_runtime_downloads: false
   vad:
-    enabled: false
+    enabled: true
+    backend: webrtc
     mode: 1
     frame_ms: 30
     min_speech_ratio: 0.3
     update_hz: 4
   doa:
     method: srp_phat
-    bins: 18
-    update_hz: 2
+    bins: 36
+    update_hz: 4
     freq_low_hz: 200
     freq_high_hz: 4500
     continuity_weight: 0.18
@@ -95,6 +96,10 @@ video:
 
 fusion:
   thresholds_preset: ''
+  visual_freshness_ms: 1200
+  visual_override_min: 0.6
+  audio_rescue_min: 0.35
+  disagreement_penalty: 0.25
   weights:
     bias: -0.35
     mouth: 0.55
@@ -104,11 +109,11 @@ fusion:
     doa: 0.22
     doa_confidence: 0.35
     angle: 0.10
-    audio: 0.0
+    audio: 0.35
     agreement_bonus: 0.25
   require_vad: false
   vad_max_age_ms: 500
-  require_speaking: false
+  require_speaking: true
   audio_fallback:
     enabled: false
   thresholds:

@@ -511,6 +511,33 @@ The panel packet should show:
 - stability: output underrun rate and queue pressure
 - meeting path: boot-to-host-visible mic and reconnect time
 
+### One-shot benchmark packet
+
+If you already have the candidate run plus the baseline/reference WAVs, use the
+single orchestration command instead of stitching the three steps together by
+hand:
+
+```bash
+python3 scripts/demo_benchmark_pipeline.py \
+  --candidate-run artifacts/LATEST \
+  --baseline-audio /path/to/macbook_built_in.wav \
+  --reference-audio /path/to/close_talk_reference.wav \
+  --demo-readiness artifacts/demo/demo_readiness.json \
+  --output-dir artifacts/demo/full_packet
+```
+
+This writes:
+
+- `artifacts/demo/full_packet/ab_bundle/capture_bundle.json`
+- `artifacts/demo/full_packet/ab_bundle/scene_manifest.yaml`
+- `artifacts/demo/full_packet/focusbench/BenchReport.json`
+- `artifacts/demo/full_packet/panel_packet/panel_scorecard.md`
+- `artifacts/demo/full_packet/demo_benchmark_summary.md`
+
+Use `--require-pass` when you want a non-zero exit code if the benchmark or
+demo-readiness verdict is not green. Leave it off when the immediate goal is
+evidence capture and report generation.
+
 ### Claim language
 
 Allowed claim language:

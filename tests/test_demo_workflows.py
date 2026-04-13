@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 import wave
+import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.demo_ab_capture import build_demo_capture_bundle, write_demo_capture_bundle
 from scripts.demo_panel_report import build_demo_panel_report, write_demo_panel_report
 from scripts.demo_rehearsal_gate import build_demo_readiness
+
+
+def _load_script_module(module_name: str, relative_path: str):
+    script_path = Path(__file__).resolve().parents[1] / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"unable to load script module: {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write_wav(path: Path, data: np.ndarray, sample_rate: int = 16000) -> None:
@@ -254,6 +265,107 @@ class DemoWorkflowTests(unittest.TestCase):
             markdown = written["markdown_path"].read_text(encoding="utf-8")
             self.assertIn("FocusField Demo Panel Scorecard", markdown)
             self.assertIn("Latency p95", markdown)
+
+    def test_demo_benchmark_pipeline_writes_capture_bench_and_panel_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_dir = root / "artifacts" / "run_001"
+            (run_dir / "audio").mkdir(parents=True, exist_ok=True)
+            (run_dir / "logs").mkdir(parents=True, exist_ok=True)
+            (run_dir / "traces").mkdir(parents=True, exist_ok=True)
+
+            baseline = root / "baseline.wav"
+            reference = root / "reference.wav"
+            candidate_signal = 0.08 * np.sin(2.0 * np.pi * 220.0 * np.arange(16000, dtype=np.float32) / 16000.0)
+            baseline_signal = 0.04 * np.sin(2.0 * np.pi * 220.0 * np.arange(16000, dtype=np.float32) / 16000.0)
+            _write_wav(run_dir / "audio" / "enhanced.wav", candidate_signal)
+            _write_wav(run_dir / "audio" / "raw.wav", np.stack([candidate_signal] * 8, axis=1))
+            _write_wav(baseline, baseline_signal)
+            _write_wav(reference, candidate_signal)
+
+            _write_jsonl(
+                run_dir / "logs" / "perf.jsonl",
+                [
+                    {
+                        "t_ns": 1_000_000_000,
+                        "enhanced_final": {"pipeline_queue_age_ms": 95.0},
+                        "queue_pressure": {"drop_total_window": 1},
+                        "output": {"underrun_window": 0, "underrun_total": 0, "occupancy_frames": 4, "buffer_capacity_frames": 16},
+                    },
+                    {
+                        "t_ns": 2_000_000_000,
+                        "enhanced_final": {"pipeline_queue_age_ms": 105.0},
+                        "queue_pressure": {"drop_total_window": 2},
+                        "output": {"underrun_window": 0, "underrun_total": 0, "occupancy_frames": 5, "buffer_capacity_frames": 16},
+                    },
+                ],
+            )
+            _write_jsonl(
+                run_dir / "logs" / "events.jsonl",
+                [
+                    {
+                        "context": {
+                            "module": "fusion.av_association",
+                            "event": "no_candidates",
+                            "details": {"vad_speech": False, "reason": "normal"},
+                        }
+                    }
+                ],
+            )
+            _write_jsonl(
+                run_dir / "traces" / "lock.jsonl",
+                [
+                    {"t_ns": 1_000_000_000, "state": "LOCKED", "target_bearing_deg": 10.0, "target_id": "speaker:a"},
+                    {"t_ns": 2_000_000_000, "state": "LOCKED", "target_bearing_deg": 12.0, "target_id": "speaker:a"},
+                ],
+            )
+            _write_jsonl(
+                run_dir / "traces" / "faces.jsonl",
+                [
+                    {"t_ns": 1_000_000_000, "faces": [{"track_id": "speaker:a"}]},
+                    {"t_ns": 2_000_000_000, "faces": [{"track_id": "speaker:a"}]},
+                ],
+            )
+            _write_jsonl(run_dir / "traces" / "doa.jsonl", [{"t_ns": 1_000_000_000, "peaks": [{"angle_deg": 10.0, "score": 0.9}]}])
+
+            readiness = root / "demo_readiness.json"
+            readiness.write_text(
+                json.dumps(
+                    {
+                        "passed": True,
+                        "summary": {
+                            "boot_to_host_visible_mic_s": 8.4,
+                            "reconnect_time_s": 2.6,
+                            "zoom_selected_input_device": "FocusField USB Mic",
+                            "soak": {"passed": True, "duration_s": 1900.0},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            pipeline = _load_script_module("demo_benchmark_pipeline_test", "scripts/demo_benchmark_pipeline.py")
+            summary = pipeline.run_demo_benchmark_pipeline(
+                candidate_run=str(run_dir),
+                baseline_audio_path=str(baseline),
+                reference_audio_path=str(reference),
+                output_dir=str(root / "packet"),
+                demo_readiness_path=str(readiness),
+            )
+
+            artifacts = summary["artifacts"]
+            self.assertTrue(Path(artifacts["capture_bundle"]).exists())
+            self.assertTrue(Path(artifacts["scene_manifest"]).exists())
+            self.assertTrue(Path(artifacts["bench_report"]).exists())
+            self.assertTrue(Path(artifacts["panel_scorecard_markdown"]).exists())
+            self.assertTrue(Path(artifacts["summary_json"]).exists())
+            self.assertTrue(Path(artifacts["summary_markdown"]).exists())
+            self.assertIn("bench_passed", summary["verdicts"])
+            self.assertEqual(summary["verdicts"]["demo_ready"], True)
+            markdown = Path(artifacts["summary_markdown"]).read_text(encoding="utf-8")
+            self.assertIn("FocusField Demo Benchmark Summary", markdown)
+            self.assertIn("BenchReport.json", markdown)
+            self.assertIn("demo_benchmark_summary.json", markdown)
 
 
 if __name__ == "__main__":

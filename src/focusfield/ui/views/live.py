@@ -134,7 +134,7 @@ def live_page() -> str:
     #main {
       flex: 1;
       display: grid;
-      grid-template-rows: auto auto auto auto;
+      grid-template-rows: auto auto auto auto auto auto;
       grid-template-columns: 1fr 1fr 1fr;
       gap: var(--gap);
       padding: var(--gap);
@@ -267,6 +267,31 @@ def live_page() -> str:
       background: var(--green);
     }
     .rms-snr { font-size: 9px; color: var(--text-sec); width: 36px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+    #audio-direction-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .audio-dir-item {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 5px 7px;
+    }
+    .audio-dir-label {
+      display: block;
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-sec);
+      margin-bottom: 2px;
+    }
+    .audio-dir-value {
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
     #vad-row {
       display: flex; align-items: center; gap: 8px; margin-top: 4px; padding-top: 6px;
       border-top: 1px solid var(--border);
@@ -283,15 +308,63 @@ def live_page() -> str:
       height: 100%; border-radius: 3px; background: var(--green); transition: width 0.15s;
     }
 
-    /* Row 3: Timeline */
+    /* Row 3: Operator truth */
     #row3 {
       grid-row: 3; grid-column: 1 / 4;
     }
-    #timeline-canvas { display: block; width: 100%; }
 
-    /* Row 4: Log */
+    .truth-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(120px, 1fr));
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .truth-item {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+    .truth-item.warning {
+      border-color: rgba(248,81,73,0.45);
+      box-shadow: inset 0 0 0 1px rgba(248,81,73,0.12);
+    }
+    .truth-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--text-sec);
+      margin-bottom: 2px;
+    }
+    .truth-value {
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+    .truth-value.warning {
+      color: var(--red);
+      font-weight: 700;
+    }
+    #lock-reason {
+      margin-top: 8px;
+      font-size: 10px;
+      line-height: 1.35;
+      color: var(--text-sec);
+    }
+    #lock-reason-value {
+      color: var(--text);
+      font-size: 11px;
+    }
+
+    /* Row 4: Timeline */
     #row4 {
       grid-row: 4; grid-column: 1 / 4;
+    }
+    #timeline-canvas { display: block; width: 100%; }
+
+    /* Row 5: Log */
+    #row5 {
+      grid-row: 5; grid-column: 1 / 4;
     }
     #log-body {
       font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
@@ -311,7 +384,7 @@ def live_page() -> str:
     /* Calibration panel */
     #calib-panel {
       display: none;
-      grid-row: 5; grid-column: 1 / 4;
+      grid-row: 6; grid-column: 1 / 4;
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: var(--panel-r);
@@ -408,7 +481,21 @@ def live_page() -> str:
 
     <!-- Audio meters -->
     <div class="panel" id="audio-panel">
-      <div class="panel-title">Audio Meters</div>
+      <div class="panel-title">Channel Levels <span class="badge">RMS/SNR</span></div>
+      <div id="audio-direction-row">
+        <div class="audio-dir-item">
+          <span class="audio-dir-label">DOA peak</span>
+          <span class="audio-dir-value" id="audio-dir-peak">—</span>
+        </div>
+        <div class="audio-dir-item">
+          <span class="audio-dir-label">Beam</span>
+          <span class="audio-dir-value" id="audio-dir-beam">—</span>
+        </div>
+        <div class="audio-dir-item">
+          <span class="audio-dir-label">LEDs</span>
+          <span class="audio-dir-value" id="audio-dir-led">—</span>
+        </div>
+      </div>
       <div id="audio-wrap"></div>
       <div id="vad-row">
         <div id="vad-dot"></div>
@@ -418,14 +505,57 @@ def live_page() -> str:
     </div>
   </div>
 
-  <!-- Row 3: Timeline -->
+  <!-- Row 3: Operator Truth -->
   <div class="panel" id="row3">
+    <div class="panel-title">Operator Truth</div>
+    <div class="truth-grid">
+      <div class="truth-item">
+        <div class="truth-label">Camera calibration</div>
+        <div class="truth-value" id="calibration-status">unknown</div>
+      </div>
+      <div class="truth-item">
+        <div class="truth-label">Audio calibration</div>
+        <div class="truth-value" id="audio-calibration-status">unknown</div>
+      </div>
+      <div class="truth-item">
+        <div class="truth-label">Audio yaw</div>
+        <div class="truth-value" id="audio-yaw-breakdown">—</div>
+      </div>
+      <div class="truth-item">
+        <div class="truth-label">Target bearing</div>
+        <div class="truth-value" id="alignment-target-bearing">—</div>
+      </div>
+      <div class="truth-item">
+        <div class="truth-label">Beam bearing</div>
+        <div class="truth-value" id="alignment-beam-bearing">—</div>
+      </div>
+      <div class="truth-item">
+        <div class="truth-label">Top DOA peak</div>
+        <div class="truth-value" id="alignment-doa-peak">—</div>
+      </div>
+      <div class="truth-item">
+        <div class="truth-label">Target camera</div>
+        <div class="truth-value" id="alignment-camera">—</div>
+      </div>
+      <div class="truth-item" id="alignment-disagreement-wrap">
+        <div class="truth-label">Audio/visual alignment</div>
+        <div class="truth-value" id="alignment-disagreement">aligned</div>
+      </div>
+    </div>
+    <div id="lock-reason">
+      <span class="truth-label">Lock explanation</span><br />
+      <span id="lock-reason-value">—</span>
+    </div>
+  </div>
+
+  <!-- Row 4: Timeline -->
+  <div class="panel" id="row4">
     <div class="panel-title">Lock State Timeline <span style="font-weight:400;color:var(--text-sec);margin-left:4px;">— last 60 s</span></div>
     <canvas id="timeline-canvas" height="48"></canvas>
   </div>
 
-  <!-- Row 4: Log -->
-  <div class="panel" id="row4">
+  <!-- Row 5: Log -->
+  <div class="panel" id="row5">
     <div class="panel-title">Event Log</div>
     <div id="log-body"></div>
   </div>
@@ -484,6 +614,16 @@ const heatCtx        = heatmapCanvas.getContext('2d');
 const tlCanvas       = document.getElementById('timeline-canvas');
 const tlCtx          = tlCanvas.getContext('2d');
 const logBody        = document.getElementById('log-body');
+const calibrationStatus = document.getElementById('calibration-status');
+const audioCalibrationStatus = document.getElementById('audio-calibration-status');
+const audioYawBreakdown = document.getElementById('audio-yaw-breakdown');
+const lockReasonValue  = document.getElementById('lock-reason-value');
+const alignmentTarget = document.getElementById('alignment-target-bearing');
+const alignmentBeam   = document.getElementById('alignment-beam-bearing');
+const alignmentPeak   = document.getElementById('alignment-doa-peak');
+const alignmentCamera = document.getElementById('alignment-camera');
+const alignmentDisagreement = document.getElementById('alignment-disagreement');
+const alignmentDisagreementWrap = document.getElementById('alignment-disagreement-wrap');
 const calibPanel     = document.getElementById('calib-panel');
 const calibSliders   = document.getElementById('calib-sliders');
 const calibApply     = document.getElementById('calib-apply');
@@ -575,7 +715,7 @@ function updateAllPanels(data) {
   updateMicHealth(data.mic_health);
 
   // Audio meters
-  updateAudioMeters(data.mic_health, data.fusion_debug);
+  updateAudioMeters(data.mic_health, data.fusion_debug, data.heatmap_summary, data.beamformer, data.uma8_leds, data.meta);
 
   // Timeline
   pushTimeline(state, target);
@@ -586,6 +726,9 @@ function updateAllPanels(data) {
 
   // Header badges
   updateHeader(data);
+
+  // Operator truth panel
+  updateOperatorTruth(data);
 
   // Calibration
   updateCalibration(data.meta);
@@ -600,6 +743,188 @@ function groupFacesByCamera(faces) {
     m[c].push(f);
   }
   return m;
+}
+
+function formatDeg(value) {
+  if (!Number.isFinite(value)) return '—';
+  return Number(value).toFixed(1) + '\u00b0';
+}
+
+function readFiniteNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function angleDeltaDeg(a, b) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  const diff = Math.abs((a - b + 180) % 360 - 180);
+  return Number.isFinite(diff) ? diff : null;
+}
+
+function findPeakDoa(heatmapSummary) {
+  const peaks = heatmapSummary && Array.isArray(heatmapSummary.peaks) ? heatmapSummary.peaks : [];
+  if (peaks.length === 0) return null;
+  let best = null;
+  let bestScore = -1;
+  for (const peak of peaks) {
+    const score = Number(peak && peak.score != null ? peak.score : 0);
+    if (!Number.isFinite(score)) continue;
+    if (score > bestScore) {
+      bestScore = score;
+      best = peak;
+    }
+  }
+  if (!best) return null;
+  const angle = Number(best.angle_deg);
+  if (!Number.isFinite(angle)) return null;
+  return {
+    angle,
+    score: Number(best.score || 0),
+  };
+}
+
+function inferTargetCamera(lockState, faces, faceBearing, activeCameras) {
+  const state = String(lockState.state || 'NO_LOCK');
+  const targetCameraId = String(lockState.target_camera_id || '').trim();
+  if (targetCameraId) {
+    return targetCameraId;
+  }
+  const targetId = lockState.target_id;
+  if (targetId != null) {
+    for (const face of faces) {
+      if (face.track_id === targetId && face.camera_id) return face.camera_id;
+    }
+  }
+  if (Number.isFinite(faceBearing)) {
+    for (const camId of CAM_IDS) {
+      if (camInFov(camId, faceBearing)) return camId;
+    }
+  }
+  if (state === 'NO_LOCK') {
+    return '—';
+  }
+  if (Array.isArray(activeCameras) && activeCameras.length > 0) {
+    return activeCameras[0];
+  }
+  return '—';
+}
+
+function setText(element, value) {
+  if (element) {
+    element.textContent = value;
+  }
+}
+
+function updateOperatorTruth(data) {
+  const lock = data.lock_state || {};
+  const fusionDebug = data.fusion_debug || {};
+  const beam = data.beamformer || {};
+  const heatmapSummary = data.heatmap_summary || {};
+  const meta = data.meta || {};
+  const runtimeConfig = meta.runtime_config || {};
+  const faces = data.face_summaries || [];
+  const candidates = Array.isArray(data.top_candidates) ? data.top_candidates : [];
+
+  const targetBearing = readFiniteNumber(lock.target_bearing_deg);
+  const beamBearing = readFiniteNumber(beam.target_bearing_deg);
+  const topCandidate = candidates.length > 0 ? candidates[0] : null;
+  const candidateBearing = topCandidate ? readFiniteNumber(topCandidate.bearing_deg) : null;
+  const peak = findPeakDoa(heatmapSummary);
+  const peakBearing = peak ? readFiniteNumber(peak.angle) : null;
+  const peakScore = peak ? readFiniteNumber(peak.score) : null;
+
+  const calibration = meta.camera_calibration_overlay || {};
+  const calibStatus = String(calibration.status || '').toLowerCase();
+  const calibActive = calibStatus === 'active';
+  const calibStale = calibStatus === 'stale';
+  const calibError = calibStatus === 'error';
+  const calibSource = String(calibration.source || (calibActive || calibStale || calibError ? 'sidecar' : 'defaults'));
+  const calibApplied = Array.isArray(calibration.applied_camera_ids) && calibration.applied_camera_ids.length > 0;
+  let cameraCalibrationText = 'INACTIVE · defaults';
+  if (calibActive) {
+    cameraCalibrationText = 'ACTIVE · ' + calibSource + (calibApplied ? ' · updated cams ' + calibration.applied_camera_ids.length : '');
+  } else if (calibStale) {
+    cameraCalibrationText = 'STALE · ' + calibSource;
+  } else if (calibError) {
+    cameraCalibrationText = 'ERROR · ' + calibSource;
+  }
+  setText(calibrationStatus, cameraCalibrationText);
+
+  const audioCalibration = meta.audio_calibration_overlay || {};
+  const audioCalibStatus = String(audioCalibration.status || '').toLowerCase();
+  const audioCalibActive = audioCalibStatus === 'active';
+  const audioCalibStale = audioCalibStatus === 'stale';
+  const audioCalibError = audioCalibStatus === 'error';
+  const audioCalibSource = String(audioCalibration.source || (audioCalibActive || audioCalibStale || audioCalibError ? 'sidecar' : 'defaults'));
+  const audioRestartTruth = audioCalibration.restart_required_on_change ? ' · restart to apply changes' : '';
+  let audioCalibrationText = 'INACTIVE · defaults';
+  if (audioCalibActive) {
+    audioCalibrationText = 'ACTIVE · ' + audioCalibSource + ' · startup only';
+  } else if (audioCalibStale) {
+    audioCalibrationText = 'STALE · ' + audioCalibSource + ' · startup only';
+  } else if (audioCalibError) {
+    audioCalibrationText = 'ERROR · ' + audioCalibSource + ' · startup only';
+  }
+  setText(
+    audioCalibrationStatus,
+    audioCalibrationText + audioRestartTruth,
+  );
+
+  const audioYawCalibration = runtimeConfig.audio_yaw_calibration || {};
+  const profileYaw = readFiniteNumber(audioYawCalibration.profile_yaw_offset_deg);
+  const baseYaw = readFiniteNumber(audioYawCalibration.base_runtime_yaw_offset_deg);
+  const sidecarYaw = readFiniteNumber(audioYawCalibration.sidecar_yaw_offset_deg);
+  const totalYaw = readFiniteNumber(audioYawCalibration.effective_total_yaw_offset_deg);
+  const yawParts = [];
+  if (profileYaw != null) yawParts.push('profile ' + formatDeg(profileYaw));
+  if (baseYaw != null) yawParts.push('base ' + formatDeg(baseYaw));
+  if (sidecarYaw != null) yawParts.push('sidecar ' + formatDeg(sidecarYaw));
+  const yawText = yawParts.length > 0 && totalYaw != null
+    ? yawParts.join(' + ') + ' = ' + formatDeg(totalYaw) + ' total'
+    : '—';
+  setText(audioYawBreakdown, yawText);
+
+  setText(lockReasonValue, (lock.reason || fusionDebug.no_candidate_reason || lock.mode || '') || '—');
+  setText(alignmentTarget, formatDeg(targetBearing));
+  setText(alignmentBeam, formatDeg(beamBearing));
+  setText(alignmentPeak, peakBearing == null ? '—' : formatDeg(peakBearing) + (peakScore != null ? ' (' + (peakScore * 100).toFixed(0) + '%)' : ''));
+
+  const targetCam = inferTargetCamera(lock, faces, targetBearing, meta.active_face_cameras);
+  setText(alignmentCamera, targetCam);
+
+  const targetToCandidate = angleDeltaDeg(targetBearing, candidateBearing);
+  const targetToBeam = angleDeltaDeg(targetBearing, beamBearing);
+  const targetToDoa = angleDeltaDeg(targetBearing, peakBearing);
+  const visualConfidence = topCandidate && topCandidate.score_components
+    ? Math.max(
+        Number(topCandidate.score_components.visual_speaking_prob || 0),
+        Number(topCandidate.score_components.doa_peak_score || 0),
+      )
+    : 0;
+  const audioConfidence = Number(fusionDebug.doa_confidence || 0);
+
+  const disagreements = [];
+  if (targetToBeam != null && targetToBeam > 40 && visualConfidence > 0.25 && audioConfidence > 0.25) {
+    disagreements.push('beam vs target');
+  }
+  if (targetToDoa != null && targetToDoa > 45 && audioConfidence > 0.25) {
+    disagreements.push('audio peak vs target');
+  }
+  if (targetToCandidate != null && targetToCandidate > 35 && visualConfidence > 0.25) {
+    disagreements.push('visual top candidate vs target');
+  }
+
+  if (!alignmentDisagreementWrap || !alignmentDisagreement) return;
+  if (disagreements.length > 0) {
+    alignmentDisagreement.textContent = 'disagree (' + disagreements.join(' / ') + ')';
+    alignmentDisagreement.className = 'truth-value warning';
+    alignmentDisagreementWrap.className = 'truth-item warning';
+  } else {
+    alignmentDisagreement.textContent = 'aligned';
+    alignmentDisagreement.className = 'truth-value';
+    alignmentDisagreementWrap.className = 'truth-item';
+  }
 }
 
 /* ═══════════════════════════════════════════════
@@ -956,9 +1281,38 @@ function dbToFrac(db) {
   return (db - DB_MIN) / (DB_MAX - DB_MIN);
 }
 
-function updateAudioMeters(micHealth, fusionDebug) {
+function updateAudioMeters(micHealth, fusionDebug, heatmapSummary, beamformer, ledState, meta) {
   const channels = (micHealth && micHealth.channels) || [];
   const wrap     = document.getElementById('audio-wrap');
+  const peakEl   = document.getElementById('audio-dir-peak');
+  const beamEl   = document.getElementById('audio-dir-beam');
+  const ledEl    = document.getElementById('audio-dir-led');
+
+  const peak = findPeakDoa(heatmapSummary || {});
+  if (peakEl) {
+    peakEl.textContent = peak ? formatDeg(readFiniteNumber(peak.angle)) : '—';
+  }
+  const beamBearing = readFiniteNumber(beamformer && beamformer.target_bearing_deg);
+  if (beamEl) {
+    beamEl.textContent = formatDeg(beamBearing);
+  }
+  if (ledEl) {
+    const preferred = String((ledState && ledState.preferred_backend) || (ledState && ledState.backend) || 'none');
+    const active = String((ledState && ledState.active_backend) || (ledState && ledState.backend) || 'none');
+    const error = String((ledState && ledState.transport_error) || '');
+    const enabled = !!(ledState && ledState.enabled);
+    if (!enabled || preferred === 'none') {
+      ledEl.textContent = 'disabled';
+    } else if (error) {
+      ledEl.textContent = 'error';
+    } else if (active === 'simulate') {
+      ledEl.textContent = 'simulate';
+    } else if (active === 'none') {
+      ledEl.textContent = 'unavailable';
+    } else {
+      ledEl.textContent = active;
+    }
+  }
 
   for (let i = 0; i < 8; i++) {
     let row = document.getElementById('rms-row-' + i);
@@ -990,12 +1344,19 @@ function updateAudioMeters(micHealth, fusionDebug) {
   // VAD
   const vadSpeech = fusionDebug && fusionDebug.vad_speech;
   const vadConf   = fusionDebug && fusionDebug.vad_confidence;
+  const vadEnabled = !(meta && meta.audio_vad_enabled === false);
   const vadDot    = document.getElementById('vad-dot');
   const vadLabel  = document.getElementById('vad-label');
   const vadFill   = document.getElementById('vad-conf-fill');
+  if (!vadEnabled) {
+    if (vadDot) vadDot.style.background = '#30363d';
+    if (vadLabel) vadLabel.textContent = 'VAD: off';
+    if (vadFill) vadFill.style.width = '0%';
+    return;
+  }
   if (vadDot)  vadDot.style.background  = vadSpeech ? '#3fb950' : '#30363d';
   if (vadLabel) vadLabel.textContent    = 'VAD: ' + (vadSpeech ? 'SPEECH' : 'silence');
-  if (vadFill && vadConf != null) vadFill.style.width = (vadConf * 100).toFixed(1) + '%';
+  if (vadFill) vadFill.style.width = ((vadConf != null ? vadConf : 0) * 100).toFixed(1) + '%';
 }
 
 /* ═══════════════════════════════════════════════

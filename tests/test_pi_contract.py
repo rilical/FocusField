@@ -30,6 +30,21 @@ class _FakeClosedCapture:
         return None
 
 
+class _FakeOpenedCapture:
+    def __init__(self) -> None:
+        self.props = []
+
+    def isOpened(self) -> bool:  # noqa: N802
+        return True
+
+    def set(self, prop, value) -> bool:  # noqa: ANN001
+        self.props.append((prop, value))
+        return True
+
+    def release(self) -> None:
+        return None
+
+
 class PiContractTests(unittest.TestCase):
     def test_prod_profile_contract(self) -> None:
         cfg = load_config("configs/full_3cam_8mic_pi_prod.yaml")
@@ -336,6 +351,59 @@ class PiContractTests(unittest.TestCase):
             )
         self.assertTrue(stop_event.is_set())
         self.assertTrue(any(event == "camera_missing" for _, _, event, _ in logger.events))
+
+    def test_camera_controls_validation_rejects_invalid_shapes(self) -> None:
+        cfg = {
+            "runtime": {"enable_validation": True},
+            "video": {
+                "camera_controls": {
+                    "enabled": "yes",
+                    "settle_ms": -1,
+                    "defaults": [],
+                },
+                "cameras": [
+                    {"id": "cam0", "controls": []},
+                ],
+            },
+        }
+        errs = validate_config(cfg)
+        self.assertTrue(any("video.camera_controls.enabled" in e for e in errs))
+        self.assertTrue(any("video.camera_controls.settle_ms" in e for e in errs))
+        self.assertTrue(any("video.camera_controls.defaults" in e for e in errs))
+        self.assertTrue(any("video.cameras[0].controls" in e for e in errs))
+
+    def test_configure_capture_applies_v4l2_controls(self) -> None:
+        from focusfield.vision.cameras import _configure_capture
+
+        capture = _FakeOpenedCapture()
+        logger = _DummyLogger()
+        with patch("focusfield.vision.cameras.shutil.which", return_value="/usr/bin/v4l2-ctl"):
+            with patch("focusfield.vision.cameras.subprocess.run") as run_mock:
+                with patch("focusfield.vision.cameras.time.sleep") as sleep_mock:
+                    _configure_capture(
+                        capture,
+                        352,
+                        198,
+                        6,
+                        logger,
+                        "cam0",
+                        "/dev/video0",
+                        {
+                            "enabled": True,
+                            "settle_ms": 125,
+                            "defaults": {"auto_exposure": 1, "white_balance_automatic": False},
+                            "overrides": {"exposure_time_absolute": 48},
+                        },
+                    )
+        self.assertTrue(any(prop == "camera_controls_applied" for _, _, prop, _ in logger.events))
+        self.assertEqual(len(capture.props), 4)
+        run_mock.assert_called_once()
+        args = run_mock.call_args.args[0]
+        self.assertEqual(args[:4], ["/usr/bin/v4l2-ctl", "-d", "/dev/video0", "--set-ctrl"])
+        self.assertIn("auto_exposure=1", args[4])
+        self.assertIn("white_balance_automatic=0", args[4])
+        self.assertIn("exposure_time_absolute=48", args[4])
+        sleep_mock.assert_called_once_with(0.125)
 
 
 if __name__ == "__main__":

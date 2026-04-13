@@ -37,7 +37,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from focusfield.core.config import load_config
+from focusfield.core.config import _load_device_profile, load_config
 from focusfield.core.clock import now_ns
 from focusfield.core.artifacts import create_run_dir, write_run_metadata
 from focusfield.core.health import start_health_monitor
@@ -76,6 +76,7 @@ from focusfield.main.runtime_support import (
     runtime_requirements,
     start_beamformed_passthrough,
 )
+from focusfield.vision.calibration.runtime_overlay import apply_audio_calibration_sidecar
 
 
 def _selected_audio_info(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -109,11 +110,43 @@ def _configured_camera_bindings(config: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "device_path": str(cam.get("device_path", "") or ""),
                 "device_index": cam.get("device_index"),
                 "yaw_offset_deg": float(cam.get("yaw_offset_deg", 0.0) or 0.0),
+                "bearing_model": str(cam.get("bearing_model", "linear") or "linear").lower(),
                 "bearing_offset_deg": float(cam.get("bearing_offset_deg", 0.0) or 0.0),
+                "bearing_lut_path": str(cam.get("bearing_lut_path", "") or ""),
                 "hfov_deg": float(cam.get("hfov_deg", 0.0) or 0.0),
             }
         )
     return bindings
+
+
+def _runtime_base_dir(config: Dict[str, Any]) -> Path:
+    runtime_cfg = config.get("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        runtime_cfg = {}
+    candidates = [
+        os.environ.get("FOCUSFIELD_CONFIG_EFFECTIVE"),
+        os.environ.get("FOCUSFIELD_CONFIG_PATH"),
+        runtime_cfg.get("config_effective_path"),
+        runtime_cfg.get("config_path"),
+    ]
+    for candidate in candidates:
+        raw = str(candidate or "").strip()
+        if raw:
+            return Path(raw).expanduser().resolve().parent
+    return Path(os.getcwd()).resolve()
+
+
+def _audio_profile_yaw_offset_deg(config: Dict[str, Any]) -> float:
+    audio_cfg = config.get("audio", {})
+    if not isinstance(audio_cfg, dict):
+        return 0.0
+    profile_name = str(audio_cfg.get("device_profile", "") or "")
+    if not profile_name:
+        return 0.0
+    profile = _load_device_profile(profile_name)
+    if not isinstance(profile, dict):
+        return 0.0
+    return float(profile.get("yaw_offset_deg", 0.0) or 0.0)
 
 
 def _configured_camera_status(config: Dict[str, Any], strict_capture: bool, camera_scope: str) -> Dict[str, Any]:
@@ -771,6 +804,17 @@ def main() -> None:
         led_hid_status = _validate_led_hid_runtime(config, logger, req)
     except RuntimeError as exc:
         raise SystemExit(str(exc))
+    audio_calibration_overlay = apply_audio_calibration_sidecar(config, base_dir=_runtime_base_dir(config))
+    runtime_audio_yaw_offset_deg = float(config.get("audio", {}).get("yaw_offset_deg", 0.0) or 0.0)
+    audio_yaw_calibration = {
+        "profile_yaw_offset_deg": _audio_profile_yaw_offset_deg(config),
+        "base_runtime_yaw_offset_deg": float(audio_calibration_overlay.get("base_runtime_yaw_offset_deg", 0.0) or 0.0),
+        "sidecar_yaw_offset_deg": float(audio_calibration_overlay.get("sidecar_yaw_offset_deg", 0.0) or 0.0),
+        "effective_runtime_yaw_offset_deg": runtime_audio_yaw_offset_deg,
+    }
+    audio_yaw_calibration["effective_total_yaw_offset_deg"] = (
+        float(audio_yaw_calibration["profile_yaw_offset_deg"]) + runtime_audio_yaw_offset_deg
+    )
     runtime_cfg["selected_audio_device"] = _selected_audio_info(config)
     runtime_cfg["configured_camera_bindings"] = _configured_camera_bindings(config)
     runtime_cfg["requirements_passed"] = True
@@ -781,7 +825,12 @@ def main() -> None:
     runtime_cfg["thresholds_preset_active"] = str(config.get("fusion", {}).get("thresholds_preset", "") or "")
     runtime_cfg["requirements"] = dict(config.get("runtime", {}).get("requirements", {}) or {})
     runtime_cfg["audio_device_profile"] = str(config.get("audio", {}).get("device_profile", "") or "")
-    runtime_cfg["audio_yaw_offset_deg"] = float(config.get("audio", {}).get("yaw_offset_deg", 0.0) or 0.0)
+    runtime_cfg["audio_yaw_offset_deg"] = runtime_audio_yaw_offset_deg
+    runtime_cfg["audio_yaw_calibration"] = audio_yaw_calibration
+    runtime_cfg["audio_calibration_overlay"] = {
+        **audio_calibration_overlay,
+        **audio_yaw_calibration,
+    }
     runtime_cfg["detector_backend_active"] = detector_status.get("active_backend", "unknown")
     runtime_cfg["detector_backend_degraded"] = bool(detector_status.get("degraded", False))
     runtime_cfg["detector_backend_reason"] = detector_status.get("reason", "")
@@ -801,6 +850,8 @@ def main() -> None:
             "audio_device": runtime_cfg.get("selected_audio_device", {}),
             "audio_device_profile": runtime_cfg.get("audio_device_profile", ""),
             "audio_yaw_offset_deg": runtime_cfg.get("audio_yaw_offset_deg", 0.0),
+            "audio_yaw_calibration": runtime_cfg.get("audio_yaw_calibration", {}),
+            "audio_calibration_overlay": runtime_cfg.get("audio_calibration_overlay", {}),
             "camera_bindings": runtime_cfg.get("configured_camera_bindings", []),
             "camera_calibration_overlay": runtime_cfg.get("camera_calibration_overlay", {}),
         },

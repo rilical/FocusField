@@ -158,6 +158,7 @@ class BenchEntrypointTests(unittest.TestCase):
         scripts = [
             Path("scripts/focusbench_ab.py"),
             Path("scripts/pi_perf_gate.py"),
+            Path("scripts/demo_benchmark_pipeline.py"),
         ]
         for script in scripts:
             result = subprocess.run(

@@ -229,6 +229,10 @@ def _default_config() -> Dict[str, Any]:
             "telemetry": {
                 "top_k": 3,
             },
+            "visual_freshness_ms": 1200.0,
+            "visual_override_min": 0.6,
+            "audio_rescue_min": 0.35,
+            "disagreement_penalty": 0.25,
             "weights": {
                 "bias": -0.35,
                 "mouth": 1.05,
@@ -646,6 +650,38 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
                     errors.append("audio.vad.update_hz must be > 0")
 
     vision_cfg = config.get("vision", {})
+    video_cfg = config.get("video", {})
+    if video_cfg is not None and not isinstance(video_cfg, dict):
+        errors.append("video must be a mapping when provided")
+        video_cfg = {}
+    if isinstance(video_cfg, dict):
+        camera_controls = video_cfg.get("camera_controls", {})
+        if camera_controls is not None and not isinstance(camera_controls, dict):
+            errors.append("video.camera_controls must be a mapping when provided")
+            camera_controls = {}
+        if isinstance(camera_controls, dict):
+            if "enabled" in camera_controls and not isinstance(camera_controls.get("enabled"), bool):
+                errors.append("video.camera_controls.enabled must be bool")
+            if "settle_ms" in camera_controls:
+                try:
+                    settle_ms = int(camera_controls.get("settle_ms", 0))
+                except Exception:
+                    errors.append("video.camera_controls.settle_ms must be integer")
+                else:
+                    if settle_ms < 0:
+                        errors.append("video.camera_controls.settle_ms must be >= 0")
+            defaults_cfg = camera_controls.get("defaults", {})
+            if defaults_cfg is not None and not isinstance(defaults_cfg, dict):
+                errors.append("video.camera_controls.defaults must be a mapping when provided")
+        cameras_cfg = video_cfg.get("cameras", [])
+        if isinstance(cameras_cfg, list):
+            for idx, camera in enumerate(cameras_cfg):
+                if not isinstance(camera, dict):
+                    continue
+                controls = camera.get("controls", {})
+                if controls is not None and not isinstance(controls, dict):
+                    errors.append(f"video.cameras[{idx}].controls must be a mapping when provided")
+
     if isinstance(vision_cfg, dict):
         face_cfg = vision_cfg.get("face", {})
         if isinstance(face_cfg, dict):

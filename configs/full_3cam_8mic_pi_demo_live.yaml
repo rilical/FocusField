@@ -3,7 +3,42 @@ runtime:
   run_id: ''
   fail_fast: true
   perf_profile: realtime_pi_max
+  process_mode: multiprocess
   enable_validation: true
+  realtime:
+    enabled: true
+    allow_best_effort: true
+    scheduler: fifo
+    priority: 8
+    cpu_affinity:
+      - 0
+  multiprocess:
+    start_method: spawn
+    queue_depth: 24
+    shared_memory: true
+    workers:
+      parent:
+        cpu_affinity:
+          - 0
+        scheduler: rr
+        priority: 2
+      audio:
+        cpu_affinity:
+          - 2
+          - 3
+        scheduler: fifo
+        priority: 10
+      vision:
+        cpu_affinity:
+          - 1
+        scheduler: rr
+        priority: 4
+  startup:
+    audio_first: true
+    vision_start_delay_ms: 350
+    validate_runtime_models: true
+    defer_ui_until_vision: true
+    overload_shed_enabled: true
   requirements:
     strict: true
     min_cameras: 3
@@ -48,22 +83,23 @@ audio:
   device_profile: minidsp_uma8_raw_7p1
   capture:
     allow_mono_fallback: false
-    queue_depth: 16
+    queue_depth: 64
     stats_emit_hz: 1
     reconnect_delay_ms: 750
   device_selector:
     match_substring: miniDSP
     require_input_channels: 8
   vad:
-    enabled: false
+    enabled: true
+    backend: webrtc
     mode: 1
     frame_ms: 30
     min_speech_ratio: 0.3
     update_hz: 4
   doa:
     method: srp_phat
-    bins: 18
-    update_hz: 2
+    bins: 36
+    update_hz: 4
     freq_low_hz: 200
     freq_high_hz: 4500
     continuity_weight: 0.18
@@ -123,6 +159,18 @@ audio:
       max_offset_samples: 6
       check_every_s: 2.0
 video:
+  camera_controls:
+    enabled: true
+    settle_ms: 150
+    defaults:
+      auto_exposure: 1
+      exposure_time_absolute: 48
+      exposure_dynamic_framerate: 0
+      gain: 1024
+      white_balance_automatic: 0
+      white_balance_temperature: 4600
+      power_line_frequency: 2
+      backlight_compensation: 0
   cameras:
     - id: cam0
       device_path: ''
@@ -190,6 +238,10 @@ vision:
     smoothing_alpha: 0.25
 fusion:
   thresholds_preset: ''
+  visual_freshness_ms: 1800
+  visual_override_min: 0.5
+  audio_rescue_min: 0.35
+  disagreement_penalty: 0.18
   weights:
     bias: -0.35
     mouth: 0.55
@@ -199,23 +251,23 @@ fusion:
     doa: 0.22
     doa_confidence: 0.35
     angle: 0.10
-    audio: 0.0
+    audio: 0.35
     agreement_bonus: 0.25
   require_vad: false
   vad_max_age_ms: 500
-  require_speaking: false
+  require_speaking: true
   audio_fallback:
     enabled: false
   thresholds:
-    acquire_threshold: 0.28
+    acquire_threshold: 0.24
     acquire_timeout_ms: 1200
     acquire_persist_ms: 250
     acquire_floor_ratio: 0.55
     drop_threshold: 0.12
-    hold_ms: 1400
-    handoff_min_ms: 1200
-    min_switch_interval_ms: 1000
-    speak_on_threshold: 0.20
+    hold_ms: 2200
+    handoff_min_ms: 2200
+    min_switch_interval_ms: 1800
+    speak_on_threshold: 0.14
     bearing_smoothing_alpha: 0.75
 bus:
   max_queue_depth: 24
@@ -232,6 +284,12 @@ bus:
     vision.frames.cam2: 4
     vision.face_tracks: 4
     fusion.target_lock: 8
+  topic_queue_policies:
+    audio.frames: drop_oldest
+    audio.enhanced.beamformed: drop_oldest
+    audio.enhanced.final: drop_oldest
+    vision.frames.*: drop_oldest
+    ui.telemetry: drop_oldest
 logging:
   level: warning
   file:

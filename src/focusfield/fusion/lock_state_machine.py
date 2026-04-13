@@ -3,7 +3,7 @@ CONTRACT: inline (source: src/focusfield/fusion/lock_state_machine.md)
 ROLE: Target lock state machine with hysteresis.
 
 INPUTS:
-  - Topic: fusion.candidates  Type: AssociationCandidate[]
+  - Topic: fusion.candidates  Type: FusionCandidatesEnvelope (preferred) or AssociationCandidate[] for compatibility
 OUTPUTS:
   - Topic: fusion.target_lock  Type: TargetLock
 
@@ -68,9 +68,17 @@ from __future__ import annotations
 
 import queue
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from focusfield.core.clock import now_ns
+
+
+class FusionCandidatesEnvelope(TypedDict):
+    candidates: List[Dict[str, Any]]
+    evidence: Dict[str, Any]
+
+
+CandidatesPayload = FusionCandidatesEnvelope | List[Dict[str, Any]]
 
 
 class LockStateMachine:
@@ -94,8 +102,12 @@ class LockStateMachine:
         self._priority_policy = str(config.get("fusion", {}).get("priority_policy", "confidence_then_recency"))
         self._preferred_track_id = config.get("fusion", {}).get("preferred_track_id")
         self._recency_decay_ms = float(config.get("fusion", {}).get("recency_decay_ms", 1200))
+        self._visual_freshness_ms = float(config.get("fusion", {}).get("visual_freshness_ms", 1200.0) or 1200.0)
+        self._visual_override_min = float(config.get("fusion", {}).get("visual_override_min", 0.6) or 0.6)
+        self._audio_rescue_min = float(config.get("fusion", {}).get("audio_rescue_min", self._acquire) or self._acquire)
         self._state = "NO_LOCK"
         self._target_id: Optional[str] = None
+        self._target_camera_id: Optional[str] = None
         self._target_bearing: Optional[float] = None
         self._target_mode: str = "NO_LOCK"
         self._last_score = 0.0
@@ -111,14 +123,25 @@ class LockStateMachine:
         self._last_switch_ns = 0
         self._seq = 0
 
-    def update(self, candidates: List[Dict[str, Any]], vad_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def update(self, candidates: CandidatesPayload, vad_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         t_ns = now_ns()
-        self._update_speaking_history(candidates, t_ns)
-        has_speaking = _has_speaking_candidate(candidates, self._speak_on)
-        vad_speech = bool(vad_state.get("speech")) if _vad_is_fresh(vad_state, t_ns, self._vad_max_age_ms) and vad_state is not None else False
+        candidate_list, evidence = _unwrap_candidates_payload(candidates)
+        self._update_speaking_history(candidate_list, t_ns)
+        has_speaking = _has_speaking_candidate(candidate_list, self._speak_on)
+        vad_fresh = _vad_is_fresh(vad_state, t_ns, self._vad_max_age_ms)
+        vad_speech = bool(vad_state.get("speech")) if vad_fresh and vad_state is not None else False
         if has_speaking:
             self._last_speaking_ns = t_ns
-        if self._require_vad and _vad_is_fresh(vad_state, t_ns, self._vad_max_age_ms):
+        if self._require_vad and not vad_fresh and not has_speaking:
+            if self._state in {"LOCKED", "HOLD", "HANDOFF"} and self._within_hold(t_ns):
+                self._state = "HOLD"
+                reason = "audio_stale_hold"
+            else:
+                self._clear()
+                reason = "audio_stale_drop"
+            self._seq += 1
+            return self._build_output(t_ns, reason, evidence)
+        if self._require_vad and vad_fresh:
             if not bool(vad_state.get("speech")) and not has_speaking:
                 if self._state in {"LOCKED", "HOLD", "HANDOFF"} and self._within_hold(t_ns):
                     self._state = "HOLD"
@@ -127,27 +150,29 @@ class LockStateMachine:
                     self._clear()
                     reason = "vad_silence"
                 self._seq += 1
-                return self._build_output(t_ns, reason)
+                return self._build_output(t_ns, reason, evidence)
         if self._require_speaking and not (has_speaking or vad_speech):
+            visual_stale = bool(evidence.get("visual_stale", False))
             if self._state in {"LOCKED", "HOLD", "HANDOFF"} and self._within_speech_hold(t_ns):
-                reason = "silence_hold"
+                reason = "visual_stale_hold" if visual_stale else "silence_hold"
                 self._state = "HOLD"
             else:
-                reason = "silence_drop"
+                reason = "visual_stale_drop" if visual_stale else "silence_drop"
                 self._clear()
             self._seq += 1
-            return self._build_output(t_ns, reason)
+            return self._build_output(t_ns, reason, evidence)
 
         best = _best_candidate(
-            candidates,
+            candidate_list,
             self._speak_on,
             self._require_speaking and not vad_speech,
             self._priority_policy,
             self._preferred_track_id,
             self._last_speaking_by_track,
             self._recency_decay_ms,
+            self._visual_override_min,
         )
-        runner_up_score = _runner_up_focus_score(candidates, best)
+        runner_up_score = _runner_up_focus_score(candidate_list, best)
         reason = "no_candidates"
 
         if self._state == "NO_LOCK":
@@ -160,13 +185,14 @@ class LockStateMachine:
                         self._update_selected_metrics(best, runner_up_score)
                         reason = "acquired"
                     else:
-                        reason = "switch_throttled"
+                        reason = "acquire_switch_throttled"
                 else:
                     # Speech is present but confidence is still building.
                     self._state = "ACQUIRE"
                     self._acquire_start_ns = t_ns
                     self._target_id = str(best.get("track_id")) if best.get("track_id") is not None else None
-                    self._target_bearing = float(best.get("bearing_deg", 0.0)) % 360.0
+                    self._target_camera_id = _candidate_camera_id(best)
+                    self._target_bearing = _candidate_steering_bearing(best)
                     self._last_score = score
                     self._update_selected_metrics(best, runner_up_score)
                     self._target_mode = _infer_mode(best)
@@ -174,7 +200,7 @@ class LockStateMachine:
         elif self._state == "ACQUIRE":
             if best is None:
                 self._clear()
-                reason = "drop_no_candidates"
+                reason = "visual_stale_drop" if bool(evidence.get("visual_stale", False)) else "drop_no_candidates"
             else:
                 if self._acquire_start_ns and (t_ns - self._acquire_start_ns) >= int(self._acquire_timeout_ms * 1_000_000):
                     self._clear()
@@ -186,19 +212,20 @@ class LockStateMachine:
                             self._update_selected_metrics(best, runner_up_score)
                             reason = "acquired"
                         else:
-                            reason = "switch_throttled"
+                            reason = "acquire_switch_throttled"
                         self._acquire_start_ns = 0
                     elif self._can_acquire_persist(best, score, t_ns):
                         if self._lock_to(best, t_ns):
                             self._update_selected_metrics(best, runner_up_score)
                             reason = "acquired_persist"
                         else:
-                            reason = "switch_throttled"
+                            reason = "acquire_switch_throttled"
                         self._acquire_start_ns = 0
                     else:
                         self._state = "ACQUIRE"
                         self._target_id = str(best.get("track_id")) if best.get("track_id") is not None else None
-                        self._target_bearing = float(best.get("bearing_deg", 0.0)) % 360.0
+                        self._target_camera_id = _candidate_camera_id(best)
+                        self._target_bearing = _candidate_steering_bearing(best)
                         self._last_score = score
                         self._update_selected_metrics(best, runner_up_score)
                         self._target_mode = _infer_mode(best)
@@ -207,32 +234,35 @@ class LockStateMachine:
             if not best:
                 if self._within_hold(t_ns):
                     self._state = "HOLD"
-                    reason = "hold_no_candidates"
+                    reason = "visual_stale_hold" if bool(evidence.get("visual_stale", False)) else "hold_no_candidates"
                 else:
                     self._clear()
-                    reason = "drop_no_candidates"
+                    reason = "visual_stale_drop" if bool(evidence.get("visual_stale", False)) else "drop_no_candidates"
             elif best["track_id"] == self._target_id:
                 self._state = "LOCKED"
                 self._last_seen_ns = t_ns
                 self._last_score = _candidate_focus_score(best)
                 self._update_selected_metrics(best, runner_up_score)
-                self._target_bearing = _smooth_angle(self._target_bearing, float(best.get("bearing_deg", 0.0)), self._bearing_alpha)
+                self._target_camera_id = _candidate_camera_id(best)
+                self._target_bearing = _smooth_angle(self._target_bearing, _candidate_steering_bearing(best), self._bearing_alpha)
                 self._target_mode = _infer_mode(best)
                 reason = "maintain"
             else:
                 reason = self._maybe_handoff(best, t_ns, runner_up_score)
 
         self._seq += 1
-        return self._build_output(t_ns, reason)
+        return self._build_output(t_ns, reason, evidence)
 
-    def _build_output(self, t_ns: int, reason: str) -> Dict[str, Any]:
+    def _build_output(self, t_ns: int, reason: str, evidence: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         focus_score = float(self._last_score) if self._state != "NO_LOCK" else 0.0
+        evidence = evidence if isinstance(evidence, dict) else {}
         return {
             "t_ns": t_ns,
             "seq": self._seq,
             "state": self._state,
             "mode": self._target_mode if self._state != "NO_LOCK" else "NO_LOCK",
             "target_id": self._target_id,
+            "target_camera_id": self._target_camera_id,
             "target_bearing_deg": self._target_bearing,
             "angle_deg": self._target_bearing,
             "confidence": focus_score,
@@ -242,6 +272,29 @@ class LockStateMachine:
             "score_margin": float(self._last_score_margin) if self._state != "NO_LOCK" else 0.0,
             "runner_up_focus_score": float(self._last_runner_up_score) if self._state != "NO_LOCK" else 0.0,
             "reason": reason,
+            "active_thresholds": {
+                "acquire": self._acquire,
+                "drop": self._drop,
+                "speak_on": self._speak_on,
+                "visual_override_min": self._visual_override_min,
+                "audio_rescue_min": self._audio_rescue_min,
+            },
+            "timing_window_ms": {
+                "hold_ms": self._hold_ms,
+                "handoff_min_ms": self._handoff_min_ms,
+                "acquire_timeout_ms": self._acquire_timeout_ms,
+                "acquire_persist_ms": self._acquire_persist_ms,
+                "min_switch_interval_ms": self._min_switch_interval_ms,
+                "visual_freshness_ms": self._visual_freshness_ms,
+            },
+            "evidence_status": {
+                "visual_fresh": evidence.get("faces_fresh"),
+                "visual_stale": evidence.get("visual_stale"),
+                "audio_fresh": evidence.get("audio_fresh"),
+                "audio_stale": evidence.get("audio_stale"),
+                "disagreement_suppressed": evidence.get("disagreement_suppressed", False),
+                "source_reason": evidence.get("reason", ""),
+            },
             "stability": {
                 "hold_ms": self._hold_ms,
                 "handoff_ms": self._handoff_min_ms,
@@ -254,7 +307,8 @@ class LockStateMachine:
                 return False
         self._state = "LOCKED"
         self._target_id = candidate["track_id"]
-        self._target_bearing = _smooth_angle(self._target_bearing, float(candidate.get("bearing_deg", 0.0)), self._bearing_alpha)
+        self._target_camera_id = _candidate_camera_id(candidate)
+        self._target_bearing = _smooth_angle(self._target_bearing, _candidate_steering_bearing(candidate), self._bearing_alpha)
         self._target_mode = _infer_mode(candidate)
         self._last_score = _candidate_focus_score(candidate)
         self._last_seen_ns = t_ns
@@ -272,6 +326,7 @@ class LockStateMachine:
     def _clear(self) -> None:
         self._state = "NO_LOCK"
         self._target_id = None
+        self._target_camera_id = None
         self._target_bearing = None
         self._target_mode = "NO_LOCK"
         self._last_score = 0.0
@@ -313,7 +368,7 @@ class LockStateMachine:
                 self._update_selected_metrics(best, runner_up_score)
                 return "handoff_commit"
             self._state = "LOCKED"
-            return "switch_throttled"
+            return "handoff_switch_throttled"
         self._state = "HANDOFF"
         return "handoff_wait"
 
@@ -372,6 +427,7 @@ def _best_candidate(
     preferred_track_id: Optional[str],
     last_speaking_by_track: Dict[str, int],
     recency_decay_ms: float,
+    visual_override_min: float,
 ) -> Optional[Dict[str, Any]]:
     if not candidates:
         return None
@@ -383,6 +439,13 @@ def _best_candidate(
     if require_speaking and not speaking:
         return None
     pool = speaking or candidates
+    visual_override_pool = [
+        cand
+        for cand in pool
+        if _infer_mode(cand) != "AUDIO_ONLY" and _candidate_visual_score(cand) >= visual_override_min
+    ]
+    if visual_override_pool:
+        pool = visual_override_pool
     if preferred_track_id is not None:
         preferred_id = str(preferred_track_id)
         for cand in pool:
@@ -509,9 +572,57 @@ def _candidate_activity_score(candidate: Dict[str, Any]) -> float:
     return float(max(0.0, min(1.0, score)))
 
 
+def _candidate_visual_score(candidate: Dict[str, Any]) -> float:
+    score_groups = candidate.get("score_groups", {})
+    if isinstance(score_groups, dict) and "visual_score" in score_groups:
+        try:
+            return float(max(0.0, min(1.0, float(score_groups.get("visual_score", 0.0) or 0.0))))
+        except Exception:
+            return 0.0
+    score_components = candidate.get("score_components", {})
+    if not isinstance(score_components, dict):
+        score_components = {}
+    mouth = float(score_components.get("visual_speaking_prob", score_components.get("mouth_activity", 0.0)) or 0.0)
+    face = float(score_components.get("face_confidence", 0.0) or 0.0)
+    return float(max(0.0, min(1.0, (0.75 * mouth) + (0.25 * face))))
+
+
 def _runner_up_focus_score(candidates: List[Dict[str, Any]], best: Optional[Dict[str, Any]]) -> float:
     if best is None:
         return 0.0
     best_id = best.get("track_id")
     scores = [_candidate_focus_score(cand) for cand in candidates if cand.get("track_id") != best_id]
     return max(scores) if scores else 0.0
+
+
+def _candidate_camera_id(candidate: Dict[str, Any]) -> Optional[str]:
+    raw = candidate.get("camera_id")
+    if raw:
+        return str(raw)
+    track_id = str(candidate.get("track_id", "") or "")
+    if "-" in track_id and track_id.startswith("cam"):
+        return track_id.split("-", 1)[0]
+    return None
+
+
+def _candidate_steering_bearing(candidate: Dict[str, Any]) -> float:
+    raw = candidate.get("steering_bearing_deg", candidate.get("bearing_deg", 0.0))
+    try:
+        bearing = float(raw or 0.0)
+    except Exception:
+        bearing = 0.0
+    return bearing % 360.0
+
+
+def _unwrap_candidates_payload(payload: CandidatesPayload) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if isinstance(payload, dict):
+        candidates = payload.get("candidates", [])
+        evidence = payload.get("evidence", {})
+        if not isinstance(candidates, list):
+            candidates = []
+        if not isinstance(evidence, dict):
+            evidence = {}
+        return candidates, evidence
+    if isinstance(payload, list):
+        return payload, {}
+    return [], {}

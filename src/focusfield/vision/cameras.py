@@ -39,9 +39,12 @@ CONTRACT DETAILS (inline from src/focusfield/vision/cameras.md):
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 import threading
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 import cv2
 
@@ -79,6 +82,10 @@ def start_cameras(
         width = cam_cfg.get("width", 640)
         height = cam_cfg.get("height", 480)
         fps = cam_cfg.get("fps", 30)
+        video_cfg = config.get("video", {})
+        controls_cfg = {}
+        if isinstance(video_cfg, dict):
+            controls_cfg = _resolve_camera_controls(video_cfg, cam_cfg)
         topic = f"vision.frames.{camera_id}"
         thread = threading.Thread(
             target=_camera_loop,
@@ -95,6 +102,7 @@ def start_cameras(
                 height,
                 fps,
                 topic,
+                controls_cfg,
                 strict_capture,
                 camera_scope,
             ),
@@ -105,7 +113,16 @@ def start_cameras(
     return threads
 
 
-def _configure_capture(cap: cv2.VideoCapture, width: int, height: int, fps: float) -> None:
+def _configure_capture(
+    cap: cv2.VideoCapture,
+    width: int,
+    height: int,
+    fps: float,
+    logger: Any,
+    camera_id: str,
+    control_device: str | None = None,
+    controls_cfg: Mapping[str, Any] | None = None,
+) -> None:
     """Apply capture settings to an opened VideoCapture."""
     try:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -114,6 +131,131 @@ def _configure_capture(cap: cv2.VideoCapture, width: int, height: int, fps: floa
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     cap.set(cv2.CAP_PROP_FPS, fps)
+    _apply_camera_controls(logger, camera_id, control_device, controls_cfg)
+
+
+def _resolve_camera_controls(video_cfg: Mapping[str, Any], cam_cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    controls_cfg = video_cfg.get("camera_controls", {})
+    if not isinstance(controls_cfg, Mapping):
+        controls_cfg = {}
+    defaults = controls_cfg.get("defaults", {})
+    if not isinstance(defaults, Mapping):
+        defaults = {}
+    overrides = cam_cfg.get("controls", {})
+    if not isinstance(overrides, Mapping):
+        overrides = {}
+    return {
+        "enabled": bool(controls_cfg.get("enabled", False)),
+        "settle_ms": int(controls_cfg.get("settle_ms", 150) or 150),
+        "defaults": dict(defaults),
+        "overrides": dict(overrides),
+    }
+
+
+def _camera_control_device(device_path: object, device_index: int) -> str | None:
+    if isinstance(device_path, str) and device_path.strip():
+        raw = device_path.strip()
+        try:
+            resolved = os.path.realpath(raw)
+        except Exception:
+            resolved = raw
+        return resolved or raw
+    try:
+        idx = int(device_index)
+    except (TypeError, ValueError):
+        return None
+    if idx < 0:
+        return None
+    return f"/dev/video{idx}"
+
+
+def _serialize_v4l2_value(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        return str(int(value))
+    return None
+
+
+def _apply_camera_controls(
+    logger: Any,
+    camera_id: str,
+    control_device: str | None,
+    controls_cfg: Mapping[str, Any] | None,
+) -> None:
+    if not isinstance(controls_cfg, Mapping) or not bool(controls_cfg.get("enabled", False)):
+        return
+    if not control_device:
+        return
+    v4l2_ctl = shutil.which("v4l2-ctl")
+    if not v4l2_ctl:
+        logger.emit(
+            "warning",
+            "vision.cameras",
+            "camera_controls_unavailable",
+            {"camera_id": camera_id, "device": control_device, "reason": "v4l2-ctl missing"},
+        )
+        return
+
+    merged: Dict[str, Any] = {}
+    defaults = controls_cfg.get("defaults", {})
+    if isinstance(defaults, Mapping):
+        merged.update(defaults)
+    overrides = controls_cfg.get("overrides", {})
+    if isinstance(overrides, Mapping):
+        merged.update(overrides)
+    if not merged:
+        return
+
+    assignments: list[str] = []
+    skipped: list[str] = []
+    for key, value in merged.items():
+        serialized = _serialize_v4l2_value(value)
+        if serialized is None:
+            skipped.append(str(key))
+            continue
+        assignments.append(f"{key}={serialized}")
+    if not assignments:
+        return
+
+    try:
+        subprocess.run(
+            [v4l2_ctl, "-d", control_device, "--set-ctrl", ",".join(assignments)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        settle_ms = max(0, int(controls_cfg.get("settle_ms", 150) or 150))
+        if settle_ms:
+            time.sleep(settle_ms / 1000.0)
+        logger.emit(
+            "info",
+            "vision.cameras",
+            "camera_controls_applied",
+            {
+                "camera_id": camera_id,
+                "device": control_device,
+                "controls": assignments,
+                "skipped": skipped,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.emit(
+            "warning",
+            "vision.cameras",
+            "camera_controls_failed",
+            {
+                "camera_id": camera_id,
+                "device": control_device,
+                "controls": assignments,
+                "error": str(exc),
+                "skipped": skipped,
+            },
+        )
 
 
 def _attempt_reconnect(
@@ -126,6 +268,7 @@ def _attempt_reconnect(
     width: int,
     height: int,
     fps: float,
+    controls_cfg: Mapping[str, Any] | None,
     strict_capture: bool,
     camera_scope: str,
 ) -> cv2.VideoCapture | None:
@@ -144,7 +287,16 @@ def _attempt_reconnect(
             camera_scope=camera_scope,
         )
         if cap.isOpened():
-            _configure_capture(cap, width, height, fps)
+            _configure_capture(
+                cap,
+                width,
+                height,
+                fps,
+                logger,
+                camera_id,
+                _camera_control_device(device_path, device_index),
+                controls_cfg,
+            )
             _publish_camera_status(bus, camera_id, True)
             logger.emit("info", "vision.cameras", "camera_reconnected", {"camera_id": camera_id})
             return cap
@@ -164,6 +316,7 @@ def _camera_loop(
     height: int,
     fps: int,
     topic: str,
+    controls_cfg: Mapping[str, Any] | None = None,
     strict_capture: bool = False,
     camera_scope: str = "any",
 ) -> None:
@@ -184,6 +337,7 @@ def _camera_loop(
         cap_new = _attempt_reconnect(
             bus, logger, stop_event, camera_id,
             device_path, device_index, width, height, float(max(1.0, float(fps))),
+            controls_cfg,
             strict_capture, camera_scope,
         )
         if cap_new is None:
@@ -194,7 +348,16 @@ def _camera_loop(
 
     fps = max(1.0, float(fps))
     frame_period_s = 1.0 / fps
-    _configure_capture(cap, width, height, fps)
+    _configure_capture(
+        cap,
+        width,
+        height,
+        fps,
+        logger,
+        camera_id,
+        _camera_control_device(device_path, device_index),
+        controls_cfg,
+    )
     seq = 0
     consecutive_failures = 0
     next_deadline_s = time.perf_counter()
@@ -209,6 +372,7 @@ def _camera_loop(
                 cap_new = _attempt_reconnect(
                     bus, logger, stop_event, camera_id,
                     device_path, device_index, width, height, fps,
+                    controls_cfg,
                     strict_capture, camera_scope,
                 )
                 if cap_new is None:

@@ -24,12 +24,15 @@ class TelemetryTruthTests(unittest.TestCase):
                 "state": "LOCKED",
                 "mode": "AV_LOCK",
                 "target_id": "cam0-1",
+                "target_camera_id": "cam0",
                 "focus_score": 0.91,
                 "activity_score": 0.72,
                 "selection_mode": "AV_LOCK",
                 "score_margin": 0.23,
                 "runner_up_focus_score": 0.68,
                 "active_thresholds": {"acquire": 0.58, "drop": 0.32},
+                "timing_window_ms": {"hold_ms": 800, "handoff_min_ms": 700},
+                "evidence_status": {"visual_fresh": True, "audio_fresh": True, "disagreement_suppressed": False},
             },
             "faces": [
                 {
@@ -46,23 +49,38 @@ class TelemetryTruthTests(unittest.TestCase):
             "candidates": [
                 {
                     "track_id": "cam0-1",
+                    "camera_id": "cam0",
                     "bearing_deg": 90.0,
                     "focus_score": 0.91,
                     "activity_score": 0.72,
                     "selection_mode": "AV_LOCK",
                     "score_components": {"visual_speaking_prob": 0.71, "doa_peak_score": 0.7, "audio_speech_prob": 0.6},
+                    "score_groups": {"visual_score": 0.76, "audio_alignment_score": 0.65, "disagreement_penalty": 0.0},
+                    "evidence_status": {"visual_fresh": True, "audio_fresh": True, "disagreement_suppressed": False},
                     "speaking": True,
                 },
                 {
                     "track_id": "cam1-2",
+                    "camera_id": "cam1",
                     "bearing_deg": 180.0,
                     "focus_score": 0.68,
                     "activity_score": 0.33,
                     "selection_mode": "VISION_ONLY",
                     "score_components": {"visual_speaking_prob": 0.31, "doa_peak_score": 0.2, "audio_speech_prob": 0.1},
+                    "score_groups": {"visual_score": 0.31, "audio_alignment_score": 0.22, "disagreement_penalty": 0.1},
+                    "evidence_status": {"visual_fresh": True, "audio_fresh": True, "disagreement_suppressed": True},
                     "speaking": False,
                 },
             ],
+            "candidates_evidence": {
+                "reason": "faces_and_audio",
+                "faces_present": True,
+                "faces_fresh": True,
+                "audio_fresh": True,
+                "audio_stale": False,
+                "visual_stale": False,
+                "disagreement_suppressed": True,
+            },
             "output": {"sink": "usb_mic", "underrun_rate": 0.01, "buffer_occupancy": 0.52},
             "vision_debug": {"detector_backend": "haar", "detector_degraded": {"active": False}},
             "perf": {"bus_drop_counts_window": {"audio.frames": 2}},
@@ -70,6 +88,26 @@ class TelemetryTruthTests(unittest.TestCase):
             "strict_requirements_passed": True,
             "detector_backend_active": "haar",
             "overflow_window": 3,
+            "runtime_cfg": {
+                "audio_yaw_offset_deg": 15.0,
+                "audio_yaw_calibration": {
+                    "profile_yaw_offset_deg": 7.5,
+                    "base_runtime_yaw_offset_deg": 15.0,
+                    "sidecar_yaw_offset_deg": 2.5,
+                    "effective_runtime_yaw_offset_deg": 17.5,
+                    "effective_total_yaw_offset_deg": 25.0,
+                },
+                "audio_calibration_overlay": {
+                    "active": True,
+                    "status": "active",
+                    "source": "sidecar",
+                    "reload_behavior": "startup_only",
+                    "restart_required_on_change": True,
+                    "hot_reload_supported": False,
+                },
+                "camera_calibration_overlay": {"active": True, "status": "active"},
+            },
+            "configured_camera_map": [{"id": "cam0", "yaw_offset_deg": 90.0, "hfov_deg": 160.0}],
             "logs": [],
         }
         snapshot = _build_snapshot(state, 1)
@@ -81,12 +119,24 @@ class TelemetryTruthTests(unittest.TestCase):
         self.assertEqual(snapshot["lock_state"]["activity_score"], 0.72)
         self.assertEqual(snapshot["lock_state"]["selection_mode"], "AV_LOCK")
         self.assertEqual(snapshot["lock_state"]["runner_up_focus_score"], 0.68)
+        self.assertEqual(snapshot["lock_state"]["target_camera_id"], "cam0")
+        self.assertEqual(snapshot["lock_state"]["active_thresholds"]["acquire"], 0.58)
         self.assertEqual(snapshot["top_candidates"][0]["focus_score"], 0.91)
+        self.assertEqual(snapshot["top_candidates"][0]["camera_id"], "cam0")
+        self.assertEqual(snapshot["top_candidates"][0]["score_groups"]["visual_score"], 0.76)
         self.assertEqual(snapshot["output_summary"]["sink"], "usb_mic")
         self.assertEqual(snapshot["bus_drop_counts_window"], {"audio.frames": 2})
         self.assertEqual(snapshot["capture_overflow_window"], 3)
         self.assertEqual(snapshot["runtime_profile"], "realtime_pi_max")
         self.assertTrue(snapshot["strict_requirements_passed"])
+        self.assertTrue(snapshot["fusion_debug"]["disagreement_suppressed"])
+        self.assertTrue(snapshot["meta"]["audio_vad_enabled"])
+        self.assertEqual(snapshot["meta"]["runtime_config"]["audio_yaw_offset_deg"], 15.0)
+        self.assertEqual(snapshot["meta"]["audio_calibration_overlay"]["reload_behavior"], "startup_only")
+        self.assertTrue(snapshot["meta"]["audio_calibration_overlay"]["restart_required_on_change"])
+        self.assertEqual(snapshot["meta"]["runtime_config"]["audio_yaw_calibration"]["profile_yaw_offset_deg"], 7.5)
+        self.assertEqual(snapshot["meta"]["runtime_config"]["audio_yaw_calibration"]["sidecar_yaw_offset_deg"], 2.5)
+        self.assertEqual(snapshot["meta"]["runtime_config"]["audio_yaw_calibration"]["effective_total_yaw_offset_deg"], 25.0)
 
 
 if __name__ == "__main__":

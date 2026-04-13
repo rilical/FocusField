@@ -55,7 +55,14 @@ from focusfield.vision.calibration.runtime_overlay import (
 )
 from focusfield.ui.views.live import live_page
 
-_WS_MAGIC = b"258EAFA5-E914-47DA-95CA-5AB5DC69C85E"
+_WS_MAGIC = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept_key(ws_key: str) -> str:
+    """Compute the WebSocket accept key for a client handshake key."""
+    normalized = str(ws_key or "").strip()
+    accept_raw = hashlib.sha1(normalized.encode("utf-8") + _WS_MAGIC).digest()
+    return base64.b64encode(accept_raw).decode("utf-8")
 
 
 def _ws_send_text(sock: socket.socket, text: str) -> None:
@@ -331,6 +338,8 @@ def start_ui_server(
                 pass
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
 
@@ -437,15 +446,14 @@ def start_ui_server(
 
         def _handle_ws_upgrade(self) -> None:
             """Perform WebSocket handshake and hand off to reader thread."""
-            ws_key = self.headers.get("Sec-WebSocket-Key", "")
+            ws_key = str(self.headers.get("Sec-WebSocket-Key", "") or "").strip()
             if not ws_key:
                 self.send_response(400)
                 self.end_headers()
                 return
 
             # Compute accept key
-            accept_raw = hashlib.sha1(ws_key.encode("utf-8") + _WS_MAGIC).digest()
-            accept_key = base64.b64encode(accept_raw).decode("utf-8")
+            accept_key = _ws_accept_key(ws_key)
 
             # Send 101 Switching Protocols
             self.send_response(101)

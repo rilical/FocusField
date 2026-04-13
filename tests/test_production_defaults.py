@@ -102,7 +102,7 @@ class ProductionDefaultTests(unittest.TestCase):
         self.assertEqual(int(cfg["video"]["cameras"][0]["fps"]), 6)
         self.assertTrue(bool(cfg["video"]["camera_controls"]["enabled"]))
         self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["auto_exposure"]), 1)
-        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["exposure_time_absolute"]), 48)
+        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["exposure_time_absolute"]), 24)
         self.assertEqual(int(cfg["vision"]["face"]["detect_every_n"]), 2)
         self.assertEqual(str(cfg["vision"]["mouth"]["backend"]), "diff")
         self.assertEqual(float(cfg["fusion"]["weights"]["audio"]), 0.35)

@@ -454,6 +454,69 @@ Expected outputs in `demo_readiness.json`:
 - queue pressure peak
 - crash-free soak verdict
 
+### Measured live demo session
+
+Use the measured profile when the goal is to turn the live conversation into a
+benchmark-complete artifact packet instead of just showing the system running.
+
+Launch the Pi with the measured profile:
+
+```bash
+scripts/pi_demo_launch.sh --mode measured --output configs/full_3cam_measured_local.yaml
+```
+
+On the host machine, list candidate audio devices if you need to confirm the
+baseline and close-talk inputs:
+
+```bash
+python3 scripts/demo_measured_session.py list-audio-devices
+```
+
+Then record the same-session baseline and reference WAVs while the Pi is
+running:
+
+```bash
+python3 scripts/demo_measured_session.py record-host-audio \
+  --output-dir artifacts/demo/live_host_audio \
+  --baseline-device "MacBook Pro Microphone" \
+  --reference-device "Omar’s iPhone Microphone"
+```
+
+This writes:
+
+- `artifacts/demo/live_host_audio/baseline.wav`
+- `artifacts/demo/live_host_audio/reference.wav`
+- `artifacts/demo/live_host_audio/host_audio_capture_plan.json`
+- `artifacts/demo/live_host_audio/host_audio_capture_result.json`
+
+If you want to dry-run the capture plan first without opening the devices:
+
+```bash
+python3 scripts/demo_measured_session.py record-host-audio \
+  --output-dir artifacts/demo/live_host_audio \
+  --print-only
+```
+
+To generate a label-ready scene template before or after the run:
+
+```bash
+python3 scripts/demo_measured_session.py write-scene-template \
+  --candidate-run artifacts/LATEST \
+  --baseline-audio artifacts/demo/live_host_audio/baseline.wav \
+  --reference-audio artifacts/demo/live_host_audio/reference.wav \
+  --output artifacts/demo/scene_labels_template.yaml
+```
+
+The generated YAML keeps the same-session audio paths but leaves:
+
+- `speaker_segments`
+- `bearing_segments`
+- `reference_text`
+- `baseline_text`
+- `candidate_text`
+
+empty so the team can fill them in after the conversation.
+
 ### Same-session A/B benchmark assembly
 
 Capture the FocusField candidate run, the MacBook built-in mic WAV, and the
@@ -537,6 +600,26 @@ This writes:
 Use `--require-pass` when you want a non-zero exit code if the benchmark or
 demo-readiness verdict is not green. Leave it off when the immediate goal is
 evidence capture and report generation.
+
+If you want one wrapper that writes the scene template, demo readiness JSON, and
+full packet in one step, use:
+
+```bash
+python3 scripts/demo_measured_session.py build-packet \
+  --candidate-run artifacts/LATEST \
+  --baseline-audio artifacts/demo/live_host_audio/baseline.wav \
+  --reference-audio artifacts/demo/live_host_audio/reference.wav \
+  --host-gate-evidence artifacts/demo/zoom_host_gate.json \
+  --output-dir artifacts/demo/measured_session
+```
+
+This writes:
+
+- `artifacts/demo/measured_session/scene_labels_template.yaml`
+- `artifacts/demo/measured_session/demo_readiness.json`
+- `artifacts/demo/measured_session/full_packet/demo_benchmark_summary.md`
+- `artifacts/demo/measured_session/full_packet/focusbench/BenchReport.json`
+- `artifacts/demo/measured_session/full_packet/panel_packet/panel_scorecard.md`
 
 ### Claim language
 

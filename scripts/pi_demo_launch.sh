@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/pi_demo_launch.sh [--mode live|observe] [--output CONFIG]
+Usage: scripts/pi_demo_launch.sh [--mode live|observe|measured] [--output CONFIG]
 
 Stops the FocusField service, kills stale foreground runs, regenerates the
 Pi-local config from the chosen demo base profile, runs strict preflight once,
@@ -42,6 +42,9 @@ done
 case "$MODE" in
   live)
     BASE_CONFIG="configs/full_3cam_8mic_pi_demo_live.yaml"
+    ;;
+  measured)
+    BASE_CONFIG="configs/full_3cam_8mic_pi_demo_measured.yaml"
     ;;
   observe)
     BASE_CONFIG="configs/full_3cam_8mic_pi_demo_observe.yaml"

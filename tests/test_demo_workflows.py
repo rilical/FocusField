@@ -11,6 +11,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from focusfield.core.config import load_config
 from scripts.demo_ab_capture import build_demo_capture_bundle, write_demo_capture_bundle
 from scripts.demo_panel_report import build_demo_panel_report, write_demo_panel_report
 from scripts.demo_rehearsal_gate import build_demo_readiness
@@ -47,6 +48,15 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 class DemoWorkflowTests(unittest.TestCase):
+    def test_measured_demo_profile_enables_trace_and_preserves_usb_output(self) -> None:
+        cfg = load_config("configs/full_3cam_8mic_pi_demo_measured.yaml")
+
+        self.assertTrue(cfg["trace"]["enabled"])
+        self.assertTrue(cfg["trace"]["record_raw_audio"])
+        self.assertTrue(cfg["trace"]["thumbnails"]["enabled"])
+        self.assertEqual(cfg["output"]["sink"], "usb_mic")
+        self.assertEqual(cfg["audio"]["channels"], 8)
+
     def test_demo_rehearsal_gate_passes_with_zoom_evidence_and_healthy_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -366,6 +376,175 @@ class DemoWorkflowTests(unittest.TestCase):
             self.assertIn("FocusField Demo Benchmark Summary", markdown)
             self.assertIn("BenchReport.json", markdown)
             self.assertIn("demo_benchmark_summary.json", markdown)
+
+    def test_measured_session_builds_dual_ffmpeg_capture_plan(self) -> None:
+        module = _load_script_module("demo_measured_session_test", "scripts/demo_measured_session.py")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            plan = module.build_host_audio_capture_plan(
+                output_dir=str(root / "captures"),
+                baseline_device="MacBook Pro Microphone",
+                reference_device="Omar’s iPhone Microphone",
+                duration_s=150.0,
+                start_delay_s=3.0,
+            )
+
+            self.assertEqual(plan["duration_s"], 150.0)
+            self.assertEqual(len(plan["captures"]), 2)
+            baseline_capture = next(item for item in plan["captures"] if item["role"] == "baseline")
+            reference_capture = next(item for item in plan["captures"] if item["role"] == "reference")
+            self.assertTrue(str(baseline_capture["output_path"]).endswith("baseline.wav"))
+            self.assertTrue(str(reference_capture["output_path"]).endswith("reference.wav"))
+            self.assertIn("MacBook Pro Microphone", baseline_capture["argv"][baseline_capture["argv"].index("-i") + 1])
+            self.assertIn("Omar’s iPhone Microphone", reference_capture["argv"][reference_capture["argv"].index("-i") + 1])
+            self.assertEqual(baseline_capture["argv"][0], "ffmpeg")
+            self.assertIn("-f", baseline_capture["argv"])
+            self.assertIn("avfoundation", baseline_capture["argv"])
+            self.assertLess(baseline_capture["argv"].index("-i"), baseline_capture["argv"].index("-ac"))
+            self.assertLess(baseline_capture["argv"].index("-i"), baseline_capture["argv"].index("-ar"))
+
+    def test_measured_session_writes_label_ready_scene_template(self) -> None:
+        module = _load_script_module("demo_measured_session_test", "scripts/demo_measured_session.py")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_dir = root / "artifacts" / "run_001"
+            (run_dir / "audio").mkdir(parents=True, exist_ok=True)
+            baseline = root / "baseline.wav"
+            reference = root / "reference.wav"
+            signal = 0.1 * np.sin(2.0 * np.pi * 220.0 * np.arange(16000, dtype=np.float32) / 16000.0)
+            _write_wav(run_dir / "audio" / "enhanced.wav", signal)
+            _write_wav(run_dir / "audio" / "raw.wav", np.stack([signal, signal], axis=1))
+            _write_wav(baseline, signal)
+            _write_wav(reference, signal)
+
+            output_path = root / "scene_labels.yaml"
+            written = module.write_measured_scene_template(
+                candidate_run=str(run_dir),
+                baseline_audio_path=str(baseline),
+                reference_audio_path=str(reference),
+                output_path=str(output_path),
+            )
+
+            self.assertEqual(written, output_path.resolve())
+            manifest = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            scene = manifest["scenes"][0]
+            self.assertEqual(scene["scene_id"], "live_measured_session")
+            self.assertEqual(scene["baseline_audio_path"], str(baseline.resolve()))
+            self.assertEqual(scene["reference_audio_path"], str(reference.resolve()))
+            self.assertEqual(scene["speaker_segments"], [])
+            self.assertEqual(scene["bearing_segments"], [])
+            self.assertEqual(scene["reference_text"], "")
+            self.assertEqual(scene["candidate_text"], "")
+
+    def test_measured_session_builds_readiness_and_full_packet(self) -> None:
+        module = _load_script_module("demo_measured_session_test", "scripts/demo_measured_session.py")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_dir = root / "artifacts" / "run_001"
+            (run_dir / "audio").mkdir(parents=True, exist_ok=True)
+            (run_dir / "logs").mkdir(parents=True, exist_ok=True)
+            (run_dir / "traces").mkdir(parents=True, exist_ok=True)
+            (run_dir / "crash").mkdir(parents=True, exist_ok=True)
+
+            candidate_signal = 0.08 * np.sin(2.0 * np.pi * 220.0 * np.arange(32000, dtype=np.float32) / 16000.0)
+            baseline_signal = 0.04 * np.sin(2.0 * np.pi * 220.0 * np.arange(32000, dtype=np.float32) / 16000.0)
+            reference_signal = candidate_signal.copy()
+            baseline = root / "baseline.wav"
+            reference = root / "reference.wav"
+            _write_wav(run_dir / "audio" / "enhanced.wav", candidate_signal)
+            _write_wav(run_dir / "audio" / "raw.wav", np.stack([candidate_signal, candidate_signal], axis=1))
+            _write_wav(baseline, baseline_signal)
+            _write_wav(reference, reference_signal)
+            _write_jsonl(
+                run_dir / "logs" / "perf.jsonl",
+                [
+                    {
+                        "t_ns": 1_000_000_000,
+                        "enhanced_final": {"pipeline_queue_age_ms": 95.0},
+                        "queue_pressure": {"drop_total_window": 1},
+                        "output": {"underrun_window": 0, "underrun_total": 0, "occupancy_frames": 4, "buffer_capacity_frames": 16},
+                    },
+                    {
+                        "t_ns": 1_901_000_000_000,
+                        "enhanced_final": {"pipeline_queue_age_ms": 102.0},
+                        "queue_pressure": {"drop_total_window": 2},
+                        "output": {"underrun_window": 0, "underrun_total": 0, "occupancy_frames": 5, "buffer_capacity_frames": 16},
+                    },
+                ],
+            )
+            _write_jsonl(
+                run_dir / "logs" / "events.jsonl",
+                [
+                    {
+                        "context": {
+                            "module": "fusion.av_association",
+                            "event": "no_candidates",
+                            "details": {"vad_speech": False, "reason": "normal"},
+                        }
+                    }
+                ],
+            )
+            _write_jsonl(
+                run_dir / "traces" / "lock.jsonl",
+                [
+                    {"t_ns": 1_000_000_000, "state": "LOCKED", "target_bearing_deg": 10.0, "target_id": "speaker:a"},
+                    {"t_ns": 2_000_000_000, "state": "LOCKED", "target_bearing_deg": 12.0, "target_id": "speaker:a"},
+                ],
+            )
+            _write_jsonl(
+                run_dir / "traces" / "faces.jsonl",
+                [
+                    {"t_ns": 1_000_000_000, "faces": [{"track_id": "speaker:a"}]},
+                    {"t_ns": 2_000_000_000, "faces": [{"track_id": "speaker:a"}]},
+                ],
+            )
+            _write_jsonl(run_dir / "traces" / "doa.jsonl", [{"t_ns": 1_000_000_000, "peaks": [{"angle_deg": 10.0, "score": 0.9}]}])
+
+            evidence_path = root / "host_gate.json"
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "cold_boot": {
+                            "host_visible_microphone": True,
+                            "boot_time_s": 9.4,
+                            "device_name": "FocusField USB Mic",
+                            "artifact_path": str(root / "boot.json"),
+                        },
+                        "reconnect": {
+                            "recovered": True,
+                            "reconnect_time_s": 2.8,
+                            "artifact_path": str(root / "reconnect.json"),
+                        },
+                        "meeting_apps": [
+                            {
+                                "app": "Zoom",
+                                "artifact_path": str(root / "zoom.json"),
+                                "selected_input_device": "FocusField USB Mic",
+                                "duration_s": 1800,
+                                "verdict": "pass",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = module.run_measured_demo_packet(
+                candidate_run=str(run_dir),
+                baseline_audio_path=str(baseline),
+                reference_audio_path=str(reference),
+                host_gate_evidence=str(evidence_path),
+                output_dir=str(root / "measured"),
+            )
+
+            self.assertTrue(Path(summary["scene_template_path"]).exists())
+            self.assertTrue(Path(summary["demo_readiness_path"]).exists())
+            self.assertTrue(Path(summary["artifacts"]["summary_markdown"]).exists())
+            self.assertTrue(Path(summary["artifacts"]["panel_scorecard_markdown"]).exists())
+            self.assertTrue(Path(summary["artifacts"]["bench_report"]).exists())
 
 
 if __name__ == "__main__":

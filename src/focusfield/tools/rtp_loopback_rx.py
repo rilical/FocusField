@@ -24,6 +24,7 @@ class RtpGapTracker:
 
     def __post_init__(self) -> None:
         self._expected_seq: Optional[int] = None
+        self._expected_ssrc: Optional[int] = None
         self._output_seq: int = 0
         self._gap_fills: int = 0
         self._stale_drops: int = 0
@@ -39,9 +40,10 @@ class RtpGapTracker:
     def process(self, packet: ParsedRtpPcmPacket, *, t_ns: Optional[int] = None) -> List[Dict[str, Any]]:
         emitted: List[Dict[str, Any]] = []
         current_t_ns = int(t_ns or now_ns())
-        if self._expected_seq is None:
+        if self._expected_seq is None or self._expected_ssrc != packet.ssrc:
             emitted.append(self._build_msg(packet.samples, current_t_ns))
             self._expected_seq = (packet.seq + 1) & 0xFFFF
+            self._expected_ssrc = int(packet.ssrc)
             return emitted
 
         delta = (packet.seq - self._expected_seq) & 0xFFFF
@@ -86,13 +88,20 @@ def build_receiver_config(
     sample_rate_hz: int,
     packet_samples: int,
     channels: int = 2,
+    agc_enabled: bool = True,
+    target_rms: float = 0.18,
+    max_gain: float = 8.0,
+    min_gain: float = 1.0,
 ) -> Dict[str, Any]:
     return {
         "audio": {
             "sample_rate_hz": int(sample_rate_hz),
             "block_size": int(packet_samples),
             "agc_post": {
-                "enabled": False,
+                "enabled": bool(agc_enabled),
+                "target_rms": float(target_rms),
+                "max_gain": float(max_gain),
+                "min_gain": float(min_gain),
             },
         },
         "output": {
@@ -118,6 +127,13 @@ def build_receiver_config(
     }
 
 
+def parse_packet_or_none(packet: bytes) -> Optional[ParsedRtpPcmPacket]:
+    try:
+        return parse_rtp_packet(packet)
+    except ValueError:
+        return None
+
+
 def run_receiver(
     *,
     bind_host: str,
@@ -126,6 +142,9 @@ def run_receiver(
     sample_rate_hz: int,
     packet_samples: int,
     channels: int,
+    target_rms: float,
+    max_gain: float,
+    min_gain: float,
 ) -> None:
     bus = Bus(max_queue_depth=64)
     logger = LogEmitter(bus, min_level="info", run_id="rtp-loopback-rx")
@@ -135,6 +154,10 @@ def run_receiver(
         sample_rate_hz=sample_rate_hz,
         packet_samples=packet_samples,
         channels=channels,
+        agc_enabled=True,
+        target_rms=target_rms,
+        max_gain=max_gain,
+        min_gain=min_gain,
     )
     sink_thread = start_output_sink(bus, config, logger, stop_event)
     if sink_thread is None:
@@ -146,6 +169,7 @@ def run_receiver(
 
     tracker = RtpGapTracker(sample_rate_hz=sample_rate_hz, default_frame_samples=packet_samples)
     packets_rx = 0
+    malformed_packets = 0
     first_peer: Optional[str] = None
     logger.emit(
         "info",
@@ -165,7 +189,21 @@ def run_receiver(
                 packet, addr = sock.recvfrom(65535)
             except socket.timeout:
                 continue
-            parsed = parse_rtp_packet(packet)
+            parsed = parse_packet_or_none(packet)
+            if parsed is None:
+                malformed_packets += 1
+                if malformed_packets <= 3 or malformed_packets % 50 == 0:
+                    logger.emit(
+                        "warning",
+                        "tools.rtp_loopback_rx",
+                        "malformed_packet_dropped",
+                        {
+                            "count": int(malformed_packets),
+                            "peer": f"{addr[0]}:{addr[1]}",
+                            "size_bytes": int(len(packet)),
+                        },
+                    )
+                continue
             if first_peer is None:
                 first_peer = f"{addr[0]}:{addr[1]}"
                 logger.emit("info", "tools.rtp_loopback_rx", "peer_detected", {"peer": first_peer})
@@ -179,6 +217,7 @@ def run_receiver(
                     "stream_status",
                     {
                         "packets_received": int(packets_rx),
+                        "malformed_packets": int(malformed_packets),
                         "gap_fills": int(tracker.gap_fills),
                         "stale_drops": int(tracker.stale_drops),
                     },
@@ -198,6 +237,9 @@ def main() -> None:
     parser.add_argument("--sample-rate-hz", type=int, default=48000, help="Expected sample rate")
     parser.add_argument("--packet-samples", type=int, default=960, help="Expected samples per packet")
     parser.add_argument("--channels", type=int, default=2, help="Output channels for the loopback device")
+    parser.add_argument("--target-rms", type=float, default=0.18, help="Post-gain target RMS for low-level speech")
+    parser.add_argument("--max-gain", type=float, default=8.0, help="Maximum post-gain multiplier")
+    parser.add_argument("--min-gain", type=float, default=1.0, help="Minimum post-gain multiplier")
     args = parser.parse_args()
     run_receiver(
         bind_host=args.bind,
@@ -206,6 +248,9 @@ def main() -> None:
         sample_rate_hz=args.sample_rate_hz,
         packet_samples=args.packet_samples,
         channels=args.channels,
+        target_rms=args.target_rms,
+        max_gain=args.max_gain,
+        min_gain=args.min_gain,
     )
 
 

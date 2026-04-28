@@ -7,6 +7,8 @@ from focusfield.audio.beamform.mvdr import _MvdrState  # noqa: PLC2701
 from focusfield.audio.beamform.mvdr import _channel_gains  # noqa: PLC2701
 from focusfield.audio.beamform.mvdr import _compute_mvdr_weights  # noqa: PLC2701
 from focusfield.audio.beamform.mvdr import _mvdr_postfilter_block  # noqa: PLC2701
+from focusfield.audio.beamform.mvdr import _select_target_bearing as _select_mvdr_target  # noqa: PLC2701
+from focusfield.audio.beamform.delay_and_sum import _select_target_bearing as _select_delay_sum_target  # noqa: PLC2701
 
 
 def _circular_positions(count: int, radius_m: float) -> np.ndarray:
@@ -20,6 +22,36 @@ def _circular_positions(count: int, radius_m: float) -> np.ndarray:
 
 
 class BeamformerSyntheticTests(unittest.TestCase):
+    def test_last_lock_grace_does_not_refresh_from_no_lock(self) -> None:
+        for selector in (_select_delay_sum_target, _select_mvdr_target):
+            with self.subTest(selector=selector.__module__):
+                selected = selector(
+                    {"state": "NO_LOCK", "target_bearing_deg": None},
+                    1_050_000_000,
+                    (90.0, 1_000_000_000),
+                    100.0,
+                )
+                self.assertEqual(selected, (90.0, False))
+
+                expired = selector(
+                    {"state": "NO_LOCK", "target_bearing_deg": None},
+                    1_150_000_001,
+                    (90.0, 1_000_000_000),
+                    100.0,
+                )
+                self.assertEqual(expired, (None, False))
+
+    def test_active_lock_selection_refreshes_last_target(self) -> None:
+        for selector in (_select_delay_sum_target, _select_mvdr_target):
+            with self.subTest(selector=selector.__module__):
+                selected = selector(
+                    {"state": "LOCKED", "target_bearing_deg": 42.0},
+                    2_000_000_000,
+                    (90.0, 1_000_000_000),
+                    100.0,
+                )
+                self.assertEqual(selected, (42.0, True))
+
     def test_channel_weights_mute_back_mics(self) -> None:
         positions = _circular_positions(7, 0.042)
         positions = np.vstack([positions, np.array([[0.0, 0.0]], dtype=np.float32)])

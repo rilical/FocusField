@@ -125,18 +125,26 @@ def start_delay_and_sum(
                         x = frame[:, channel_order_arr]
                         t_ns = int(frame_msg.get("t_ns", now_ns()))
 
-                        target_bearing = _select_target_bearing(last_lock, t_ns, last_target, use_last_lock_ms)
+                        target_bearing, refresh_last_target = _select_target_bearing(
+                            last_lock,
+                            t_ns,
+                            last_target,
+                            use_last_lock_ms,
+                        )
                         if target_bearing is None:
                             y = _no_lock_output(x, behavior=no_lock_behavior)
                             logger.emit("debug", "audio.beamform.delay_and_sum", "no_lock", {"behavior": no_lock_behavior})
                             fallback_active = True
                             used_target = None
                         else:
-                            if last_target is None:
-                                smoothed = target_bearing
+                            if refresh_last_target:
+                                if last_target is None:
+                                    smoothed = target_bearing
+                                else:
+                                    smoothed = _smooth_angle(last_target[0], target_bearing, steering_alpha)
+                                last_target = (smoothed, t_ns)
                             else:
-                                smoothed = _smooth_angle(last_target[0], target_bearing, steering_alpha)
-                            last_target = (smoothed, t_ns)
+                                smoothed = target_bearing
                             y = _delay_and_sum(x, pos, smoothed, sample_rate)
                             fallback_active = False
                             used_target = float(smoothed)
@@ -197,20 +205,20 @@ def _select_target_bearing(
     t_ns: int,
     last_target: Optional[Tuple[float, int]],
     use_last_lock_ms: float,
-) -> Optional[float]:
+) -> Tuple[Optional[float], bool]:
     if lock_msg is not None:
         state = str(lock_msg.get("state", "NO_LOCK"))
         bearing = lock_msg.get("target_bearing_deg")
         if bearing is not None and state in {"LOCKED", "HANDOFF", "HOLD"}:
-            return float(bearing)
+            return float(bearing), True
     if last_target is None:
-        return None
+        return None, False
     if use_last_lock_ms <= 0:
-        return None
+        return None, False
     age_ms = (t_ns - last_target[1]) / 1_000_000.0
     if age_ms <= use_last_lock_ms:
-        return float(last_target[0])
-    return None
+        return float(last_target[0]), False
+    return None, False
 
 
 def _no_lock_output(x: np.ndarray, behavior: str) -> np.ndarray:

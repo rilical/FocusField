@@ -8,6 +8,9 @@ audio:
   channels: 1
   sample_rate_hz: 48000
   block_size: 1024
+  device_selector:
+    match_substring: External Microphone
+    require_input_channels: 1
 
 video:
   cameras:
@@ -24,4 +27,3 @@ output:
 
 ui:
   enabled: true
-

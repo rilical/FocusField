@@ -304,6 +304,72 @@ class CameraCalibrationRuntimeTests(unittest.TestCase):
             idx = resolve_input_device_index({"audio": {"channels": 8}})
         self.assertEqual(idx, 4)
 
+    def test_resolve_input_device_index_ignores_stale_explicit_index(self) -> None:
+        devices = [
+            AudioDeviceInfo(
+                index=2,
+                name="micArray RAW SPK: USB Audio",
+                hostapi="ALSA",
+                max_input_channels=8,
+                default_samplerate_hz=48000.0,
+            ),
+            AudioDeviceInfo(
+                index=4,
+                name="Arducam 1080P Low Light: USB Audio",
+                hostapi="ALSA",
+                max_input_channels=2,
+                default_samplerate_hz=44100.0,
+            ),
+        ]
+        config = {
+            "audio": {
+                "channels": 8,
+                "device_index": 4,
+                "device_selector": {
+                    "match_substring": "micArray RAW SPK",
+                    "require_input_channels": 8,
+                },
+            }
+        }
+        with patch("focusfield.audio.devices.list_input_devices", return_value=devices):
+            idx = resolve_input_device_index(config)
+        self.assertEqual(idx, 2)
+
+    def test_resolve_input_device_index_avoids_loopback_input_for_host_loopback_output(self) -> None:
+        devices = [
+            AudioDeviceInfo(
+                index=1,
+                name="BlackHole 2ch",
+                hostapi="Core Audio",
+                max_input_channels=2,
+                default_samplerate_hz=48000.0,
+            ),
+            AudioDeviceInfo(
+                index=2,
+                name="External Microphone",
+                hostapi="Core Audio",
+                max_input_channels=1,
+                default_samplerate_hz=48000.0,
+            ),
+            AudioDeviceInfo(
+                index=4,
+                name="MacBook Pro Microphone",
+                hostapi="Core Audio",
+                max_input_channels=1,
+                default_samplerate_hz=48000.0,
+            ),
+        ]
+        config = {
+            "audio": {"channels": 1},
+            "output": {
+                "sink": "host_loopback",
+                "host_loopback": {"device_selector": {"match_substring": "BlackHole"}},
+            },
+        }
+        with patch("focusfield.audio.devices.list_input_devices", return_value=devices):
+            idx = resolve_input_device_index(config)
+        self.assertEqual(idx, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

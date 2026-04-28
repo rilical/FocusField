@@ -1492,6 +1492,13 @@ function updateHeader(data) {
   }
   const badges = [];
   if (data && data.runtime_profile) badges.push('profile=' + data.runtime_profile);
+  const route = (data && data.audio_route_summary) || {};
+  if (route.input_device_name) badges.push('IN=' + shortDeviceName(route.input_device_name));
+  if (route.output_sink || route.output_device_name) {
+    badges.push('OUT=' + shortDeviceName(route.output_device_name || route.output_sink));
+  }
+  if (route.output_blackhole_active) badges.push('BLACKHOLE');
+  if (route.input_loopback_risk) badges.push('INPUT_LOOPBACK_RISK');
   if (data && data.audio_fallback_active) badges.push('AUDIO_ONLY');
   if (data && data.detector_backend_active) badges.push('det=' + data.detector_backend_active);
   if (data && !data.strict_requirements_passed) badges.push('NON_STRICT');
@@ -1522,6 +1529,12 @@ function updateHeader(data) {
     healthPill.style.background = 'rgba(248,81,73,0.1)';
     healthPill.style.borderColor = 'rgba(248,81,73,0.3)';
   }
+}
+
+function shortDeviceName(name) {
+  const text = String(name || '').trim();
+  if (text.length <= 26) return text;
+  return text.slice(0, 23) + '...';
 }
 
 /* ═══════════════════════════════════════════════

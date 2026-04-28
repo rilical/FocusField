@@ -89,6 +89,7 @@ class TelemetryTruthTests(unittest.TestCase):
             "detector_backend_active": "haar",
             "overflow_window": 3,
             "runtime_cfg": {
+                "selected_audio_device": {"device_index": 3, "device_name": "External Microphone", "channels": 1},
                 "audio_yaw_offset_deg": 15.0,
                 "audio_yaw_calibration": {
                     "profile_yaw_offset_deg": 7.5,
@@ -125,6 +126,9 @@ class TelemetryTruthTests(unittest.TestCase):
         self.assertEqual(snapshot["top_candidates"][0]["camera_id"], "cam0")
         self.assertEqual(snapshot["top_candidates"][0]["score_groups"]["visual_score"], 0.76)
         self.assertEqual(snapshot["output_summary"]["sink"], "usb_mic")
+        self.assertEqual(snapshot["audio_route_summary"]["input_device_name"], "External Microphone")
+        self.assertEqual(snapshot["audio_route_summary"]["output_sink"], "usb_mic")
+        self.assertFalse(snapshot["audio_route_summary"]["input_loopback_risk"])
         self.assertEqual(snapshot["bus_drop_counts_window"], {"audio.frames": 2})
         self.assertEqual(snapshot["capture_overflow_window"], 3)
         self.assertEqual(snapshot["runtime_profile"], "realtime_pi_max")
@@ -137,6 +141,37 @@ class TelemetryTruthTests(unittest.TestCase):
         self.assertEqual(snapshot["meta"]["runtime_config"]["audio_yaw_calibration"]["profile_yaw_offset_deg"], 7.5)
         self.assertEqual(snapshot["meta"]["runtime_config"]["audio_yaw_calibration"]["sidecar_yaw_offset_deg"], 2.5)
         self.assertEqual(snapshot["meta"]["runtime_config"]["audio_yaw_calibration"]["effective_total_yaw_offset_deg"], 25.0)
+
+    def test_snapshot_flags_blackhole_output_and_loopback_input_risk(self) -> None:
+        snapshot = _build_snapshot(
+            {
+                "audio_heatmap": {},
+                "faces": [],
+                "lock": {},
+                "output": {
+                    "sink": "host_loopback",
+                    "device_name": "BlackHole 2ch",
+                    "underrun_window": 1,
+                    "underrun_total": 2,
+                    "device_error_total": 0,
+                },
+                "runtime_cfg": {
+                    "selected_audio_device": {
+                        "device_index": 1,
+                        "device_name": "BlackHole 2ch",
+                        "channels": 2,
+                    }
+                },
+                "logs": [],
+            },
+            4,
+        )
+
+        route = snapshot["audio_route_summary"]
+        self.assertEqual(route["output_device_name"], "BlackHole 2ch")
+        self.assertTrue(route["output_blackhole_active"])
+        self.assertTrue(route["input_loopback_risk"])
+        self.assertEqual(route["output_underrun_window"], 1)
 
 
 if __name__ == "__main__":

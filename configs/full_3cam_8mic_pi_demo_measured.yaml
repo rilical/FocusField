@@ -138,7 +138,7 @@ audio:
         over_subtraction: 1.15
         min_gain: 0.08
   denoise:
-    enabled: false
+    enabled: true
     backend: hybrid
     wiener:
       g_min: 0.05
@@ -153,6 +153,9 @@ audio:
       nfft: 2048
     hybrid:
       postfilter_strength: 0.5
+  mic_health:
+    min_coherence: 0.0
+    max_drift_samples: 64
   sync:
     enabled: false
     drift_check:
@@ -171,13 +174,23 @@ video:
       white_balance_temperature: 4600
       power_line_frequency: 2
       backlight_compensation: 0
+  frame_adjustment:
+    enabled: true
+    defaults:
+      alpha: 1.0
+      beta: 0
+      brightness_guard: true
+      target_mean: 135
+      max_gain: 1.05
+      clahe: false
+      clip_limit: 1.0
   cameras:
     - id: cam0
       device_path: ''
       device_index: 0
-      width: 352
-      height: 198
-      fps: 6
+      width: 640
+      height: 480
+      fps: 5
       hfov_deg: 160
       yaw_offset_deg: 0
       bearing_model: linear
@@ -185,9 +198,9 @@ video:
     - id: cam1
       device_path: ''
       device_index: 1
-      width: 352
-      height: 198
-      fps: 6
+      width: 640
+      height: 480
+      fps: 5
       hfov_deg: 160
       yaw_offset_deg: 120
       bearing_model: linear
@@ -195,9 +208,9 @@ video:
     - id: cam2
       device_path: ''
       device_index: 2
-      width: 352
-      height: 198
-      fps: 6
+      width: 640
+      height: 480
+      fps: 5
       hfov_deg: 160
       yaw_offset_deg: 240
       bearing_model: linear

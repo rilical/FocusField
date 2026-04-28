@@ -6,7 +6,7 @@ from focusfield.audio.devices import AudioDeviceInfo
 from focusfield.core.config import load_config, validate_config
 from focusfield.main.run import _validate_runtime_requirements
 from focusfield.platform import hardware_probe
-from focusfield.vision.cameras import _camera_loop
+from focusfield.vision.cameras import _camera_loop, _resolve_runtime_camera_sources
 
 
 class _DummyLogger:
@@ -241,6 +241,43 @@ class PiContractTests(unittest.TestCase):
             "/dev/video0",
         )
 
+    def test_runtime_camera_sources_rebind_stale_video_nodes_to_usb_by_path(self) -> None:
+        cameras = [
+            {"id": "cam0", "device_path": "/dev/video0", "device_index": 0},
+            {"id": "cam1", "device_path": "/dev/video4", "device_index": 4},
+            {"id": "cam2", "device_path": "/dev/video8", "device_index": 8},
+        ]
+        sources = [
+            "/dev/v4l/by-path/usb-0:1.1.1:1.0-video-index0",
+            "/dev/v4l/by-path/usb-0:1.1.3:1.0-video-index0",
+            "/dev/v4l/by-path/usb-0:1.1.4:1.0-video-index0",
+        ]
+        realpaths = {
+            sources[0]: "/dev/video0",
+            sources[1]: "/dev/video4",
+            sources[2]: "/dev/video9",
+            "/dev/video0": "/dev/video0",
+            "/dev/video4": "/dev/video4",
+            "/dev/video8": "/dev/video8",
+        }
+        existing = {"/dev/video0", "/dev/video4", "/dev/video9"}
+        logger = _DummyLogger()
+
+        with patch("focusfield.vision.cameras.collect_camera_sources", return_value=sources):
+            with patch("focusfield.vision.cameras.os.path.realpath", side_effect=lambda path: realpaths.get(path, path)):
+                with patch("focusfield.vision.cameras.os.path.exists", side_effect=lambda path: path in existing):
+                    rebound = _resolve_runtime_camera_sources(
+                        cameras,
+                        {"camera_source": "by-path"},
+                        logger,
+                        strict_capture=True,
+                        camera_scope="usb",
+                    )
+
+        self.assertEqual([cam["device_path"] for cam in rebound], sources)
+        self.assertEqual([cam["device_index"] for cam in rebound], [0, 4, 9])
+        self.assertTrue(any(event == "camera_sources_rebound" for _, _, event, _ in logger.events))
+
     def test_runtime_requirements_fail_when_usb_cameras_below_target(self) -> None:
         cfg = {
             "runtime": {
@@ -347,6 +384,7 @@ class PiContractTests(unittest.TestCase):
                 640,
                 360,
                 15,
+                "MJPG",
                 "vision.frames.cam0",
             )
         self.assertTrue(stop_event.is_set())
@@ -385,6 +423,7 @@ class PiContractTests(unittest.TestCase):
                         352,
                         198,
                         6,
+                        "MJPG",
                         logger,
                         "cam0",
                         "/dev/video0",

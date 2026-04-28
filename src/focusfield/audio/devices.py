@@ -48,6 +48,16 @@ _RAW_ARRAY_NAME_HINTS = (
     "raw spk",
 )
 
+_LOOPBACK_INPUT_NAME_HINTS = (
+    "blackhole",
+    "loopback",
+    "soundflower",
+    "vb-cable",
+    "cable output",
+    "zoom audio device",
+    "teams audio",
+)
+
 
 @dataclass(frozen=True)
 class AudioDeviceInfo:
@@ -100,6 +110,11 @@ def is_raw_array_ready(name: str, channels: int, required_channels: int = 8) -> 
     return int(channels) >= minimum and is_raw_array_device(name)
 
 
+def is_loopback_input_device(name: str) -> bool:
+    lowered = str(name or "").strip().lower()
+    return any(token in lowered for token in _LOOPBACK_INPUT_NAME_HINTS)
+
+
 def resolve_input_device_index(config: Dict[str, Any], logger: Any = None) -> Optional[int]:
     """Resolve an input device index from config.
 
@@ -113,18 +128,6 @@ def resolve_input_device_index(config: Dict[str, Any], logger: Any = None) -> Op
     audio_cfg = config.get("audio", {})
     if not isinstance(audio_cfg, dict):
         audio_cfg = {}
-    if "device_index" in audio_cfg and audio_cfg.get("device_index") is not None:
-        candidate = _coerce_device_index(audio_cfg.get("device_index"))
-        if candidate is not None:
-            return candidate
-        _log(
-            logger,
-            "warning",
-            "audio.devices",
-            "invalid_device_index",
-            {"device_index": audio_cfg.get("device_index")},
-        )
-
     required_channels = int(audio_cfg.get("channels", 0) or 0)
     device_id = audio_cfg.get("device_id")
     selector = audio_cfg.get("device_selector", {})
@@ -137,6 +140,37 @@ def resolve_input_device_index(config: Dict[str, Any], logger: Any = None) -> Op
     if not devices:
         _log(logger, "error", "audio.devices", "device_not_found", {"criteria": "sounddevice_missing_or_no_inputs"})
         return None
+
+    # 1) explicit device_index, but only if it still satisfies the requested
+    # input channel count. USB hub moves can reorder PortAudio indexes; blindly
+    # trusting a stale index can select a camera mic instead of the UMA-8.
+    if "device_index" in audio_cfg and audio_cfg.get("device_index") is not None:
+        candidate = _coerce_device_index(audio_cfg.get("device_index"))
+        if candidate is None:
+            _log(
+                logger,
+                "warning",
+                "audio.devices",
+                "invalid_device_index",
+                {"device_index": audio_cfg.get("device_index")},
+            )
+        else:
+            device = _device_by_index(devices, candidate)
+            if device is not None and _has_required_channels(device, required_channels):
+                _log(logger, "info", "audio.devices", "device_selected", {"device": asdict(device)})
+                return candidate
+            _log(
+                logger,
+                "warning",
+                "audio.devices",
+                "stale_or_invalid_device_index",
+                {
+                    "device_index": candidate,
+                    "required_channels": required_channels,
+                    "device": asdict(device) if device is not None else None,
+                    "fallback": "selector",
+                },
+            )
 
     # 2) device_id
     if device_id is not None:
@@ -186,17 +220,32 @@ def _coerce_device_index(value: object) -> Optional[int]:
     return idx if idx >= 0 else None
 
 
+def _device_by_index(devices: List[AudioDeviceInfo], index: int) -> Optional[AudioDeviceInfo]:
+    for device in devices:
+        if device.index == index:
+            return device
+    return None
+
+
+def _has_required_channels(device: AudioDeviceInfo, required_channels: int) -> bool:
+    return required_channels <= 0 or int(device.max_input_channels) >= int(required_channels)
+
+
 def _best_by_channels(devices: List[AudioDeviceInfo], required_channels: int) -> Optional[AudioDeviceInfo]:
     if not devices:
         return None
     preferred = [device for device in devices if is_raw_array_device(device.name)]
+    physical = [device for device in devices if not is_loopback_input_device(device.name)]
     if required_channels <= 0:
-        candidates = preferred or devices
+        candidates = preferred or physical or devices
         return max(candidates, key=lambda d: (d.max_input_channels, -d.index))
     eligible = [d for d in devices if d.max_input_channels >= required_channels]
     preferred_eligible = [device for device in preferred if device.max_input_channels >= required_channels]
     if preferred_eligible:
         return max(preferred_eligible, key=lambda d: (d.max_input_channels, -d.index))
+    physical_eligible = [device for device in physical if device.max_input_channels >= required_channels]
+    if physical_eligible:
+        return max(physical_eligible, key=lambda d: (d.max_input_channels, -d.index))
     if eligible:
         return max(eligible, key=lambda d: (d.max_input_channels, -d.index))
     return None

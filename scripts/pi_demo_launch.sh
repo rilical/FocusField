@@ -65,8 +65,9 @@ fi
 
 echo "Stopping service and stale FocusField processes..."
 sudo systemctl stop focusfield >/dev/null 2>&1 || true
-pkill -f 'python3 -m focusfield.main.run' >/dev/null 2>&1 || true
-pkill -f 'python3 scripts/pi_preflight.py' >/dev/null 2>&1 || true
+ps -eo pid=,comm=,args= \
+  | awk '$2=="python3" && ($0 ~ /focusfield[.]main[.]run/ || $0 ~ /multiprocessing[.]spawn/ || $0 ~ /multiprocessing[.]resource_tracker/ || $0 ~ /scripts[/]pi_preflight[.]py/) {print $1}' \
+  | xargs -r kill >/dev/null 2>&1 || true
 sleep 2
 
 LOCK_PATH=${FOCUSFIELD_LOCK_PATH:-/tmp/focusfield-runtime.lock}

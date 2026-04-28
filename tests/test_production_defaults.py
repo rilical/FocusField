@@ -99,7 +99,7 @@ class ProductionDefaultTests(unittest.TestCase):
         self.assertEqual(int(cfg["audio"]["vad"]["update_hz"]), 4)
         self.assertEqual(int(cfg["audio"]["doa"]["bins"]), 36)
         self.assertEqual(int(cfg["audio"]["doa"]["update_hz"]), 4)
-        self.assertEqual(int(cfg["video"]["cameras"][0]["fps"]), 6)
+        self.assertEqual(int(cfg["video"]["cameras"][0]["fps"]), 5)
         self.assertTrue(bool(cfg["video"]["camera_controls"]["enabled"]))
         self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["auto_exposure"]), 1)
         self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["exposure_time_absolute"]), 24)

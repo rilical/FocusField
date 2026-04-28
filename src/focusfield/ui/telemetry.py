@@ -286,6 +286,7 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     top_candidates = _summarize_candidates(candidates)
     top_focus_score = float(top_candidates[0].get("focus_score", 0.0)) if top_candidates else 0.0
     runner_up_focus_score = float(top_candidates[1].get("focus_score", 0.0)) if len(top_candidates) > 1 else 0.0
+    audio_route_summary = _summarize_audio_route(runtime_cfg, output_state if isinstance(output_state, dict) else {})
     return {
         "t_ns": now_ns(),
         "seq": seq,
@@ -342,6 +343,7 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
         "mic_health": state.get("mic_health") or {},
         "mic_health_summary": mic_health_summary,
         "output_summary": output_state if isinstance(output_state, dict) else {},
+        "audio_route_summary": audio_route_summary,
         "uma8_leds": {
             "enabled": bool(led_state.get("enabled", False)),
             "backend": led_state.get("backend", "none"),
@@ -508,3 +510,36 @@ def _summarize_mic_health(mic_health: Dict[str, Any]) -> Dict[str, Any]:
         "mean_trust": float(mic_health.get("mean_trust", 0.0) or 0.0) if isinstance(mic_health, dict) else 0.0,
         "weakest_channels": weakest,
     }
+
+
+def _summarize_audio_route(runtime_cfg: Dict[str, Any], output_state: Dict[str, Any]) -> Dict[str, Any]:
+    input_device = runtime_cfg.get("selected_audio_device", {})
+    if not isinstance(input_device, dict):
+        input_device = {}
+    input_name = str(input_device.get("device_name", "") or "")
+    output_name = str(output_state.get("device_name", "") or "")
+    output_sink = str(output_state.get("sink", "") or "")
+    same_device = bool(input_name and output_name and input_name.strip().lower() == output_name.strip().lower())
+    input_loopback = _looks_like_loopback(input_name)
+    output_blackhole = "blackhole" in output_name.strip().lower()
+    return {
+        "input_device_index": input_device.get("device_index"),
+        "input_device_name": input_name,
+        "input_channels": int(input_device.get("channels", 0) or 0),
+        "output_sink": output_sink,
+        "output_device_name": output_name,
+        "output_blackhole_active": bool(output_blackhole),
+        "input_loopback_risk": bool(input_loopback or same_device),
+        "same_input_output_device": same_device,
+        "output_underrun_window": int(output_state.get("underrun_window", 0) or 0),
+        "output_underrun_total": int(output_state.get("underrun_total", 0) or 0),
+        "output_device_error_total": int(output_state.get("device_error_total", 0) or 0),
+        "output_occupancy_frames": int(output_state.get("occupancy_frames", 0) or 0),
+        "output_buffer_capacity_frames": int(output_state.get("buffer_capacity_frames", 0) or 0),
+        "output_input_age_ms": output_state.get("input_age_ms"),
+    }
+
+
+def _looks_like_loopback(name: str) -> bool:
+    lowered = str(name or "").strip().lower()
+    return any(token in lowered for token in ("blackhole", "loopback", "soundflower", "vb-cable", "zoom audio", "teams audio"))

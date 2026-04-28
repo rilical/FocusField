@@ -258,7 +258,12 @@ def start_mvdr(
                             best_idx = int(np.argmax(quality)) if quality.size else 0
                             active_idx = np.asarray([best_idx], dtype=np.int64)
 
-                        target_bearing = _select_target_bearing(last_lock, t_ns, last_target, use_last_lock_ms)
+                        target_bearing, refresh_last_target = _select_target_bearing(
+                            last_lock,
+                            t_ns,
+                            last_target,
+                            use_last_lock_ms,
+                        )
                         if target_bearing is None:
                             y = _no_lock_output(x, behavior=no_lock_behavior)
                             state.last_fallback = True
@@ -266,11 +271,14 @@ def start_mvdr(
                             g_spatial = np.ones((x.shape[1],), dtype=np.float32)
                             beam_mode = "NO_LOCK"
                         else:
-                            if last_target is None:
-                                smoothed = target_bearing
+                            if refresh_last_target:
+                                if last_target is None:
+                                    smoothed = target_bearing
+                                else:
+                                    smoothed = _smooth_angle(last_target[0], target_bearing, steering_alpha)
+                                last_target = (smoothed, t_ns)
                             else:
-                                smoothed = _smooth_angle(last_target[0], target_bearing, steering_alpha)
-                            last_target = (smoothed, t_ns)
+                                smoothed = target_bearing
 
                             gains, g_spatial = _channel_gains(
                                 x,
@@ -410,20 +418,20 @@ def _select_target_bearing(
     t_ns: int,
     last_target: Optional[Tuple[float, int]],
     use_last_lock_ms: float,
-) -> Optional[float]:
+) -> Tuple[Optional[float], bool]:
     if lock_msg is not None:
         state = str(lock_msg.get("state", "NO_LOCK"))
         bearing = lock_msg.get("target_bearing_deg")
         if bearing is not None and state in {"LOCKED", "HANDOFF", "HOLD"}:
-            return float(bearing)
+            return float(bearing), True
     if last_target is None:
-        return None
+        return None, False
     if use_last_lock_ms <= 0:
-        return None
+        return None, False
     age_ms = (t_ns - last_target[1]) / 1_000_000.0
     if age_ms <= use_last_lock_ms:
-        return float(last_target[0])
-    return None
+        return float(last_target[0]), False
+    return None, False
 
 
 def _channel_gains(

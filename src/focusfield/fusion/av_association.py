@@ -229,7 +229,7 @@ def start_av_association(
                     weights=weights,
                     vad_max_age_ms=vad_max_age_ms,
                     audio_rescue_min=audio_rescue_min,
-                    camera_lookup=camera_sectors,
+                    camera_lookup=camera_lookup,
                 )
                 if audio_cand is not None:
                     candidates = [audio_cand]

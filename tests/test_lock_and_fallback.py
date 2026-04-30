@@ -1,8 +1,16 @@
 import unittest
+import threading
+import queue
 
+from focusfield.core.bus import Bus
 from focusfield.core.clock import now_ns
 from focusfield.fusion.lock_state_machine import LockStateMachine
-from focusfield.fusion.av_association import _build_audio_only_candidate, _build_candidates  # noqa: PLC2701
+from focusfield.fusion.av_association import _build_audio_only_candidate, _build_candidates, start_av_association  # noqa: PLC2701
+
+
+class _NoopLogger:
+    def emit(self, *_args, **_kwargs) -> None:
+        return None
 
 
 class LockStateMachineTests(unittest.TestCase):
@@ -389,6 +397,46 @@ class AvAssociationSizingTests(unittest.TestCase):
         )
         self.assertIsNotNone(cand)
         self.assertEqual(cand["camera_id"], "cam1")
+
+    def test_av_association_audio_fallback_uses_configured_camera_lookup(self) -> None:
+        bus = Bus()
+        stop_event = threading.Event()
+        q_candidates = bus.subscribe("fusion.candidates")
+        thread = start_av_association(
+            bus,
+            {
+                "video": {
+                    "cameras": [
+                        {"id": "cam0", "yaw_offset_deg": 0.0, "hfov_deg": 160.0},
+                        {"id": "cam1", "yaw_offset_deg": 120.0, "hfov_deg": 160.0},
+                        {"id": "cam2", "yaw_offset_deg": 240.0, "hfov_deg": 160.0},
+                    ]
+                },
+                "fusion": {
+                    "audio_fallback": {
+                        "enabled": True,
+                        "min_doa_confidence": 0.35,
+                        "min_peak_score": 0.22,
+                        "score_mode": "max",
+                    },
+                    "audio_rescue_min": 0.0,
+                },
+            },
+            _NoopLogger(),
+            stop_event,
+        )
+        try:
+            bus.publish("audio.doa_heatmap", {"seq": 1, "confidence": 0.7, "peaks": [{"angle_deg": 118.0, "score": 0.9}]})
+            msg = q_candidates.get(timeout=1.0)
+        except queue.Empty as exc:
+            self.fail(f"expected fallback candidate: {exc}")
+        finally:
+            stop_event.set()
+            thread.join(timeout=1.0)
+
+        self.assertEqual(msg["evidence"]["reason"], "audio_rescue")
+        self.assertEqual(len(msg["candidates"]), 1)
+        self.assertEqual(msg["candidates"][0]["camera_id"], "cam1")
 
     def test_visual_first_scoring_prefers_strong_visual_face_over_audio_aligned_weak_face(self) -> None:
         weights = {

@@ -568,7 +568,21 @@ def _candidate_counts_as_speaking(
     if candidate.get("speaking"):
         return True
     if require_explicit_visual_speaking and _infer_mode(candidate) != "AUDIO_ONLY":
-        return False
+        score_components = candidate.get("score_components", {})
+        if not isinstance(score_components, dict):
+            return False
+        try:
+            mouth_activity = float(
+                score_components.get(
+                    "explicit_mouth_activity",
+                    score_components.get("mouth_activity", 0.0),
+                )
+                or 0.0
+            )
+            audio_speech_prob = float(score_components.get("audio_speech_prob", 0.0) or 0.0)
+        except Exception:
+            return False
+        return mouth_activity >= speak_on_threshold and audio_speech_prob > 0.0
     return _candidate_speaking_probability(candidate) >= speak_on_threshold
 
 

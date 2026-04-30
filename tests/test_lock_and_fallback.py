@@ -169,6 +169,70 @@ class LockStateMachineTests(unittest.TestCase):
         self.assertEqual(msg["reason"], "silence_drop")
         self.assertIsNone(msg["target_id"])
 
+    def test_fresh_vad_and_raw_mouth_motion_can_acquire_visual_target(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {"acquire_threshold": 0.40, "speak_on_threshold": 0.14, "min_switch_interval_ms": 0},
+                "require_speaking": True,
+                "require_vad": False,
+                "require_visual_speaking_for_visual_lock": True,
+            }
+        }
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "cam1-9",
+                "camera_id": "cam1",
+                "bearing_deg": 116.0,
+                "focus_score": 0.59,
+                "activity_score": 0.31,
+                "speaking_probability": 0.31,
+                "speaking": False,
+                "score_components": {
+                    "explicit_mouth_activity": 0.18,
+                    "mouth_activity": 0.18,
+                    "visual_speaking_prob": 0.27,
+                    "audio_speech_prob": 1.0,
+                },
+            }
+        ]
+        msg = machine.update(cand, vad_state={"t_ns": now_ns(), "speech": True})
+        self.assertEqual(msg["state"], "LOCKED")
+        self.assertEqual(msg["target_id"], "cam1-9")
+        self.assertEqual(msg["target_camera_id"], "cam1")
+
+    def test_raw_mouth_motion_requires_vad_when_visual_gate_is_explicit(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {"acquire_threshold": 0.40, "speak_on_threshold": 0.14},
+                "require_speaking": True,
+                "require_vad": False,
+                "require_visual_speaking_for_visual_lock": True,
+            }
+        }
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "cam1-9",
+                "camera_id": "cam1",
+                "bearing_deg": 116.0,
+                "focus_score": 0.59,
+                "activity_score": 0.31,
+                "speaking_probability": 0.31,
+                "speaking": False,
+                "score_components": {
+                    "explicit_mouth_activity": 0.18,
+                    "mouth_activity": 0.18,
+                    "visual_speaking_prob": 0.27,
+                    "audio_speech_prob": 0.0,
+                },
+            }
+        ]
+        msg = machine.update(cand, vad_state={"t_ns": now_ns(), "speech": False})
+        self.assertEqual(msg["state"], "NO_LOCK")
+        self.assertEqual(msg["reason"], "silence_drop")
+        self.assertIsNone(msg["target_id"])
+
     def test_vad_speech_can_still_acquire_audio_only_when_visual_speaking_required(self) -> None:
         config = {
             "fusion": {
@@ -505,6 +569,35 @@ class AvAssociationSizingTests(unittest.TestCase):
         by_id = {c["track_id"]: c for c in cands}
         self.assertGreater(float(by_id["big"]["combined_score"]), float(by_id["small"]["combined_score"]))
         self.assertEqual(float(by_id["small"]["combined_score"]), 0.0)
+
+    def test_candidates_keep_raw_mouth_motion_separate_from_visual_quality_floor(self) -> None:
+        tracks = [
+            {
+                "seq": 1,
+                "track_id": "cam1-9",
+                "camera_id": "cam1",
+                "bearing_deg": 116.0,
+                "mouth_activity": 0.18,
+                "visual_speaking_prob": 0.27,
+                "confidence": 0.8,
+                "speaking": False,
+                "bbox": {"x": 0, "y": 0, "w": 100, "h": 100},
+            }
+        ]
+        cands = _build_candidates(
+            tracks,
+            doa_heatmap=None,
+            vad_state={"speech": True, "confidence": 1.0, "t_ns": now_ns()},
+            max_assoc_deg=20.0,
+            weights={},
+            min_area=900,
+            area_soft_max=3600,
+        )
+        self.assertEqual(len(cands), 1)
+        components = cands[0]["score_components"]
+        self.assertAlmostEqual(float(components["explicit_mouth_activity"]), 0.18, places=6)
+        self.assertAlmostEqual(float(components["mouth_activity"]), 0.18, places=6)
+        self.assertAlmostEqual(float(components["visual_speaking_prob"]), 0.27, places=6)
 
     def test_audio_only_candidate_requires_fresh_vad_for_speaking(self) -> None:
         now = now_ns()

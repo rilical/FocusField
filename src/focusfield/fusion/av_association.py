@@ -325,10 +325,12 @@ def _build_candidates(
     for track in tracks:
         face_bearing = float(track.get("bearing_deg", 0.0))
         size_scale, bbox_area = _size_scale_for_track(track, min_area=min_area, area_soft_max=area_soft_max)
-        mouth_activity_raw = float(track.get("visual_speaking_prob", track.get("mouth_activity", 0.0)))
+        explicit_mouth_activity_raw = float(track.get("mouth_activity", 0.0) or 0.0)
+        visual_speaking_prob_raw = float(track.get("visual_speaking_prob", explicit_mouth_activity_raw) or 0.0)
         face_confidence_raw = float(track.get("confidence", 1.0))
         track_continuity = _track_continuity(track)
-        mouth_activity = mouth_activity_raw * size_scale
+        mouth_activity = explicit_mouth_activity_raw * size_scale
+        visual_speaking_prob = visual_speaking_prob_raw * size_scale
         face_confidence = face_confidence_raw * size_scale
         doa_peak_deg, doa_peak_score, angle_error = _match_peak(face_bearing, peaks, max_assoc_deg)
         camera_id = _candidate_camera_id(track)
@@ -339,7 +341,7 @@ def _build_candidates(
             camera_id,
             camera_sectors,
         )
-        visual_score = _visual_score(mouth_activity, face_confidence)
+        visual_score = _visual_score(visual_speaking_prob, face_confidence)
         angle_match = _angle_match(angle_error)
         audio_alignment_score = _audio_alignment_score(doa_peak_score, doa_confidence, audio_speech_prob, angle_match)
         disagreement_gap = max(0.0, audio_alignment_score - visual_score)
@@ -372,7 +374,7 @@ def _build_candidates(
         if size_scale <= 0.0 and doa_peak_score <= 0.0 and audio_speech_prob <= 0.0:
             combined = 0.0
             speaking_probability = 0.0
-        selection_mode = "AUDIO_ONLY" if doa_peak_score > 0.0 and mouth_activity <= 0.0 else ("AV_LOCK" if doa_peak_score > 0.0 and mouth_activity > 0.0 else "VISION_ONLY")
+        selection_mode = "AV_LOCK" if doa_peak_score > 0.0 else "VISION_ONLY"
         score_groups = {
             "visual_score": float(visual_score),
             "audio_alignment_score": float(audio_alignment_score),
@@ -391,7 +393,8 @@ def _build_candidates(
                 "angular_distance_deg": angle_error,
                 "score_components": {
                     "mouth_activity": mouth_activity,
-                    "visual_speaking_prob": mouth_activity,
+                    "visual_speaking_prob": visual_speaking_prob,
+                    "explicit_mouth_activity": mouth_activity,
                     "face_confidence": face_confidence,
                     "doa_peak_score": doa_peak_score,
                     "doa_confidence": doa_confidence,

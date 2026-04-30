@@ -83,7 +83,7 @@ class LockStateMachineTests(unittest.TestCase):
     def test_vad_speech_does_not_acquire_silent_visual_when_visual_speaking_required(self) -> None:
         config = {
             "fusion": {
-                "thresholds": {"acquire_threshold": 0.40},
+                "thresholds": {"acquire_threshold": 0.40, "speak_on_threshold": 0.14},
                 "require_speaking": True,
                 "require_vad": False,
                 "require_visual_speaking_for_visual_lock": True,
@@ -105,6 +105,33 @@ class LockStateMachineTests(unittest.TestCase):
         msg = machine.update(cand, vad_state={"t_ns": now_ns(), "speech": True})
         self.assertEqual(msg["state"], "NO_LOCK")
         self.assertNotEqual(msg["target_id"], "cam1-4")
+
+    def test_visual_speaking_gate_ignores_probability_spike_without_tracker_speaking(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {"acquire_threshold": 0.40, "speak_on_threshold": 0.14},
+                "require_speaking": True,
+                "require_vad": False,
+                "require_visual_speaking_for_visual_lock": True,
+            }
+        }
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "cam1-3",
+                "camera_id": "cam1",
+                "bearing_deg": 130.0,
+                "focus_score": 0.59,
+                "activity_score": 0.37,
+                "speaking_probability": 0.37,
+                "speaking": False,
+                "score_components": {"visual_speaking_prob": 0.37},
+            }
+        ]
+        msg = machine.update(cand, vad_state=None)
+        self.assertEqual(msg["state"], "NO_LOCK")
+        self.assertEqual(msg["reason"], "silence_drop")
+        self.assertIsNone(msg["target_id"])
 
     def test_vad_speech_can_still_acquire_audio_only_when_visual_speaking_required(self) -> None:
         config = {

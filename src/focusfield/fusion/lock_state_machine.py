@@ -133,7 +133,11 @@ class LockStateMachine:
         t_ns = now_ns()
         candidate_list, evidence = _unwrap_candidates_payload(candidates)
         self._update_speaking_history(candidate_list, t_ns)
-        has_speaking = _has_speaking_candidate(candidate_list, self._speak_on)
+        has_speaking = _has_speaking_candidate(
+            candidate_list,
+            self._speak_on,
+            self._require_visual_speaking_for_visual_lock,
+        )
         vad_fresh = _vad_is_fresh(vad_state, t_ns, self._vad_max_age_ms)
         vad_speech = bool(vad_state.get("speech")) if vad_fresh and vad_state is not None else False
         if has_speaking:
@@ -177,6 +181,7 @@ class LockStateMachine:
             self._last_speaking_by_track,
             self._recency_decay_ms,
             self._visual_override_min,
+            self._require_visual_speaking_for_visual_lock,
         )
         runner_up_score = _runner_up_focus_score(candidate_list, best)
         reason = "no_candidates"
@@ -377,7 +382,7 @@ class LockStateMachine:
             track_id = cand.get("track_id")
             if track_id is None:
                 continue
-            if cand.get("speaking") or _candidate_speaking_probability(cand) >= self._speak_on:
+            if _candidate_counts_as_speaking(cand, self._speak_on, self._require_visual_speaking_for_visual_lock):
                 self._last_speaking_by_track[str(track_id)] = t_ns
 
     def _maybe_handoff(self, best: Dict[str, Any], t_ns: int, runner_up_score: float) -> str:
@@ -469,13 +474,14 @@ def _best_candidate(
     last_speaking_by_track: Dict[str, int],
     recency_decay_ms: float,
     visual_override_min: float,
+    require_explicit_visual_speaking: bool = False,
 ) -> Optional[Dict[str, Any]]:
     if not candidates:
         return None
     speaking = [
         cand
         for cand in candidates
-        if cand.get("speaking") or _candidate_speaking_probability(cand) >= speak_on_threshold
+        if _candidate_counts_as_speaking(cand, speak_on_threshold, require_explicit_visual_speaking)
     ]
     if require_speaking and not speaking:
         return None
@@ -535,13 +541,27 @@ def _priority_score(
     return base
 
 
-def _has_speaking_candidate(candidates: List[Dict[str, Any]], speak_on_threshold: float) -> bool:
+def _has_speaking_candidate(
+    candidates: List[Dict[str, Any]],
+    speak_on_threshold: float,
+    require_explicit_visual_speaking: bool = False,
+) -> bool:
     for cand in candidates:
-        if cand.get("speaking"):
-            return True
-        if _candidate_speaking_probability(cand) >= speak_on_threshold:
+        if _candidate_counts_as_speaking(cand, speak_on_threshold, require_explicit_visual_speaking):
             return True
     return False
+
+
+def _candidate_counts_as_speaking(
+    candidate: Dict[str, Any],
+    speak_on_threshold: float,
+    require_explicit_visual_speaking: bool = False,
+) -> bool:
+    if candidate.get("speaking"):
+        return True
+    if require_explicit_visual_speaking and _infer_mode(candidate) != "AUDIO_ONLY":
+        return False
+    return _candidate_speaking_probability(candidate) >= speak_on_threshold
 
 
 def _smooth_angle(previous: Optional[float], new: float, alpha: float) -> float:

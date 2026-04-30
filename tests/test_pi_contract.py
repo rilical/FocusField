@@ -311,6 +311,53 @@ class PiContractTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, r"camera_scope=usb"):
                         _validate_runtime_requirements(cfg, logger)
 
+    def test_runtime_requirements_rebinds_cameras_before_strict_probe(self) -> None:
+        cfg = {
+            "runtime": {
+                "requirements": {"strict": True, "min_cameras": 3, "min_audio_channels": 8, "camera_scope": "usb"},
+            },
+            "video": {
+                "camera_source": "by-path",
+                "cameras": [{"id": "cam0"}, {"id": "cam1"}, {"id": "cam2"}],
+            },
+        }
+        rebound = [
+            {"id": "cam0", "device_path": "/dev/v4l/by-path/cam-a", "device_index": 0},
+            {"id": "cam1", "device_path": "/dev/v4l/by-path/cam-b", "device_index": 4},
+            {"id": "cam2", "device_path": "/dev/v4l/by-path/cam-c", "device_index": 8},
+        ]
+        logger = _DummyLogger()
+        camera_probe = [
+            (True, [("/dev/v4l/by-path/cam-a", "CAP_V4L2")], ("/dev/video0", "CAP_V4L2")),
+            (True, [("/dev/v4l/by-path/cam-b", "CAP_V4L2")], ("/dev/video4", "CAP_V4L2")),
+            (True, [("/dev/v4l/by-path/cam-c", "CAP_V4L2")], ("/dev/video8", "CAP_V4L2")),
+        ]
+
+        with patch("focusfield.main.run._resolve_runtime_camera_sources", return_value=rebound) as rebind:
+            with patch("focusfield.main.run.try_open_camera_any_backend", side_effect=camera_probe) as probe:
+                with patch("focusfield.main.run.resolve_input_device_index", return_value=2):
+                    with patch(
+                        "focusfield.main.run.list_input_devices",
+                        return_value=[
+                            AudioDeviceInfo(
+                                index=2,
+                                name="miniDSP UMA-8 RAW",
+                                hostapi="ALSA",
+                                max_input_channels=8,
+                                default_samplerate_hz=48000.0,
+                            )
+                        ],
+                    ):
+                        _validate_runtime_requirements(cfg, logger)
+
+        rebind.assert_called_once()
+        self.assertEqual(cfg["video"]["cameras"], rebound)
+        self.assertEqual(
+            [call.args[0] for call in probe.call_args_list],
+            ["/dev/v4l/by-path/cam-a", "/dev/v4l/by-path/cam-b", "/dev/v4l/by-path/cam-c"],
+        )
+        self.assertTrue(any(event == "runtime_requirements_passed" for _, _, event, _ in logger.events))
+
     def test_runtime_requirements_fail_audio_hint_for_uma8_dsp_mode(self) -> None:
         cfg = {
             "runtime": {

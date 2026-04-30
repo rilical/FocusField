@@ -62,7 +62,7 @@ from focusfield.uma8.led_control import start_uma8_led_service
 from focusfield.ui.server import start_ui_server
 from focusfield.ui.telemetry import start_telemetry
 from focusfield.platform.hardware_probe import normalize_camera_scope, try_open_camera_any_backend
-from focusfield.vision.cameras import start_cameras
+from focusfield.vision.cameras import _resolve_runtime_camera_sources, start_cameras
 from focusfield.vision.speaker_heatmap import start_speaker_heatmap
 from focusfield.vision.tracking.face_track import start_face_tracking
 from focusfield.main.runtime_multiprocess import start_multiprocess_runtime
@@ -231,6 +231,24 @@ def _uma8_mode_hint(name: str, channels: int, required: int) -> str:
     return " hint: miniDSP UMA-8 appears in 2ch DSP mode; switch to RAW firmware for 8ch."
 
 
+def _prepare_runtime_camera_sources(config: Dict[str, Any], logger: LogEmitter, camera_scope: str) -> None:
+    video_cfg = config.get("video", {})
+    if not isinstance(video_cfg, dict):
+        return
+    cameras = video_cfg.get("cameras", [])
+    if not isinstance(cameras, list):
+        return
+    rebound = _resolve_runtime_camera_sources(
+        cameras,
+        video_cfg,
+        logger,
+        strict_capture=True,
+        camera_scope=camera_scope,
+    )
+    if rebound != cameras:
+        video_cfg["cameras"] = rebound
+
+
 def _validate_runtime_requirements(config: Dict[str, Any], logger: LogEmitter) -> None:
     req = runtime_requirements(config)
     if not req["strict"]:
@@ -238,6 +256,7 @@ def _validate_runtime_requirements(config: Dict[str, Any], logger: LogEmitter) -
 
     failures: List[str] = []
     camera_scope = str(req["camera_scope"])
+    _prepare_runtime_camera_sources(config, logger, camera_scope)
     camera_status = _configured_camera_status(config, strict_capture=True, camera_scope=camera_scope)
     audio_status = _selected_audio_info(config)
     min_cameras = int(req["min_cameras"])

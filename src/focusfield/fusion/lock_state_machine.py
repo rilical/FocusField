@@ -12,6 +12,7 @@ CONFIG KEYS:
   - fusion.thresholds.acquire_timeout_ms: max time to stay in ACQUIRE before dropping
   - fusion.thresholds.hold_ms: hold duration
   - fusion.thresholds.handoff_min_ms: handoff minimum
+  - fusion.thresholds.handoff_margin_min: minimum score margin over visible incumbent before handoff
   - fusion.thresholds.drop_threshold: drop threshold
   - fusion.thresholds.speak_on_threshold: speaking gating threshold
   - fusion.thresholds.min_switch_interval_ms: minimum time between target switches
@@ -92,6 +93,7 @@ class LockStateMachine:
         self._acquire_floor_ratio = min(1.0, max(0.0, float(thresholds.get("acquire_floor_ratio", 1.0))))
         self._hold_ms = float(thresholds.get("hold_ms", 800))
         self._handoff_min_ms = float(thresholds.get("handoff_min_ms", 700))
+        self._handoff_margin_min = max(0.0, float(thresholds.get("handoff_margin_min", 0.0) or 0.0))
         self._drop = float(thresholds.get("drop_threshold", self._acquire * 0.6))
         self._speak_on = float(thresholds.get("speak_on_threshold", 0.5))
         self._min_switch_interval_ms = float(thresholds.get("min_switch_interval_ms", 500))
@@ -248,7 +250,24 @@ class LockStateMachine:
                 self._target_mode = _infer_mode(best)
                 reason = "maintain"
             else:
-                reason = self._maybe_handoff(best, t_ns, runner_up_score)
+                incumbent = _candidate_by_track_id(candidate_list, self._target_id)
+                if self._should_hold_incumbent_for_handoff_margin(best, incumbent, t_ns):
+                    self._state = "LOCKED"
+                    self._last_seen_ns = t_ns
+                    self._last_score = _candidate_focus_score(incumbent)
+                    self._update_selected_metrics(incumbent, _candidate_focus_score(best))
+                    self._target_camera_id = _candidate_camera_id(incumbent)
+                    self._target_bearing = _smooth_angle(
+                        self._target_bearing,
+                        _candidate_steering_bearing(incumbent),
+                        self._bearing_alpha,
+                    )
+                    self._target_mode = _infer_mode(incumbent)
+                    self._handoff_id = None
+                    self._handoff_start_ns = 0
+                    reason = "handoff_margin_hold"
+                else:
+                    reason = self._maybe_handoff(best, t_ns, runner_up_score)
 
         self._seq += 1
         return self._build_output(t_ns, reason, evidence)
@@ -278,10 +297,12 @@ class LockStateMachine:
                 "speak_on": self._speak_on,
                 "visual_override_min": self._visual_override_min,
                 "audio_rescue_min": self._audio_rescue_min,
+                "handoff_margin_min": self._handoff_margin_min,
             },
             "timing_window_ms": {
                 "hold_ms": self._hold_ms,
                 "handoff_min_ms": self._handoff_min_ms,
+                "handoff_margin_min": self._handoff_margin_min,
                 "acquire_timeout_ms": self._acquire_timeout_ms,
                 "acquire_persist_ms": self._acquire_persist_ms,
                 "min_switch_interval_ms": self._min_switch_interval_ms,
@@ -298,6 +319,7 @@ class LockStateMachine:
             "stability": {
                 "hold_ms": self._hold_ms,
                 "handoff_ms": self._handoff_min_ms,
+                "handoff_margin_min": self._handoff_margin_min,
             },
         }
 
@@ -371,6 +393,20 @@ class LockStateMachine:
             return "handoff_switch_throttled"
         self._state = "HANDOFF"
         return "handoff_wait"
+
+    def _should_hold_incumbent_for_handoff_margin(
+        self,
+        challenger: Dict[str, Any],
+        incumbent: Optional[Dict[str, Any]],
+        t_ns: int,
+    ) -> bool:
+        if self._handoff_margin_min <= 0.0 or incumbent is None:
+            return False
+        incumbent_score = _candidate_focus_score(incumbent)
+        if incumbent_score < self._drop and not self._within_hold(t_ns):
+            return False
+        challenger_margin = _candidate_focus_score(challenger) - incumbent_score
+        return challenger_margin < self._handoff_margin_min
 
     def _can_acquire_persist(self, candidate: Dict[str, Any], score: float, t_ns: int) -> bool:
         if self._acquire_persist_ms <= 0.0 or self._acquire_floor_ratio >= 1.0:
@@ -593,6 +629,16 @@ def _runner_up_focus_score(candidates: List[Dict[str, Any]], best: Optional[Dict
     best_id = best.get("track_id")
     scores = [_candidate_focus_score(cand) for cand in candidates if cand.get("track_id") != best_id]
     return max(scores) if scores else 0.0
+
+
+def _candidate_by_track_id(candidates: List[Dict[str, Any]], track_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if track_id is None:
+        return None
+    target = str(track_id)
+    for cand in candidates:
+        if str(cand.get("track_id")) == target:
+            return cand
+    return None
 
 
 def _candidate_camera_id(candidate: Dict[str, Any]) -> Optional[str]:

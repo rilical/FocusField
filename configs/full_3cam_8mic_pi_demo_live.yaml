@@ -167,11 +167,9 @@ video:
     settle_ms: 150
     defaults:
       auto_exposure: 3
-      exposure_time_absolute: 24
       exposure_dynamic_framerate: 0
       gain: 2048
       white_balance_automatic: 1
-      white_balance_temperature: 4600
       power_line_frequency: 2
       backlight_compensation: 1
   frame_adjustment:
@@ -285,6 +283,7 @@ fusion:
     drop_threshold: 0.12
     hold_ms: 2200
     handoff_min_ms: 2200
+    handoff_margin_min: 0.10
     min_switch_interval_ms: 1800
     speak_on_threshold: 0.14
     bearing_smoothing_alpha: 0.75

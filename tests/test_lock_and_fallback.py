@@ -316,6 +316,51 @@ class LockStateMachineTests(unittest.TestCase):
         self.assertEqual(committed["reason"], "handoff_commit")
         self.assertEqual(committed["target_id"], "cam1-4")
 
+    def test_handoff_requires_margin_over_visible_incumbent(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {
+                    "acquire_threshold": 0.40,
+                    "handoff_margin_min": 0.10,
+                    "min_switch_interval_ms": 0,
+                    "bearing_smoothing_alpha": 1.0,
+                },
+                "require_speaking": False,
+                "require_vad": False,
+            }
+        }
+        machine = LockStateMachine(config)
+        incumbent = {
+            "track_id": "cam0-1",
+            "camera_id": "cam0",
+            "bearing_deg": 10.0,
+            "focus_score": 0.50,
+            "activity_score": 0.4,
+            "speaking_probability": 0.4,
+            "speaking": True,
+            "score_components": {"visual_speaking_prob": 0.4},
+        }
+        challenger = {
+            "track_id": "cam1-4",
+            "camera_id": "cam1",
+            "bearing_deg": 135.0,
+            "focus_score": 0.56,
+            "activity_score": 0.6,
+            "speaking_probability": 0.6,
+            "speaking": True,
+            "score_components": {"visual_speaking_prob": 0.6},
+        }
+
+        locked = machine.update([incumbent], vad_state=None)
+        self.assertEqual(locked["state"], "LOCKED")
+
+        held = machine.update([incumbent, challenger], vad_state=None)
+        self.assertEqual(held["state"], "LOCKED")
+        self.assertEqual(held["reason"], "handoff_margin_hold")
+        self.assertEqual(held["target_id"], "cam0-1")
+        self.assertAlmostEqual(held["focus_score"], 0.50, places=6)
+        self.assertAlmostEqual(held["runner_up_focus_score"], 0.56, places=6)
+
 
 class AvAssociationSizingTests(unittest.TestCase):
     def test_size_scale_downweights_small_faces(self) -> None:

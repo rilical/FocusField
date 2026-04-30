@@ -126,6 +126,7 @@ fusion:
     drop_threshold: 0.12
     hold_ms: 2200
     handoff_min_ms: 2200
+    handoff_margin_min: 0.10
     min_switch_interval_ms: 1800
     speak_on_threshold: 0.14
     bearing_smoothing_alpha: 0.75

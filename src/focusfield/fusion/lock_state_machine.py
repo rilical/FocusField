@@ -17,6 +17,7 @@ CONFIG KEYS:
   - fusion.thresholds.speak_on_threshold: speaking gating threshold
   - fusion.thresholds.min_switch_interval_ms: minimum time between target switches
   - fusion.thresholds.bearing_smoothing_alpha: target bearing smoothing
+  - fusion.require_visual_speaking_for_visual_lock: do not let VAD alone acquire visual targets
   - fusion.priority_policy: confidence_only | confidence_then_recency | recency
   - fusion.preferred_track_id: optional explicit target selection
   - fusion.recency_decay_ms: recency bonus decay window for policy
@@ -101,6 +102,9 @@ class LockStateMachine:
         self._require_vad = bool(config.get("fusion", {}).get("require_vad", False))
         self._vad_max_age_ms = float(config.get("fusion", {}).get("vad_max_age_ms", 500))
         self._require_speaking = bool(config.get("fusion", {}).get("require_speaking", True))
+        self._require_visual_speaking_for_visual_lock = bool(
+            config.get("fusion", {}).get("require_visual_speaking_for_visual_lock", False)
+        )
         self._priority_policy = str(config.get("fusion", {}).get("priority_policy", "confidence_then_recency"))
         self._preferred_track_id = config.get("fusion", {}).get("preferred_track_id")
         self._recency_decay_ms = float(config.get("fusion", {}).get("recency_decay_ms", 1200))
@@ -167,7 +171,7 @@ class LockStateMachine:
         best = _best_candidate(
             candidate_list,
             self._speak_on,
-            self._require_speaking and not vad_speech,
+            self._require_speaking and (self._require_visual_speaking_for_visual_lock or not vad_speech),
             self._priority_policy,
             self._preferred_track_id,
             self._last_speaking_by_track,
@@ -298,6 +302,7 @@ class LockStateMachine:
                 "visual_override_min": self._visual_override_min,
                 "audio_rescue_min": self._audio_rescue_min,
                 "handoff_margin_min": self._handoff_margin_min,
+                "require_visual_speaking_for_visual_lock": self._require_visual_speaking_for_visual_lock,
             },
             "timing_window_ms": {
                 "hold_ms": self._hold_ms,

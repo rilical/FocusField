@@ -116,6 +116,7 @@ fusion:
   require_vad: false
   vad_max_age_ms: 500
   require_speaking: true
+  require_visual_speaking_for_visual_lock: true
   audio_fallback:
     enabled: false
   thresholds:

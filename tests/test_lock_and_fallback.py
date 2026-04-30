@@ -75,10 +75,63 @@ class LockStateMachineTests(unittest.TestCase):
                 "score_components": {"doa_peak_score": 1.0},
             }
         ]
-        msg = machine.update(cand, vad_state={"t_ns": msg_t_ns_placeholder(), "speech": True})
+        msg = machine.update(cand, vad_state={"t_ns": now_ns(), "speech": True})
         self.assertEqual(msg["state"], "LOCKED")
         self.assertEqual(msg["mode"], "AUDIO_ONLY")
         self.assertIsNotNone(msg["target_bearing_deg"])
+
+    def test_vad_speech_does_not_acquire_silent_visual_when_visual_speaking_required(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {"acquire_threshold": 0.40},
+                "require_speaking": True,
+                "require_vad": False,
+                "require_visual_speaking_for_visual_lock": True,
+            }
+        }
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "cam1-4",
+                "camera_id": "cam1",
+                "bearing_deg": 130.0,
+                "focus_score": 0.88,
+                "activity_score": 0.02,
+                "speaking_probability": 0.02,
+                "speaking": False,
+                "score_components": {"visual_speaking_prob": 0.02},
+            }
+        ]
+        msg = machine.update(cand, vad_state={"t_ns": now_ns(), "speech": True})
+        self.assertEqual(msg["state"], "NO_LOCK")
+        self.assertNotEqual(msg["target_id"], "cam1-4")
+
+    def test_vad_speech_can_still_acquire_audio_only_when_visual_speaking_required(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {"acquire_threshold": 0.40},
+                "require_speaking": True,
+                "require_vad": False,
+                "require_visual_speaking_for_visual_lock": True,
+            }
+        }
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "audio:peak0",
+                "camera_id": "cam1",
+                "bearing_deg": 130.0,
+                "focus_score": 0.70,
+                "activity_score": 0.70,
+                "speaking_probability": 0.70,
+                "speaking": True,
+                "doa_peak_deg": 130.0,
+                "score_components": {"doa_peak_score": 0.8},
+            }
+        ]
+        msg = machine.update(cand, vad_state={"t_ns": msg_t_ns_placeholder(), "speech": True})
+        self.assertEqual(msg["state"], "LOCKED")
+        self.assertEqual(msg["mode"], "AUDIO_ONLY")
 
     def test_av_lock_mode(self) -> None:
         config = {"fusion": {"thresholds": {"acquire_threshold": 0.40}}}

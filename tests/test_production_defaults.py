@@ -103,8 +103,11 @@ class ProductionDefaultTests(unittest.TestCase):
         self.assertEqual(int(cfg["audio"]["doa"]["update_hz"]), 4)
         self.assertEqual(int(cfg["video"]["cameras"][0]["fps"]), 5)
         self.assertTrue(bool(cfg["video"]["camera_controls"]["enabled"]))
-        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["auto_exposure"]), 1)
+        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["auto_exposure"]), 3)
         self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["exposure_time_absolute"]), 24)
+        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["gain"]), 2048)
+        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["white_balance_automatic"]), 1)
+        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["backlight_compensation"]), 1)
         self.assertEqual(int(cfg["vision"]["face"]["detect_every_n"]), 2)
         self.assertEqual(str(cfg["vision"]["mouth"]["backend"]), "diff")
         self.assertEqual(float(cfg["fusion"]["weights"]["audio"]), 0.35)
@@ -154,7 +157,9 @@ class ProductionDefaultTests(unittest.TestCase):
         self.assertEqual(int(cfg["audio"]["capture"]["queue_depth"]), 64)
         self.assertEqual(str(cfg["bus"]["topic_queue_policies"]["audio.frames"]), "drop_oldest")
         self.assertTrue(bool(cfg["video"]["camera_controls"]["enabled"]))
-        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["white_balance_automatic"]), 0)
+        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["auto_exposure"]), 3)
+        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["white_balance_automatic"]), 1)
+        self.assertEqual(int(cfg["video"]["camera_controls"]["defaults"]["backlight_compensation"]), 1)
 
     def test_threshold_preset_preserves_explicit_threshold_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

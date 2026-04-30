@@ -166,14 +166,14 @@ video:
     enabled: true
     settle_ms: 150
     defaults:
-      auto_exposure: 1
+      auto_exposure: 3
       exposure_time_absolute: 24
       exposure_dynamic_framerate: 0
-      gain: 1024
-      white_balance_automatic: 0
+      gain: 2048
+      white_balance_automatic: 1
       white_balance_temperature: 4600
       power_line_frequency: 2
-      backlight_compensation: 0
+      backlight_compensation: 1
   frame_adjustment:
     enabled: true
     defaults:

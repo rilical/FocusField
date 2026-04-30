@@ -1102,12 +1102,12 @@ function updateCameraPanel(camId, freshFaces, lock, frameHealth) {
     frameScheduled[camId] = true;
     requestAnimationFrame(() => {
       frameScheduled[camId] = false;
-      loadAndDrawFrame(camId, faces, targetId, frameHealth);
+      loadAndDrawFrame(camId, faces, targetId, state, frameHealth);
     });
   }
 }
 
-function loadAndDrawFrame(camId, faces, targetId, frameHealth) {
+function loadAndDrawFrame(camId, faces, targetId, lockState, frameHealth) {
   const imgEl    = document.getElementById(camId + '-img');
   const canvasEl = document.getElementById(camId + '-canvas');
   const connDot  = document.getElementById(camId + '-conn');
@@ -1115,7 +1115,7 @@ function loadAndDrawFrame(camId, faces, targetId, frameHealth) {
   if (frameHealth && frameHealth.stale) {
     imgConnected[camId] = false;
     if (connDot) connDot.style.background = '#f85149';
-    drawOverlay(canvasEl, imgEl, faces, targetId);
+    drawOverlay(canvasEl, imgEl, faces, targetId, lockState);
     return;
   }
 
@@ -1123,7 +1123,7 @@ function loadAndDrawFrame(camId, faces, targetId, frameHealth) {
   // Throttle to ~6fps (166ms)
   if (now - (lastImgLoadTs[camId] || 0) < 150) {
     // still redraw overlays on existing image
-    drawOverlay(canvasEl, imgEl, faces, targetId);
+    drawOverlay(canvasEl, imgEl, faces, targetId, lockState);
     return;
   }
   lastImgLoadTs[camId] = now;
@@ -1134,7 +1134,7 @@ function loadAndDrawFrame(camId, faces, targetId, frameHealth) {
     imgConnected[camId] = true;
     if (connDot) connDot.style.background = '#3fb950';
     imgEl.src = img.src;
-    drawOverlay(canvasEl, imgEl, faces, targetId);
+    drawOverlay(canvasEl, imgEl, faces, targetId, lockState);
   };
   img.onerror = () => {
     imgConnected[camId] = false;
@@ -1143,7 +1143,7 @@ function loadAndDrawFrame(camId, faces, targetId, frameHealth) {
   img.src = src;
 }
 
-function drawOverlay(canvas, img, faces, targetId) {
+function drawOverlay(canvas, img, faces, targetId, lockState) {
   // Size canvas to match image natural size
   const nw = img.naturalWidth  || 320;
   const nh = img.naturalHeight || 240;
@@ -1158,14 +1158,16 @@ function drawOverlay(canvas, img, faces, targetId) {
     if (!bbox) continue;
     const isTarget   = targetId && face.track_id === targetId;
     const isSpeaking = face.speaking;
+    const showTarget = isTarget && lockState === 'LOCKED';
+    if (!showTarget && !isSpeaking) continue;
 
     let color;
-    if (isTarget)        color = '#3fb950';
+    if (showTarget)      color = '#3fb950';
     else if (isSpeaking) color = '#f0883e';
     else                 color = 'rgba(255,255,255,0.65)';
 
     ctx.strokeStyle = color;
-    ctx.lineWidth   = isTarget ? 2.5 : 1.5;
+    ctx.lineWidth   = showTarget ? 2.5 : 1.5;
     ctx.strokeRect(bbox.x, bbox.y, bbox.w, bbox.h);
 
     // Label

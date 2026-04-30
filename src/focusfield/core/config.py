@@ -40,6 +40,10 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from focusfield.audio.output.rtp_pcm import (
+    RTP_L16_MAX_UNFRAGMENTED_PACKET_SAMPLES,
+    RTP_L16_SAFE_PACKET_SAMPLES,
+)
 from focusfield.main.modes import KNOWN_RUNTIME_MODES, apply_mode_defaults
 from focusfield.vision.calibration.runtime_overlay import apply_camera_calibration_sidecar
 
@@ -381,7 +385,7 @@ def _default_config() -> Dict[str, Any]:
             "rtp_pcm": {
                 "host": "",
                 "port": 5004,
-                "packet_samples": 960,
+                "packet_samples": RTP_L16_SAFE_PACKET_SAMPLES,
                 "sample_rate_hz": 48000,
                 "payload_type": 96,
                 "reconnect_delay_ms": 750,
@@ -845,6 +849,11 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             packet_samples = rtp_cfg.get("packet_samples")
             if packet_samples is None or int(packet_samples) <= 0:
                 errors.append("output.rtp_pcm.packet_samples must be > 0")
+            elif int(packet_samples) > RTP_L16_MAX_UNFRAGMENTED_PACKET_SAMPLES:
+                errors.append(
+                    "output.rtp_pcm.packet_samples must be <= "
+                    f"{RTP_L16_MAX_UNFRAGMENTED_PACKET_SAMPLES} to avoid IP fragmentation on a 1500-byte MTU"
+                )
             payload_type = rtp_cfg.get("payload_type")
             if payload_type is not None and (int(payload_type) < 0 or int(payload_type) > 127):
                 errors.append("output.rtp_pcm.payload_type must be in [0, 127]")

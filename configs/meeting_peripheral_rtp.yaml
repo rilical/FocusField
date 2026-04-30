@@ -160,7 +160,7 @@ output:
   rtp_pcm:
     host: ""
     port: 5004
-    packet_samples: 960
+    packet_samples: 480
     sample_rate_hz: 48000
     payload_type: 96
     reconnect_delay_ms: 750

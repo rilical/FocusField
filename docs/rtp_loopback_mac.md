@@ -26,6 +26,6 @@ python3 -m focusfield.main.run --config configs/meeting_peripheral_rtp.yaml
 
 ## Notes
 
-- Transport is `RTP/L16`, mono, `48 kHz`, `960` samples per packet.
-- The receiver fills small packet gaps with silence instead of stalling playout.
+- Transport is `RTP/L16`, mono, `48 kHz`, `480` samples per packet. This keeps UDP datagrams below a normal 1500-byte MTU and avoids IP fragmentation.
+- The receiver smooths small packet gaps instead of stalling playout or inserting hard zero edges.
 - The sender uses `audio.enhanced.final`, not raw capture or beamformed pre-denoise audio.

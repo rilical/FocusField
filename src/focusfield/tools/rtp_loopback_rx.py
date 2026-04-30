@@ -9,7 +9,11 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from focusfield.audio.output.rtp_pcm import ParsedRtpPcmPacket, parse_rtp_packet
+from focusfield.audio.output.rtp_pcm import (
+    RTP_L16_SAFE_PACKET_SAMPLES,
+    ParsedRtpPcmPacket,
+    parse_rtp_packet,
+)
 from focusfield.audio.output.sink import start_output_sink
 from focusfield.core.bus import Bus
 from focusfield.core.clock import now_ns
@@ -28,6 +32,8 @@ class RtpGapTracker:
         self._output_seq: int = 0
         self._gap_fills: int = 0
         self._stale_drops: int = 0
+        self._last_output_sample: float = 0.0
+        self._last_was_gap: bool = False
 
     @property
     def gap_fills(self) -> int:
@@ -41,28 +47,57 @@ class RtpGapTracker:
         emitted: List[Dict[str, Any]] = []
         current_t_ns = int(t_ns or now_ns())
         if self._expected_seq is None or self._expected_ssrc != packet.ssrc:
-            emitted.append(self._build_msg(packet.samples, current_t_ns))
+            emitted.append(self._build_msg(self._prepare_real_samples(packet.samples), current_t_ns))
             self._expected_seq = (packet.seq + 1) & 0xFFFF
             self._expected_ssrc = int(packet.ssrc)
             return emitted
 
         delta = (packet.seq - self._expected_seq) & 0xFFFF
         if delta == 0:
-            emitted.append(self._build_msg(packet.samples, current_t_ns))
+            emitted.append(self._build_msg(self._prepare_real_samples(packet.samples), current_t_ns))
             self._expected_seq = (packet.seq + 1) & 0xFFFF
             return emitted
 
         if delta < 0x8000:
             if delta <= self.max_gap_packets:
                 for _ in range(delta):
-                    emitted.append(self._build_msg(np.zeros((self.default_frame_samples,), dtype=np.float32), current_t_ns))
+                    emitted.append(self._build_msg(self._build_gap_fill(), current_t_ns))
                     self._gap_fills += 1
-            emitted.append(self._build_msg(packet.samples, current_t_ns))
+            emitted.append(self._build_msg(self._prepare_real_samples(packet.samples), current_t_ns))
             self._expected_seq = (packet.seq + 1) & 0xFFFF
             return emitted
 
         self._stale_drops += 1
         return emitted
+
+    def _build_gap_fill(self) -> np.ndarray:
+        frame = np.zeros((max(0, int(self.default_frame_samples)),), dtype=np.float32)
+        if frame.size:
+            edge = min(64, int(frame.shape[0]))
+            if edge > 0:
+                frame[:edge] = np.linspace(
+                    float(self._last_output_sample),
+                    0.0,
+                    num=edge,
+                    endpoint=True,
+                    dtype=np.float32,
+                )
+            self._last_output_sample = float(frame[-1])
+        else:
+            self._last_output_sample = 0.0
+        self._last_was_gap = True
+        return frame
+
+    def _prepare_real_samples(self, samples: np.ndarray) -> np.ndarray:
+        frame = np.asarray(samples, dtype=np.float32).reshape(-1).copy()
+        if frame.size and self._last_was_gap:
+            edge = min(64, int(frame.shape[0]))
+            if edge > 0:
+                weights = np.linspace(0.0, 1.0, num=edge, endpoint=False, dtype=np.float32)
+                frame[:edge] = ((1.0 - weights) * float(self._last_output_sample)) + (weights * frame[:edge])
+        self._last_output_sample = float(frame[-1]) if frame.size else 0.0
+        self._last_was_gap = False
+        return frame
 
     def _build_msg(self, samples: np.ndarray, t_ns: int) -> Dict[str, Any]:
         frame = np.asarray(samples, dtype=np.float32).reshape(-1)
@@ -235,7 +270,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=5004, help="UDP port to listen on")
     parser.add_argument("--device", default="Loopback Audio", help="Substring match for the target output device")
     parser.add_argument("--sample-rate-hz", type=int, default=48000, help="Expected sample rate")
-    parser.add_argument("--packet-samples", type=int, default=960, help="Expected samples per packet")
+    parser.add_argument(
+        "--packet-samples",
+        type=int,
+        default=RTP_L16_SAFE_PACKET_SAMPLES,
+        help="Expected samples per packet",
+    )
     parser.add_argument("--channels", type=int, default=2, help="Output channels for the loopback device")
     parser.add_argument("--target-rms", type=float, default=0.18, help="Post-gain target RMS for low-level speech")
     parser.add_argument("--max-gain", type=float, default=8.0, help="Maximum post-gain multiplier")

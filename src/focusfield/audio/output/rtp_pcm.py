@@ -29,6 +29,13 @@ from focusfield.core.clock import now_ns
 RTP_HEADER_BYTES = 12
 RTP_VERSION = 2
 RTP_DYNAMIC_PAYLOAD_TYPE = 96
+IPV4_UDP_HEADER_BYTES = 28
+RTP_L16_BYTES_PER_SAMPLE = 2
+ETHERNET_MTU_BYTES = 1500
+RTP_L16_SAFE_PACKET_SAMPLES = 480
+RTP_L16_MAX_UNFRAGMENTED_PACKET_SAMPLES = (
+    ETHERNET_MTU_BYTES - IPV4_UDP_HEADER_BYTES - RTP_HEADER_BYTES
+) // RTP_L16_BYTES_PER_SAMPLE
 
 
 @dataclass(frozen=True)
@@ -60,6 +67,10 @@ def decode_l16_samples(payload: bytes) -> np.ndarray:
     if not payload:
         return np.zeros((0,), dtype=np.float32)
     return (np.frombuffer(payload, dtype=">i2").astype(np.float32) / 32767.0).copy()
+
+
+def rtp_l16_wire_bytes(packet_samples: int) -> int:
+    return RTP_HEADER_BYTES + IPV4_UDP_HEADER_BYTES + (int(packet_samples) * RTP_L16_BYTES_PER_SAMPLE)
 
 
 def build_rtp_packet(
@@ -139,7 +150,7 @@ def start_rtp_pcm_sink(
 
     port = int(sink_cfg.get("port", 5004) or 5004)
     sample_rate_hz = int(sink_cfg.get("sample_rate_hz", audio_cfg.get("sample_rate_hz", 48000)) or 48000)
-    packet_samples = int(sink_cfg.get("packet_samples", 960) or 960)
+    packet_samples = int(sink_cfg.get("packet_samples", RTP_L16_SAFE_PACKET_SAMPLES) or RTP_L16_SAFE_PACKET_SAMPLES)
     payload_type = int(sink_cfg.get("payload_type", RTP_DYNAMIC_PAYLOAD_TYPE) or RTP_DYNAMIC_PAYLOAD_TYPE)
     reconnect_delay_ms = max(100, int(sink_cfg.get("reconnect_delay_ms", 750) or 750))
     send_buffer_bytes = max(65536, int(sink_cfg.get("socket_send_buffer_bytes", 262144) or 262144))
@@ -179,6 +190,8 @@ def start_rtp_pcm_sink(
                         "host": host,
                         "port": port,
                         "packet_samples": packet_samples,
+                        "wire_bytes": rtp_l16_wire_bytes(packet_samples),
+                        "ip_fragmentation_risk": bool(packet_samples > RTP_L16_MAX_UNFRAGMENTED_PACKET_SAMPLES),
                         "sample_rate_hz": sample_rate_hz,
                         "source_topic": source_topic,
                     },

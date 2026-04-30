@@ -197,10 +197,11 @@ def _resolve_runtime_camera_sources(
         resolved_index = video_index_for_source(resolved)
         if resolved_index is None:
             resolved_index = video_index_for_source(source)
+        open_source = resolved if resolved.startswith("/dev/video") else source
         updated = dict(cam)
         old_path = updated.get("device_path")
         old_index = updated.get("device_index")
-        updated["device_path"] = source
+        updated["device_path"] = open_source
         if resolved_index is not None:
             updated["device_index"] = resolved_index
         rebound.append(updated)
@@ -209,7 +210,8 @@ def _resolve_runtime_camera_sources(
                 "camera_id": str(updated.get("id", f"cam{idx}")),
                 "old_device_path": old_path,
                 "old_device_index": old_index,
-                "device_path": source,
+                "discovered_path": source,
+                "device_path": open_source,
                 "resolved_path": resolved,
                 "device_index": updated.get("device_index"),
             }

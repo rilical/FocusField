@@ -274,7 +274,7 @@ class PiContractTests(unittest.TestCase):
                         camera_scope="usb",
                     )
 
-        self.assertEqual([cam["device_path"] for cam in rebound], sources)
+        self.assertEqual([cam["device_path"] for cam in rebound], ["/dev/video0", "/dev/video4", "/dev/video9"])
         self.assertEqual([cam["device_index"] for cam in rebound], [0, 4, 9])
         self.assertTrue(any(event == "camera_sources_rebound" for _, _, event, _ in logger.events))
 

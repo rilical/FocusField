@@ -165,18 +165,19 @@ def live_page() -> str:
     }
     .cam-tile-inner img {
       position: absolute; inset: 0; width: 100%; height: 100%;
-      object-fit: cover; display: block;
+      object-fit: cover; display: block; z-index: 0;
     }
     .cam-tile.camera-stale img { filter: grayscale(1) brightness(0.55); }
     .cam-tile-inner canvas {
       position: absolute; inset: 0; width: 100%; height: 100%;
-      pointer-events: none;
+      pointer-events: none; background: transparent; z-index: 1;
     }
     .cam-label-bar {
       position: absolute; top: 0; left: 0; right: 0;
       display: flex; align-items: center; gap: 6px;
       padding: 5px 8px;
       background: linear-gradient(to bottom, rgba(13,17,23,0.85) 0%, transparent 100%);
+      z-index: 2;
     }
     .cam-conn-dot {
       width: 6px; height: 6px; border-radius: 50%; background: var(--red); flex-shrink: 0;
@@ -1129,18 +1130,17 @@ function loadAndDrawFrame(camId, faces, targetId, lockState, frameHealth) {
   lastImgLoadTs[camId] = now;
 
   const src = '/frame/' + camId + '.jpg?ts=' + now;
-  const img = new Image();
-  img.onload = () => {
+  imgEl.onload = () => {
     imgConnected[camId] = true;
     if (connDot) connDot.style.background = '#3fb950';
-    imgEl.src = img.src;
     drawOverlay(canvasEl, imgEl, faces, targetId, lockState);
   };
-  img.onerror = () => {
+  imgEl.onerror = () => {
     imgConnected[camId] = false;
     if (connDot) connDot.style.background = '#f85149';
   };
-  img.src = src;
+  imgEl.decoding = 'async';
+  imgEl.src = src;
 }
 
 function drawOverlay(canvas, img, faces, targetId, lockState) {

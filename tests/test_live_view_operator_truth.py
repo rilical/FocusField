@@ -56,6 +56,13 @@ class LiveViewOperatorTruthContractTests(unittest.TestCase):
         self.assertIn("ctx.setLineDash(isIdle ? [5, 4] : [])", self.html)
         self.assertNotIn("if (!showTarget && !isSpeaking) continue;", self.html)
 
+    def test_live_page_keeps_camera_frame_visible_below_overlay(self) -> None:
+        self.assertIn("z-index: 0", self.html)
+        self.assertIn("z-index: 1", self.html)
+        self.assertIn("background: transparent", self.html)
+        self.assertIn("imgEl.onload = () =>", self.html)
+        self.assertIn("imgEl.src = src", self.html)
+
     def test_live_page_has_responsive_operator_dashboard_breakpoints(self) -> None:
         self.assertIn("@media (max-width: 900px)", self.html)
         self.assertIn("@media (max-width: 700px)", self.html)

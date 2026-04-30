@@ -10,6 +10,7 @@ OUTPUTS:
 CONFIG KEYS:
   - vision.track.smoothing_alpha: smoothing factor
   - vision.track.max_missing_frames: drop threshold
+  - vision.track.jitter_deadband_px: ignore tiny smoothed box changes
 
 PERF / TIMING:
   - per-frame smoothing
@@ -61,12 +62,14 @@ class TrackSmoother:
         smoothing_alpha: float = 0.6,
         center_gate_px: float = 180.0,
         velocity_alpha: float = 0.45,
+        jitter_deadband_px: float = 0.0,
     ):
         self._iou_threshold = iou_threshold
         self._max_missing = max_missing_frames
         self._alpha = smoothing_alpha
         self._center_gate_px = max(1.0, float(center_gate_px))
         self._velocity_alpha = float(max(0.0, min(1.0, velocity_alpha)))
+        self._jitter_deadband_px = float(max(0.0, jitter_deadband_px))
         self._tracks: Dict[int, TrackState] = {}
         self._next_id = 1
 
@@ -100,11 +103,21 @@ class TrackSmoother:
                 track.missing_frames = 0
                 track.age_frames += 1
                 track.matched = True
-                track.smooth_bbox = _smooth_bbox(track.smooth_bbox, bbox, self._alpha)
+                track.smooth_bbox = _smooth_bbox(
+                    track.smooth_bbox,
+                    bbox,
+                    self._alpha,
+                    deadband_px=self._jitter_deadband_px,
+                )
             else:
                 track.missing_frames += 1
                 track.bbox = predicted_bbox
-                track.smooth_bbox = _smooth_bbox(track.smooth_bbox, predicted_bbox, self._alpha)
+                track.smooth_bbox = _smooth_bbox(
+                    track.smooth_bbox,
+                    predicted_bbox,
+                    self._alpha,
+                    deadband_px=self._jitter_deadband_px,
+                )
 
         for idx, (bbox, conf) in enumerate(detections_sorted):
             if idx in assigned:
@@ -133,16 +146,23 @@ def _smooth_bbox(
     previous: Optional[Tuple[float, float, float, float]],
     bbox: BBox,
     alpha: float,
+    deadband_px: float = 0.0,
 ) -> Tuple[float, float, float, float]:
     x, y, w, h = bbox
     if previous is None or alpha >= 1.0:
         return float(x), float(y), float(w), float(h)
     px, py, pw, ph = previous
-    return (
+    smoothed = (
         alpha * x + (1 - alpha) * px,
         alpha * y + (1 - alpha) * py,
         alpha * w + (1 - alpha) * pw,
         alpha * h + (1 - alpha) * ph,
+    )
+    if deadband_px <= 0.0:
+        return smoothed
+    return tuple(
+        previous_value if abs(next_value - previous_value) <= deadband_px else next_value
+        for previous_value, next_value in zip(previous, smoothed)
     )
 
 

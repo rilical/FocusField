@@ -228,6 +228,7 @@ vision:
     smoothing_alpha: 0.6
     max_missing_frames: 20
     min_age_frames: 1
+    jitter_deadband_px: 3.0
   mouth:
     backend: diff
     smoothing_alpha: 0.5
@@ -273,7 +274,7 @@ fusion:
     min_doa_confidence: 0.35
     min_peak_score: 0.22
     score_mode: max
-    require_vad: false
+    require_vad: true
     allow_when_faces_missing: true
     face_staleness_ms: 1800
   thresholds:
@@ -282,10 +283,10 @@ fusion:
     acquire_persist_ms: 250
     acquire_floor_ratio: 0.55
     drop_threshold: 0.12
-    hold_ms: 2200
-    handoff_min_ms: 2200
+    hold_ms: 1400
+    handoff_min_ms: 1100
     handoff_margin_min: 0.10
-    min_switch_interval_ms: 1800
+    min_switch_interval_ms: 1000
     speak_on_threshold: 0.14
     bearing_smoothing_alpha: 0.75
 bus:

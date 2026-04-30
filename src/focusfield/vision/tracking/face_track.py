@@ -80,6 +80,7 @@ class CameraTracker:
             smoothing_alpha=float(track_cfg.get("smoothing_alpha", 0.6)),
             center_gate_px=float(track_cfg.get("center_gate_px", 180.0) or 180.0),
             velocity_alpha=float(track_cfg.get("velocity_alpha", 0.45) or 0.45),
+            jitter_deadband_px=float(track_cfg.get("jitter_deadband_px", 0.0) or 0.0),
         )
         self._mouth = MouthActivityEstimator(
             smoothing_alpha=float(mouth_cfg.get("smoothing_alpha", 0.75)),

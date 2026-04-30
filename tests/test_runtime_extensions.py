@@ -158,6 +158,24 @@ class RuntimeExtensionsTests(unittest.TestCase):
         self.assertEqual(len(matched), 1)
         self.assertEqual(matched[0].track_id, 1)
 
+    def test_track_smoother_deadband_suppresses_small_box_jitter(self) -> None:
+        smoother = TrackSmoother(
+            iou_threshold=0.3,
+            smoothing_alpha=0.6,
+            center_gate_px=180.0,
+            jitter_deadband_px=3.0,
+        )
+        first = smoother.update([((100, 100, 80, 80), 0.9)])[0]
+        first_box = tuple(first.smooth_bbox)
+        second = smoother.update([((102, 101, 81, 79), 0.9)])[0]
+        self.assertEqual(
+            tuple(round(v, 3) for v in second.smooth_bbox),
+            tuple(round(v, 3) for v in first_box),
+        )
+
+        third = smoother.update([((112, 100, 80, 80), 0.9)])[0]
+        self.assertGreater(third.smooth_bbox[0], first_box[0])
+
     def test_rnnoise_onnx_backend_falls_back_when_model_missing(self) -> None:
         config = {
             "audio": {

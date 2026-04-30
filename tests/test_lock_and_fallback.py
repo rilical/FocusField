@@ -201,6 +201,74 @@ class LockStateMachineTests(unittest.TestCase):
         self.assertEqual(msg["target_id"], "cam1-9")
         self.assertEqual(msg["target_camera_id"], "cam1")
 
+    def test_fresh_vad_and_matched_doa_can_acquire_side_face_with_weak_mouth_motion(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {"acquire_threshold": 0.40, "speak_on_threshold": 0.14, "min_switch_interval_ms": 0},
+                "require_speaking": True,
+                "require_vad": False,
+                "require_visual_speaking_for_visual_lock": True,
+            }
+        }
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "cam1-5",
+                "camera_id": "cam1",
+                "bearing_deg": 116.0,
+                "focus_score": 0.58,
+                "activity_score": 0.44,
+                "speaking_probability": 0.44,
+                "speaking": False,
+                "doa_peak_deg": 116.0,
+                "score_components": {
+                    "explicit_mouth_activity": 0.0,
+                    "mouth_activity": 0.0,
+                    "visual_speaking_prob": 0.10,
+                    "audio_speech_prob": 1.0,
+                    "doa_peak_score": 1.0,
+                },
+            }
+        ]
+        msg = machine.update(cand, vad_state={"t_ns": now_ns(), "speech": True})
+        self.assertEqual(msg["state"], "LOCKED")
+        self.assertEqual(msg["target_id"], "cam1-5")
+        self.assertEqual(msg["target_camera_id"], "cam1")
+        self.assertEqual(msg["mode"], "AV_LOCK")
+
+    def test_matched_doa_side_face_still_requires_fresh_vad(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {"acquire_threshold": 0.40, "speak_on_threshold": 0.14, "min_switch_interval_ms": 0},
+                "require_speaking": True,
+                "require_vad": False,
+                "require_visual_speaking_for_visual_lock": True,
+            }
+        }
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "cam1-5",
+                "camera_id": "cam1",
+                "bearing_deg": 116.0,
+                "focus_score": 0.58,
+                "activity_score": 0.44,
+                "speaking_probability": 0.44,
+                "speaking": False,
+                "doa_peak_deg": 116.0,
+                "score_components": {
+                    "explicit_mouth_activity": 0.0,
+                    "mouth_activity": 0.0,
+                    "visual_speaking_prob": 0.10,
+                    "audio_speech_prob": 1.0,
+                    "doa_peak_score": 1.0,
+                },
+            }
+        ]
+        msg = machine.update(cand, vad_state={"t_ns": now_ns(), "speech": False})
+        self.assertEqual(msg["state"], "NO_LOCK")
+        self.assertIsNone(msg["target_id"])
+
     def test_raw_mouth_motion_requires_vad_when_visual_gate_is_explicit(self) -> None:
         config = {
             "fusion": {

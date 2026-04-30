@@ -132,14 +132,15 @@ class LockStateMachine:
     def update(self, candidates: CandidatesPayload, vad_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         t_ns = now_ns()
         candidate_list, evidence = _unwrap_candidates_payload(candidates)
-        self._update_speaking_history(candidate_list, t_ns)
+        vad_fresh = _vad_is_fresh(vad_state, t_ns, self._vad_max_age_ms)
+        vad_speech = bool(vad_state.get("speech")) if vad_fresh and vad_state is not None else False
+        self._update_speaking_history(candidate_list, t_ns, vad_speech)
         has_speaking = _has_speaking_candidate(
             candidate_list,
             self._speak_on,
             self._require_visual_speaking_for_visual_lock,
+            vad_speech,
         )
-        vad_fresh = _vad_is_fresh(vad_state, t_ns, self._vad_max_age_ms)
-        vad_speech = bool(vad_state.get("speech")) if vad_fresh and vad_state is not None else False
         if has_speaking:
             self._last_speaking_ns = t_ns
         if self._require_vad and not vad_fresh and not has_speaking:
@@ -182,6 +183,7 @@ class LockStateMachine:
             self._recency_decay_ms,
             self._visual_override_min,
             self._require_visual_speaking_for_visual_lock,
+            vad_speech,
         )
         runner_up_score = _runner_up_focus_score(candidate_list, best)
         reason = "no_candidates"
@@ -385,12 +387,17 @@ class LockStateMachine:
     def _within_speech_hold(self, t_ns: int) -> bool:
         return self._last_speaking_ns and (t_ns - self._last_speaking_ns) <= int(self._hold_ms * 1_000_000)
 
-    def _update_speaking_history(self, candidates: List[Dict[str, Any]], t_ns: int) -> None:
+    def _update_speaking_history(self, candidates: List[Dict[str, Any]], t_ns: int, vad_speech: bool = False) -> None:
         for cand in candidates:
             track_id = cand.get("track_id")
             if track_id is None:
                 continue
-            if _candidate_counts_as_speaking(cand, self._speak_on, self._require_visual_speaking_for_visual_lock):
+            if _candidate_counts_as_speaking(
+                cand,
+                self._speak_on,
+                self._require_visual_speaking_for_visual_lock,
+                vad_speech,
+            ):
                 self._last_speaking_by_track[str(track_id)] = t_ns
 
     def _maybe_handoff(self, best: Dict[str, Any], t_ns: int, runner_up_score: float) -> str:
@@ -483,13 +490,14 @@ def _best_candidate(
     recency_decay_ms: float,
     visual_override_min: float,
     require_explicit_visual_speaking: bool = False,
+    vad_speech: bool = False,
 ) -> Optional[Dict[str, Any]]:
     if not candidates:
         return None
     speaking = [
         cand
         for cand in candidates
-        if _candidate_counts_as_speaking(cand, speak_on_threshold, require_explicit_visual_speaking)
+        if _candidate_counts_as_speaking(cand, speak_on_threshold, require_explicit_visual_speaking, vad_speech)
     ]
     if require_speaking and not speaking:
         return None
@@ -553,9 +561,10 @@ def _has_speaking_candidate(
     candidates: List[Dict[str, Any]],
     speak_on_threshold: float,
     require_explicit_visual_speaking: bool = False,
+    vad_speech: bool = False,
 ) -> bool:
     for cand in candidates:
-        if _candidate_counts_as_speaking(cand, speak_on_threshold, require_explicit_visual_speaking):
+        if _candidate_counts_as_speaking(cand, speak_on_threshold, require_explicit_visual_speaking, vad_speech):
             return True
     return False
 
@@ -564,6 +573,7 @@ def _candidate_counts_as_speaking(
     candidate: Dict[str, Any],
     speak_on_threshold: float,
     require_explicit_visual_speaking: bool = False,
+    vad_speech: bool = False,
 ) -> bool:
     if candidate.get("speaking"):
         return True
@@ -580,9 +590,18 @@ def _candidate_counts_as_speaking(
                 or 0.0
             )
             audio_speech_prob = float(score_components.get("audio_speech_prob", 0.0) or 0.0)
+            doa_peak_score = float(score_components.get("doa_peak_score", 0.0) or 0.0)
         except Exception:
             return False
-        return mouth_activity >= speak_on_threshold and audio_speech_prob > 0.0
+        if not vad_speech:
+            return False
+        if mouth_activity >= speak_on_threshold and audio_speech_prob > 0.0:
+            return True
+        return (
+            _infer_mode(candidate) == "AV_LOCK"
+            and doa_peak_score > 0.0
+            and _candidate_activity_score(candidate) >= speak_on_threshold
+        )
     return _candidate_speaking_probability(candidate) >= speak_on_threshold
 
 

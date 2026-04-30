@@ -116,6 +116,75 @@ class LockStateMachineTests(unittest.TestCase):
         self.assertEqual(dropped["reason"], "audio_only_suppressed_by_fresh_visual")
         self.assertIsNone(dropped["target_id"])
 
+    def test_audio_only_target_yields_to_fresh_visual_candidate(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {
+                    "acquire_threshold": 0.40,
+                    "hold_ms": 800,
+                    "min_switch_interval_ms": 0,
+                    "speak_on_threshold": 0.14,
+                },
+                "require_speaking": True,
+                "require_visual_speaking_for_visual_lock": True,
+            }
+        }
+        machine = LockStateMachine(config)
+        acquired = machine.update(
+            [
+                {
+                    "track_id": "audio:peak0",
+                    "bearing_deg": 123.0,
+                    "focus_score": 0.90,
+                    "activity_score": 0.90,
+                    "speaking_probability": 0.90,
+                    "speaking": True,
+                    "doa_peak_deg": 123.0,
+                    "score_components": {"doa_peak_score": 1.0},
+                }
+            ],
+            vad_state={"t_ns": now_ns(), "speech": True},
+        )
+        self.assertEqual(acquired["mode"], "AUDIO_ONLY")
+
+        msg = machine.update(
+            {
+                "candidates": [
+                    {
+                        "track_id": "audio:peak0",
+                        "bearing_deg": 123.0,
+                        "focus_score": 0.92,
+                        "activity_score": 0.92,
+                        "speaking_probability": 0.92,
+                        "speaking": True,
+                        "doa_peak_deg": 123.0,
+                        "score_components": {"doa_peak_score": 1.0},
+                    },
+                    {
+                        "track_id": "cam0-1",
+                        "camera_id": "cam0",
+                        "bearing_deg": 8.0,
+                        "focus_score": 0.55,
+                        "activity_score": 0.45,
+                        "speaking_probability": 0.45,
+                        "speaking": False,
+                        "doa_peak_deg": 8.0,
+                        "score_components": {
+                            "explicit_mouth_activity": 0.0,
+                            "mouth_activity": 0.0,
+                            "visual_speaking_prob": 0.10,
+                            "audio_speech_prob": 1.0,
+                            "doa_peak_score": 0.9,
+                        },
+                    },
+                ],
+                "evidence": {"faces_present": True, "faces_fresh": True, "audio_fresh": True},
+            },
+            vad_state={"t_ns": now_ns(), "speech": True},
+        )
+        self.assertNotEqual(msg["mode"], "AUDIO_ONLY")
+        self.assertEqual(msg["target_id"], "cam0-1")
+
     def test_vad_speech_does_not_acquire_silent_visual_when_visual_speaking_required(self) -> None:
         config = {
             "fusion": {
@@ -141,6 +210,39 @@ class LockStateMachineTests(unittest.TestCase):
         msg = machine.update(cand, vad_state={"t_ns": now_ns(), "speech": True})
         self.assertEqual(msg["state"], "NO_LOCK")
         self.assertNotEqual(msg["target_id"], "cam1-4")
+
+    def test_visual_speaking_flag_does_not_bypass_fresh_vad_requirement(self) -> None:
+        config = {
+            "fusion": {
+                "thresholds": {"acquire_threshold": 0.40, "speak_on_threshold": 0.14},
+                "require_speaking": True,
+                "require_vad": False,
+                "require_visual_speaking_for_visual_lock": True,
+            }
+        }
+        machine = LockStateMachine(config)
+        cand = [
+            {
+                "track_id": "cam1-4",
+                "camera_id": "cam1",
+                "bearing_deg": 130.0,
+                "focus_score": 0.88,
+                "activity_score": 0.80,
+                "speaking_probability": 0.80,
+                "speaking": True,
+                "doa_peak_deg": 130.0,
+                "score_components": {
+                    "explicit_mouth_activity": 0.0,
+                    "mouth_activity": 0.0,
+                    "visual_speaking_prob": 0.10,
+                    "audio_speech_prob": 1.0,
+                    "doa_peak_score": 1.0,
+                },
+            }
+        ]
+        msg = machine.update(cand, vad_state={"t_ns": now_ns() - 2_000_000_000, "speech": True})
+        self.assertEqual(msg["state"], "NO_LOCK")
+        self.assertIsNone(msg["target_id"])
 
     def test_visual_speaking_gate_ignores_probability_spike_without_tracker_speaking(self) -> None:
         config = {
@@ -666,6 +768,35 @@ class AvAssociationSizingTests(unittest.TestCase):
         self.assertAlmostEqual(float(components["explicit_mouth_activity"]), 0.18, places=6)
         self.assertAlmostEqual(float(components["mouth_activity"]), 0.18, places=6)
         self.assertAlmostEqual(float(components["visual_speaking_prob"]), 0.27, places=6)
+
+    def test_candidates_ignore_stale_vad_when_scoring_visual_tracks(self) -> None:
+        tracks = [
+            {
+                "seq": 1,
+                "track_id": "cam0-1",
+                "camera_id": "cam0",
+                "bearing_deg": 5.0,
+                "mouth_activity": 0.0,
+                "visual_speaking_prob": 0.0,
+                "confidence": 0.9,
+                "speaking": False,
+                "bbox": {"x": 0, "y": 0, "w": 100, "h": 100},
+            }
+        ]
+        stale_vad = {"speech": True, "confidence": 1.0, "speech_probability": 1.0, "t_ns": now_ns() - 2_000_000_000}
+        cands = _build_candidates(
+            tracks,
+            doa_heatmap={"confidence": 0.9, "peaks": [{"angle_deg": 5.0, "score": 0.9}]},
+            vad_state=stale_vad,
+            max_assoc_deg=20.0,
+            weights={},
+            min_area=900,
+            area_soft_max=3600,
+            vad_max_age_ms=400.0,
+        )
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(float(cands[0]["score_components"]["audio_speech_prob"]), 0.0)
+        self.assertFalse(bool(cands[0]["speaking"]))
 
     def test_audio_only_candidate_requires_fresh_vad_for_speaking(self) -> None:
         now = now_ns()

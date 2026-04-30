@@ -1631,6 +1631,13 @@ function updateHeader(data) {
   if (route.output_blackhole_active) badges.push('BLACKHOLE');
   if (route.input_loopback_risk) badges.push('INPUT_LOOPBACK_RISK');
   if (data && data.audio_fallback_active) badges.push('AUDIO_ONLY');
+  const outputHealth = (data && data.output_health) || {};
+  if (outputHealth.status === 'degraded') {
+    badges.push('OUT_DEG ' + ((outputHealth.reasons || []).join(',') || 'unknown'));
+  }
+  const beamSummary = (data && data.beamforming_summary) || {};
+  if (beamSummary.mode) badges.push('BEAM=' + beamSummary.mode);
+  if (beamSummary.fallback_active) badges.push('BEAM_FALLBACK');
   if (data && data.detector_backend_active) badges.push('det=' + data.detector_backend_active);
   if (data && !data.strict_requirements_passed) badges.push('NON_STRICT');
   const visionDebug = (data && data.vision_debug) || {};

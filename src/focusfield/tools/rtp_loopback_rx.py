@@ -117,6 +117,68 @@ class RtpGapTracker:
         return msg
 
 
+@dataclass
+class RtpJitterBuffer(RtpGapTracker):
+    playout_delay_packets: int = 2
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.playout_delay_packets = max(0, int(self.playout_delay_packets))
+        self._packet_buffer: Dict[int, ParsedRtpPcmPacket] = {}
+
+    def process(self, packet: ParsedRtpPcmPacket, *, t_ns: Optional[int] = None) -> List[Dict[str, Any]]:
+        current_t_ns = int(t_ns or now_ns())
+        if self._expected_seq is None or self._expected_ssrc != packet.ssrc:
+            self._packet_buffer.clear()
+            self._expected_seq = int(packet.seq) & 0xFFFF
+            self._expected_ssrc = int(packet.ssrc)
+
+        assert self._expected_seq is not None
+        delta = (int(packet.seq) - int(self._expected_seq)) & 0xFFFF
+        if delta >= 0x8000:
+            self._stale_drops += 1
+            return []
+        self._packet_buffer[int(packet.seq) & 0xFFFF] = packet
+        return self._drain(current_t_ns, force=False)
+
+    def flush(self, *, t_ns: Optional[int] = None) -> List[Dict[str, Any]]:
+        return self._drain(int(t_ns or now_ns()), force=True)
+
+    def _drain(self, t_ns: int, *, force: bool) -> List[Dict[str, Any]]:
+        emitted: List[Dict[str, Any]] = []
+        while self._packet_buffer and self._expected_seq is not None:
+            expected = int(self._expected_seq) & 0xFFFF
+            if expected in self._packet_buffer:
+                if not force and len(self._packet_buffer) <= self.playout_delay_packets:
+                    break
+                packet = self._packet_buffer.pop(expected)
+                emitted.append(self._build_msg(self._prepare_real_samples(packet.samples), t_ns))
+                self._expected_seq = (expected + 1) & 0xFFFF
+                continue
+
+            forward = sorted(
+                ((seq - expected) & 0xFFFF for seq in self._packet_buffer.keys()),
+                key=int,
+            )
+            forward = [delta for delta in forward if delta < 0x8000]
+            if not forward:
+                self._packet_buffer.clear()
+                break
+            gap = int(forward[0])
+            if not force and len(self._packet_buffer) <= self.playout_delay_packets:
+                break
+            if 0 < gap <= self.max_gap_packets:
+                emitted.append(self._build_msg(self._build_gap_fill(), t_ns))
+                self._gap_fills += 1
+                self._expected_seq = (expected + 1) & 0xFFFF
+                continue
+
+            # A large sequence jump is more likely a sender restart than normal
+            # network jitter. Resync to the lowest buffered forward packet.
+            self._expected_seq = (expected + gap) & 0xFFFF
+        return emitted
+
+
 def build_receiver_config(
     *,
     device_name: str,
@@ -124,9 +186,9 @@ def build_receiver_config(
     packet_samples: int,
     channels: int = 2,
     agc_enabled: bool = True,
-    target_rms: float = 0.18,
-    max_gain: float = 8.0,
-    min_gain: float = 1.0,
+    target_rms: float = 0.12,
+    max_gain: float = 4.0,
+    min_gain: float = 0.35,
 ) -> Dict[str, Any]:
     return {
         "audio": {
@@ -180,6 +242,7 @@ def run_receiver(
     target_rms: float,
     max_gain: float,
     min_gain: float,
+    jitter_delay_packets: int = 2,
 ) -> None:
     bus = Bus(max_queue_depth=64)
     logger = LogEmitter(bus, min_level="info", run_id="rtp-loopback-rx")
@@ -202,7 +265,11 @@ def run_receiver(
     sock.bind((bind_host, int(port)))
     sock.settimeout(0.25)
 
-    tracker = RtpGapTracker(sample_rate_hz=sample_rate_hz, default_frame_samples=packet_samples)
+    tracker = RtpJitterBuffer(
+        sample_rate_hz=sample_rate_hz,
+        default_frame_samples=packet_samples,
+        playout_delay_packets=jitter_delay_packets,
+    )
     packets_rx = 0
     malformed_packets = 0
     first_peer: Optional[str] = None
@@ -277,9 +344,10 @@ def main() -> None:
         help="Expected samples per packet",
     )
     parser.add_argument("--channels", type=int, default=2, help="Output channels for the loopback device")
-    parser.add_argument("--target-rms", type=float, default=0.18, help="Post-gain target RMS for low-level speech")
-    parser.add_argument("--max-gain", type=float, default=8.0, help="Maximum post-gain multiplier")
-    parser.add_argument("--min-gain", type=float, default=1.0, help="Minimum post-gain multiplier")
+    parser.add_argument("--target-rms", type=float, default=0.12, help="Post-gain target RMS for low-level speech")
+    parser.add_argument("--max-gain", type=float, default=4.0, help="Maximum post-gain multiplier")
+    parser.add_argument("--min-gain", type=float, default=0.35, help="Minimum post-gain multiplier")
+    parser.add_argument("--jitter-delay-packets", type=int, default=2, help="Receiver RTP reorder delay in packets")
     args = parser.parse_args()
     run_receiver(
         bind_host=args.bind,
@@ -291,6 +359,7 @@ def main() -> None:
         target_rms=args.target_rms,
         max_gain=args.max_gain,
         min_gain=args.min_gain,
+        jitter_delay_packets=args.jitter_delay_packets,
     )
 
 

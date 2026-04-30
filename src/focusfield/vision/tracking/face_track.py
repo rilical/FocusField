@@ -74,6 +74,7 @@ class CameraTracker:
         self._detect_width = int(face_cfg.get("detect_width", 360))
         self._detect_every_n = max(1, int(face_cfg.get("detect_every_n", 1)))
         self._min_age_frames = int(track_cfg.get("min_age_frames", 2))
+        self._publish_missing_frames = max(0, int(track_cfg.get("publish_missing_frames", 2) or 2))
         self._smoother = TrackSmoother(
             iou_threshold=float(face_cfg.get("iou_threshold", 0.3)),
             max_missing_frames=int(track_cfg.get("max_missing_frames", face_cfg.get("max_missing_frames", 10))),
@@ -162,7 +163,7 @@ class CameraTracker:
 
         output_tracks: List[Dict[str, Any]] = []
         for track in tracks:
-            if not track.matched:
+            if not track.matched and track.missing_frames > self._publish_missing_frames:
                 continue
             if track.age_frames < self._min_age_frames:
                 continue
@@ -170,7 +171,17 @@ class CameraTracker:
             if _bbox_area(bbox) < self._min_area:
                 continue
             track_key = f"{self._camera_id}-{track.track_id}"
-            visual = self._estimate_visual_state(track_key, frame, bbox, width, height, mesh_faces)
+            if track.matched:
+                visual = self._estimate_visual_state(track_key, frame, bbox, width, height, mesh_faces)
+            else:
+                visual = {
+                    "mouth_activity": 0.0,
+                    "visual_speaking_prob": 0.0,
+                    "visual_quality": 0.0,
+                    "motion_activity": 0.0,
+                    "landmark_presence": 0.0,
+                    "backend": "held",
+                }
             speaking_tracker = self._speaking.get(track.track_id)
             if speaking_tracker is None:
                 speaking_tracker = SpeakingHysteresis(
@@ -180,7 +191,7 @@ class CameraTracker:
                     min_off_frames=self._speak_off_frames,
                 )
                 self._speaking[track.track_id] = speaking_tracker
-            speaking = speaking_tracker.update(_speaking_activity_from_visual(visual))
+            speaking = speaking_tracker.update(_speaking_activity_from_visual(visual)) if track.matched else False
             bearing = bearing_from_bbox(
                 bbox=bbox,
                 frame_width=width,
@@ -207,6 +218,8 @@ class CameraTracker:
                         "speaking": speaking,
                         "track_age_frames": int(track.age_frames),
                         "detector_backend": self._detector_kind,
+                        "detection_status": "matched" if track.matched else "held",
+                        "missing_frames": int(track.missing_frames),
                         "camera_id": self._camera_id,
                     }
                 )

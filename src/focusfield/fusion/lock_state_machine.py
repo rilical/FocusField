@@ -173,8 +173,15 @@ class LockStateMachine:
             self._seq += 1
             return self._build_output(t_ns, reason, evidence)
 
+        selection_candidates = candidate_list
+        fresh_visual_candidates = bool(evidence.get("faces_fresh", False)) and bool(evidence.get("faces_present", False)) and any(
+            _infer_mode(cand) != "AUDIO_ONLY" for cand in candidate_list
+        )
+        if fresh_visual_candidates:
+            selection_candidates = [cand for cand in candidate_list if _infer_mode(cand) != "AUDIO_ONLY"]
+
         best = _best_candidate(
-            candidate_list,
+            selection_candidates,
             self._speak_on,
             self._require_speaking and (self._require_visual_speaking_for_visual_lock or not vad_speech),
             self._priority_policy,
@@ -185,7 +192,7 @@ class LockStateMachine:
             self._require_visual_speaking_for_visual_lock,
             vad_speech,
         )
-        runner_up_score = _runner_up_focus_score(candidate_list, best)
+        runner_up_score = _runner_up_focus_score(selection_candidates, best)
         reason = "no_candidates"
 
         if self._state == "NO_LOCK":
@@ -269,6 +276,14 @@ class LockStateMachine:
                 self._target_mode = _infer_mode(best)
                 reason = "maintain"
             else:
+                if self._target_mode == "AUDIO_ONLY" and fresh_visual_candidates:
+                    if self._lock_to(best, t_ns, force=True):
+                        self._update_selected_metrics(best, runner_up_score)
+                        reason = "audio_only_yield_visual"
+                    else:
+                        reason = "audio_only_yield_throttled"
+                    self._seq += 1
+                    return self._build_output(t_ns, reason, evidence)
                 incumbent = _candidate_by_track_id(candidate_list, self._target_id)
                 if self._should_hold_incumbent_for_handoff_margin(best, incumbent, t_ns):
                     self._state = "LOCKED"
@@ -343,9 +358,9 @@ class LockStateMachine:
             },
         }
 
-    def _lock_to(self, candidate: Dict[str, Any], t_ns: int) -> bool:
+    def _lock_to(self, candidate: Dict[str, Any], t_ns: int, *, force: bool = False) -> bool:
         if self._target_id is not None and candidate["track_id"] != self._target_id:
-            if self._last_switch_ns and (t_ns - self._last_switch_ns) < int(self._min_switch_interval_ms * 1_000_000):
+            if not force and self._last_switch_ns and (t_ns - self._last_switch_ns) < int(self._min_switch_interval_ms * 1_000_000):
                 return False
         self._state = "LOCKED"
         self._target_id = candidate["track_id"]
@@ -575,9 +590,10 @@ def _candidate_counts_as_speaking(
     require_explicit_visual_speaking: bool = False,
     vad_speech: bool = False,
 ) -> bool:
-    if candidate.get("speaking"):
+    mode = _infer_mode(candidate)
+    if candidate.get("speaking") and (not require_explicit_visual_speaking or mode == "AUDIO_ONLY"):
         return True
-    if require_explicit_visual_speaking and _infer_mode(candidate) != "AUDIO_ONLY":
+    if require_explicit_visual_speaking and mode != "AUDIO_ONLY":
         score_components = candidate.get("score_components", {})
         if not isinstance(score_components, dict):
             return False

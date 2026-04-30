@@ -287,6 +287,8 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
     top_focus_score = float(top_candidates[0].get("focus_score", 0.0)) if top_candidates else 0.0
     runner_up_focus_score = float(top_candidates[1].get("focus_score", 0.0)) if len(top_candidates) > 1 else 0.0
     audio_route_summary = _summarize_audio_route(runtime_cfg, output_state if isinstance(output_state, dict) else {})
+    output_health = _derive_output_health(output_state if isinstance(output_state, dict) else {})
+    beamforming_summary = _derive_beamforming_summary(beam_state, doa_confidence)
     return {
         "t_ns": now_ns(),
         "seq": seq,
@@ -335,6 +337,8 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
                 "motion_activity": face.get("motion_activity"),
                 "landmark_presence": face.get("landmark_presence"),
                 "visual_backend": face.get("visual_backend"),
+                "detection_status": face.get("detection_status", "matched"),
+                "missing_frames": face.get("missing_frames", 0),
             }
             for face in faces
         ],
@@ -343,6 +347,8 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
         "mic_health": state.get("mic_health") or {},
         "mic_health_summary": mic_health_summary,
         "output_summary": output_state if isinstance(output_state, dict) else {},
+        "output_health": output_health,
+        "beamforming_summary": beamforming_summary,
         "audio_route_summary": audio_route_summary,
         "uma8_leds": {
             "enabled": bool(led_state.get("enabled", False)),
@@ -417,6 +423,45 @@ def _build_snapshot(state: Dict[str, Any], seq: int) -> Dict[str, Any]:
             },
         },
 }
+
+
+def _derive_output_health(output_state: Dict[str, Any]) -> Dict[str, Any]:
+    underrun_window = int(output_state.get("underrun_window", 0) or 0)
+    device_error_window = int(output_state.get("device_error_window", 0) or 0)
+    input_age_ms = output_state.get("input_age_ms")
+    occupancy_ratio = output_state.get("occupancy_ratio")
+    if occupancy_ratio is None:
+        capacity = int(output_state.get("buffer_capacity_frames", 0) or 0)
+        occupancy = int(output_state.get("occupancy_frames", 0) or 0)
+        occupancy_ratio = float(occupancy / capacity) if capacity > 0 else None
+    reasons: List[str] = []
+    if device_error_window > 0:
+        reasons.append("device_error")
+    if underrun_window > 0:
+        reasons.append("underrun")
+    if occupancy_ratio is not None and float(occupancy_ratio) >= 0.85:
+        reasons.append("buffer_high")
+    if input_age_ms is not None and float(input_age_ms) > 250.0:
+        reasons.append("stale_input")
+    return {
+        "status": "degraded" if reasons else "ok",
+        "reasons": reasons,
+        "underrun_window": underrun_window,
+        "device_error_window": device_error_window,
+        "occupancy_ratio": float(occupancy_ratio) if occupancy_ratio is not None else None,
+        "input_age_ms": float(input_age_ms) if input_age_ms is not None else None,
+    }
+
+
+def _derive_beamforming_summary(beam_state: Dict[str, Any], doa_confidence: float) -> Dict[str, Any]:
+    return {
+        "method": beam_state.get("method", ""),
+        "mode": beam_state.get("beam_mode", beam_state.get("method", "")),
+        "target_bearing_deg": beam_state.get("target_bearing_deg"),
+        "fallback_active": bool(beam_state.get("fallback_active", False)),
+        "confidence": float(doa_confidence),
+        "active_channels": beam_state.get("active_channels", []),
+    }
 
 
 def _summarize_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

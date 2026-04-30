@@ -170,6 +170,7 @@ def start_av_association(
                     camera_lookup=camera_lookup,
                     visual_override_min=visual_override_min,
                     disagreement_penalty=disagreement_penalty,
+                    vad_max_age_ms=vad_max_age_ms,
                 )
                 if not candidates:
                     logger.emit("debug", "fusion.av_association", "no_candidates", {"reason": "faces_only"})
@@ -226,6 +227,7 @@ def start_av_association(
                     camera_lookup=camera_lookup,
                     visual_override_min=visual_override_min,
                     disagreement_penalty=disagreement_penalty,
+                    vad_max_age_ms=vad_max_age_ms,
                 )
                 if not candidates:
                     logger.emit("debug", "fusion.av_association", "no_candidates", {"reason": "no_assoc"})
@@ -313,10 +315,11 @@ def _build_candidates(
     camera_lookup: Optional[Any] = None,
     visual_override_min: float = 0.0,
     disagreement_penalty: float = 0.0,
+    vad_max_age_ms: float = 400.0,
 ) -> List[Dict[str, Any]]:
     peaks = doa_heatmap.get("peaks", []) if doa_heatmap else []
     doa_confidence = float(doa_heatmap.get("confidence", 0.0) or 0.0) if doa_heatmap else 0.0
-    audio_speech_prob = _speech_probability(vad_state)
+    audio_speech_prob = _fresh_speech_probability(vad_state, vad_max_age_ms)
     mic_health_score, mic_health_trust = _mic_health_summary(mic_health)
     if weights is None:
         weights = {}
@@ -638,6 +641,17 @@ def _speech_probability(vad_state: Optional[Dict[str, Any]]) -> float:
         return 0.0
     confidence = float(vad_state.get("speech_probability", vad_state.get("confidence", 0.0)) or 0.0)
     return float(max(0.0, min(1.0, confidence)))
+
+
+def _fresh_speech_probability(vad_state: Optional[Dict[str, Any]], max_age_ms: float) -> float:
+    if not isinstance(vad_state, dict):
+        return 0.0
+    vad_t_ns = int(vad_state.get("t_ns", 0) or 0)
+    if not vad_t_ns:
+        return 0.0
+    if (now_ns() - vad_t_ns) / 1_000_000.0 > float(max_age_ms):
+        return 0.0
+    return _speech_probability(vad_state)
 
 
 def _mic_health_summary(mic_health: Optional[Dict[str, Any]]) -> Tuple[float, float]:

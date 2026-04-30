@@ -14,7 +14,7 @@ from focusfield.audio.output.rtp_pcm import (
     rtp_l16_wire_bytes,
 )
 from focusfield.core.config import validate_config
-from focusfield.tools.rtp_loopback_rx import RtpGapTracker, parse_packet_or_none
+from focusfield.tools.rtp_loopback_rx import RtpGapTracker, RtpJitterBuffer, parse_packet_or_none
 
 
 class RtpPcmPathTests(unittest.TestCase):
@@ -110,6 +110,52 @@ class RtpPcmPathTests(unittest.TestCase):
         self.assertLess(abs(float(out[0]["data"][-1])), 0.1)
         self.assertAlmostEqual(float(out[1]["data"][0]), 0.0, places=6)
         self.assertGreater(float(out[1]["data"][-1]), 0.35)
+
+    def test_jitter_buffer_reorders_packet_within_playout_delay(self) -> None:
+        jitter = RtpJitterBuffer(sample_rate_hz=48000, default_frame_samples=4, playout_delay_packets=1)
+        pkt10 = parse_rtp_packet(
+            build_rtp_packet(encode_l16_samples(np.ones(4, dtype=np.float32) * 0.10), seq=10, timestamp=1000, ssrc=1)
+        )
+        pkt12 = parse_rtp_packet(
+            build_rtp_packet(encode_l16_samples(np.ones(4, dtype=np.float32) * 0.12), seq=12, timestamp=1008, ssrc=1)
+        )
+        pkt11 = parse_rtp_packet(
+            build_rtp_packet(encode_l16_samples(np.ones(4, dtype=np.float32) * 0.11), seq=11, timestamp=1004, ssrc=1)
+        )
+
+        self.assertEqual(jitter.process(pkt10, t_ns=100), [])
+        out = jitter.process(pkt12, t_ns=200)
+        self.assertEqual(len(out), 1)
+        np.testing.assert_allclose(out[0]["data"], np.ones(4, dtype=np.float32) * 0.10, atol=1.5 / 32767.0)
+
+        out = jitter.process(pkt11, t_ns=300)
+        self.assertEqual(len(out), 1)
+        np.testing.assert_allclose(out[0]["data"], np.ones(4, dtype=np.float32) * 0.11, atol=1.5 / 32767.0)
+
+        out = jitter.flush(t_ns=400)
+        self.assertEqual(len(out), 1)
+        np.testing.assert_allclose(out[0]["data"], np.ones(4, dtype=np.float32) * 0.12, atol=1.5 / 32767.0)
+
+    def test_jitter_buffer_conceals_gap_after_playout_delay(self) -> None:
+        jitter = RtpJitterBuffer(sample_rate_hz=48000, default_frame_samples=4, playout_delay_packets=1, max_gap_packets=3)
+        pkt10 = parse_rtp_packet(
+            build_rtp_packet(encode_l16_samples(np.ones(4, dtype=np.float32) * 0.10), seq=10, timestamp=1000, ssrc=1)
+        )
+        pkt12 = parse_rtp_packet(
+            build_rtp_packet(encode_l16_samples(np.ones(4, dtype=np.float32) * 0.12), seq=12, timestamp=1008, ssrc=1)
+        )
+        pkt13 = parse_rtp_packet(
+            build_rtp_packet(encode_l16_samples(np.ones(4, dtype=np.float32) * 0.13), seq=13, timestamp=1012, ssrc=1)
+        )
+
+        self.assertEqual(jitter.process(pkt10, t_ns=100), [])
+        self.assertEqual(len(jitter.process(pkt12, t_ns=200)), 1)
+        out = jitter.process(pkt13, t_ns=300)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(jitter.gap_fills, 1)
+        self.assertLess(abs(float(out[0]["data"][-1])), 0.1)
+        self.assertAlmostEqual(float(out[1]["data"][0]), 0.0, places=6)
+        self.assertGreater(float(out[1]["data"][-1]), 0.08)
 
 
 if __name__ == "__main__":

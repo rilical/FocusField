@@ -31,6 +31,27 @@ class OutputPathHardeningTests(unittest.TestCase):
         self.assertGreaterEqual(float(stats["clipped"]), 0.0)
         self.assertLessEqual(float(stats["peak"]), 0.5)
 
+    def test_agc_holds_gain_on_silence_and_can_attenuate_hot_input(self) -> None:
+        agc = AdaptiveGainLimiter(
+            enabled=True,
+            target_rms=0.1,
+            max_gain=4.0,
+            min_gain=0.35,
+            attack_alpha=0.0,
+            release_alpha=0.0,
+            silence_rms=0.01,
+        )
+        silence = np.zeros(512, dtype=np.float32)
+        out, stats = agc.process(silence)
+        self.assertTrue(np.allclose(out, 0.0))
+        self.assertAlmostEqual(float(stats["gain"]), 1.0, places=6)
+        self.assertTrue(bool(stats["gain_held"]))
+
+        hot = np.ones(512, dtype=np.float32) * 0.5
+        out, stats = agc.process(hot)
+        self.assertLess(float(stats["gain"]), 1.0)
+        self.assertLess(float(stats["rms"]), 0.2)
+
     def test_output_sink_routes_usb_mic_and_host_loopback(self) -> None:
         bus = Bus(max_queue_depth=4)
         logger = MagicMock()

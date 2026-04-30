@@ -22,6 +22,7 @@ class AdaptiveGainLimiter:
     attack_alpha: float = 0.30
     release_alpha: float = 0.94
     limiter_threshold: float = 0.92
+    silence_rms: float = 0.005
     _gain: float = 1.0
 
     @classmethod
@@ -40,16 +41,29 @@ class AdaptiveGainLimiter:
             attack_alpha=float(agc_cfg.get("attack_alpha", 0.30) or 0.30),
             release_alpha=float(agc_cfg.get("release_alpha", 0.94) or 0.94),
             limiter_threshold=float(agc_cfg.get("limiter_threshold", 0.92) or 0.92),
+            silence_rms=float(agc_cfg.get("silence_rms", 0.005) or 0.005),
         )
 
     def process(self, frame: np.ndarray, logger: Any = None, module_name: str = "audio.enhance.agc_post") -> Tuple[np.ndarray, Dict[str, float]]:
         x = np.asarray(frame, dtype=np.float32).reshape(-1)
         if x.size == 0:
-            return x, {"gain": float(self._gain), "rms": 0.0, "peak": 0.0, "clipped": 0.0}
+            return x, {"gain": float(self._gain), "rms": 0.0, "peak": 0.0, "clipped": 0.0, "gain_held": False}
         rms = float(np.sqrt(np.mean(x**2)))
         peak = float(np.max(np.abs(x)))
         if not self.enabled:
-            return x, {"gain": 1.0, "rms": rms, "peak": peak, "clipped": 0.0}
+            return x, {"gain": 1.0, "rms": rms, "peak": peak, "clipped": 0.0, "gain_held": False}
+
+        silence_rms = float(max(0.0, self.silence_rms))
+        if rms <= silence_rms:
+            self._gain = min(float(self._gain), 1.0)
+            y = (x * float(self._gain)).astype(np.float32, copy=False)
+            return y, {
+                "gain": float(self._gain),
+                "rms": float(np.sqrt(np.mean(y**2))) if y.size else 0.0,
+                "peak": float(np.max(np.abs(y))) if y.size else 0.0,
+                "clipped": 0.0,
+                "gain_held": True,
+            }
 
         desired_gain = self.target_rms / max(rms, 1e-5)
         desired_gain = float(np.clip(desired_gain, self.min_gain, self.max_gain))
@@ -86,4 +100,5 @@ class AdaptiveGainLimiter:
             "rms": float(np.sqrt(np.mean(y**2))) if y.size else 0.0,
             "peak": float(np.max(np.abs(y))) if y.size else 0.0,
             "clipped": clipped_fraction,
+            "gain_held": False,
         }

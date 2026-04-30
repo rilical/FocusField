@@ -229,6 +229,7 @@ vision:
     max_missing_frames: 20
     min_age_frames: 1
     jitter_deadband_px: 3.0
+    publish_missing_frames: 2
   mouth:
     backend: diff
     smoothing_alpha: 0.5

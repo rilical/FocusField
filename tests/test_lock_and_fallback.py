@@ -370,6 +370,26 @@ class AvAssociationSizingTests(unittest.TestCase):
         self.assertIsNotNone(fresh_cand)
         self.assertTrue(bool(fresh_cand["speaking"]))
 
+    def test_audio_only_candidate_infers_camera_sector_from_bearing(self) -> None:
+        doa_heatmap = {"seq": 1, "confidence": 0.9, "peaks": [{"angle_deg": 118.0, "score": 0.8}]}
+        cand = _build_audio_only_candidate(
+            doa_heatmap,
+            vad_state=None,
+            mic_health=None,
+            min_doa_confidence=0.45,
+            min_peak_score=0.30,
+            score_mode="confidence",
+            require_vad=False,
+            weights={},
+            camera_lookup=[
+                {"id": "cam0", "yaw_offset_deg": 0.0, "hfov_deg": 160.0},
+                {"id": "cam1", "yaw_offset_deg": 120.0, "hfov_deg": 160.0},
+                {"id": "cam2", "yaw_offset_deg": 240.0, "hfov_deg": 160.0},
+            ],
+        )
+        self.assertIsNotNone(cand)
+        self.assertEqual(cand["camera_id"], "cam1")
+
     def test_visual_first_scoring_prefers_strong_visual_face_over_audio_aligned_weak_face(self) -> None:
         weights = {
             "mouth": 0.9,

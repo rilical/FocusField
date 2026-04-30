@@ -270,7 +270,13 @@ fusion:
   vad_max_age_ms: 500
   require_speaking: true
   audio_fallback:
-    enabled: false
+    enabled: true
+    min_doa_confidence: 0.35
+    min_peak_score: 0.22
+    score_mode: max
+    require_vad: false
+    allow_when_faces_missing: true
+    face_staleness_ms: 1800
   thresholds:
     acquire_threshold: 0.24
     acquire_timeout_ms: 1200

@@ -229,6 +229,7 @@ def start_av_association(
                     weights=weights,
                     vad_max_age_ms=vad_max_age_ms,
                     audio_rescue_min=audio_rescue_min,
+                    camera_lookup=camera_sectors,
                 )
                 if audio_cand is not None:
                     candidates = [audio_cand]
@@ -469,6 +470,7 @@ def _build_audio_only_candidate(
     weights: Dict[str, float],
     vad_max_age_ms: float = 400.0,
     audio_rescue_min: float = 0.0,
+    camera_lookup: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
     if doa_heatmap is None:
         return None
@@ -506,6 +508,7 @@ def _build_audio_only_candidate(
         return None
 
     bearing = float(angle) % 360.0
+    camera_id = _camera_id_for_bearing(bearing, camera_lookup)
     combined = combine_scores(
         mouth_activity=0.0,
         face_confidence=0.0,
@@ -532,6 +535,7 @@ def _build_audio_only_candidate(
         "t_ns": now_ns(),
         "seq": int(doa_heatmap.get("seq", 0) or 0),
         "track_id": "audio:peak0",
+        "camera_id": camera_id,
         "doa_peak_deg": bearing,
         "angular_distance_deg": 0.0,
         "score_components": {
@@ -560,6 +564,25 @@ def _build_audio_only_candidate(
             "disagreement_suppressed": False,
         },
     }
+
+
+def _camera_id_for_bearing(bearing_deg: float, camera_lookup: Optional[Any]) -> Optional[str]:
+    camera_sectors = _normalize_camera_lookup(camera_lookup)
+    if not camera_sectors:
+        return None
+    bearing = float(bearing_deg) % 360.0
+    best_id: Optional[str] = None
+    best_error = 181.0
+    for camera_id, sector in camera_sectors.items():
+        yaw = float(sector.get("yaw_offset_deg", 0.0) or 0.0) % 360.0
+        error = abs(_wrap_delta(bearing - yaw))
+        hfov = float(sector.get("hfov_deg", 0.0) or 0.0)
+        if hfov > 0.0 and error <= (hfov / 2.0):
+            return str(camera_id)
+        if error < best_error:
+            best_error = error
+            best_id = str(camera_id)
+    return best_id
 
 
 def _size_scale_for_track(track: Dict[str, Any], min_area: int, area_soft_max: int) -> Tuple[float, int]:

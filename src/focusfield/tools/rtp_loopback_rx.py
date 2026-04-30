@@ -186,9 +186,12 @@ def build_receiver_config(
     packet_samples: int,
     channels: int = 2,
     agc_enabled: bool = True,
-    target_rms: float = 0.12,
-    max_gain: float = 4.0,
-    min_gain: float = 0.35,
+    target_rms: float = 0.16,
+    max_gain: float = 5.0,
+    min_gain: float = 0.45,
+    attack_alpha: float = 0.30,
+    release_alpha: float = 0.88,
+    silence_rms: float = 0.004,
 ) -> Dict[str, Any]:
     return {
         "audio": {
@@ -199,6 +202,9 @@ def build_receiver_config(
                 "target_rms": float(target_rms),
                 "max_gain": float(max_gain),
                 "min_gain": float(min_gain),
+                "attack_alpha": float(attack_alpha),
+                "release_alpha": float(release_alpha),
+                "silence_rms": float(silence_rms),
             },
         },
         "output": {
@@ -242,6 +248,9 @@ def run_receiver(
     target_rms: float,
     max_gain: float,
     min_gain: float,
+    attack_alpha: float = 0.30,
+    release_alpha: float = 0.88,
+    silence_rms: float = 0.004,
     jitter_delay_packets: int = 2,
 ) -> None:
     bus = Bus(max_queue_depth=64)
@@ -256,6 +265,9 @@ def run_receiver(
         target_rms=target_rms,
         max_gain=max_gain,
         min_gain=min_gain,
+        attack_alpha=attack_alpha,
+        release_alpha=release_alpha,
+        silence_rms=silence_rms,
     )
     sink_thread = start_output_sink(bus, config, logger, stop_event)
     if sink_thread is None:
@@ -344,9 +356,12 @@ def main() -> None:
         help="Expected samples per packet",
     )
     parser.add_argument("--channels", type=int, default=2, help="Output channels for the loopback device")
-    parser.add_argument("--target-rms", type=float, default=0.12, help="Post-gain target RMS for low-level speech")
-    parser.add_argument("--max-gain", type=float, default=4.0, help="Maximum post-gain multiplier")
-    parser.add_argument("--min-gain", type=float, default=0.35, help="Minimum post-gain multiplier")
+    parser.add_argument("--target-rms", type=float, default=0.16, help="Post-gain target RMS for low-level speech")
+    parser.add_argument("--max-gain", type=float, default=5.0, help="Maximum post-gain multiplier")
+    parser.add_argument("--min-gain", type=float, default=0.45, help="Minimum post-gain multiplier")
+    parser.add_argument("--attack-alpha", type=float, default=0.30, help="Post-gain smoothing when reducing gain")
+    parser.add_argument("--release-alpha", type=float, default=0.88, help="Post-gain smoothing when raising gain")
+    parser.add_argument("--silence-rms", type=float, default=0.004, help="Input RMS below which receiver gain is held")
     parser.add_argument("--jitter-delay-packets", type=int, default=2, help="Receiver RTP reorder delay in packets")
     args = parser.parse_args()
     run_receiver(
@@ -359,6 +374,9 @@ def main() -> None:
         target_rms=args.target_rms,
         max_gain=args.max_gain,
         min_gain=args.min_gain,
+        attack_alpha=args.attack_alpha,
+        release_alpha=args.release_alpha,
+        silence_rms=args.silence_rms,
         jitter_delay_packets=args.jitter_delay_packets,
     )
 

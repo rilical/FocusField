@@ -14,10 +14,20 @@ from focusfield.audio.output.rtp_pcm import (
     rtp_l16_wire_bytes,
 )
 from focusfield.core.config import validate_config
-from focusfield.tools.rtp_loopback_rx import RtpGapTracker, RtpJitterBuffer, parse_packet_or_none
+from focusfield.tools.rtp_loopback_rx import RtpGapTracker, RtpJitterBuffer, build_receiver_config, parse_packet_or_none
 
 
 class RtpPcmPathTests(unittest.TestCase):
+    def test_loopback_receiver_defaults_are_loud_enough_for_browser_mic_tests(self) -> None:
+        cfg = build_receiver_config(device_name="BlackHole 2ch", sample_rate_hz=48000, packet_samples=480)
+        agc = cfg["audio"]["agc_post"]
+
+        self.assertEqual(agc["target_rms"], 0.16)
+        self.assertEqual(agc["max_gain"], 5.0)
+        self.assertEqual(agc["min_gain"], 0.45)
+        self.assertLessEqual(agc["release_alpha"], 0.88)
+        self.assertLessEqual(agc["silence_rms"], 0.004)
+
     def test_validate_config_rejects_missing_rtp_host_and_bad_port(self) -> None:
         cfg = {
             "output": {

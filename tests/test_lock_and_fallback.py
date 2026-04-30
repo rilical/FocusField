@@ -1,6 +1,7 @@
 import unittest
 import threading
 import queue
+import time
 
 from focusfield.core.bus import Bus
 from focusfield.core.clock import now_ns
@@ -79,6 +80,41 @@ class LockStateMachineTests(unittest.TestCase):
         self.assertEqual(msg["state"], "LOCKED")
         self.assertEqual(msg["mode"], "AUDIO_ONLY")
         self.assertIsNotNone(msg["target_bearing_deg"])
+
+    def test_audio_only_target_drops_when_fresh_visual_has_no_candidate(self) -> None:
+        config = {"fusion": {"thresholds": {"acquire_threshold": 0.40, "hold_ms": 800}}}
+        machine = LockStateMachine(config)
+        acquired = machine.update(
+            [
+                {
+                    "track_id": "audio:peak0",
+                    "bearing_deg": 123.0,
+                    "combined_score": 0.9,
+                    "speaking": True,
+                    "doa_peak_deg": 123.0,
+                    "score_components": {"doa_peak_score": 1.0},
+                }
+            ],
+            vad_state={"t_ns": now_ns(), "speech": True},
+        )
+        self.assertEqual(acquired["state"], "LOCKED")
+        self.assertEqual(acquired["mode"], "AUDIO_ONLY")
+
+        dropped = machine.update(
+            {
+                "candidates": [],
+                "evidence": {
+                    "reason": "recent_faces_unassociated",
+                    "faces_present": True,
+                    "faces_fresh": True,
+                    "audio_fresh": True,
+                },
+            },
+            vad_state={"t_ns": now_ns(), "speech": True},
+        )
+        self.assertEqual(dropped["state"], "NO_LOCK")
+        self.assertEqual(dropped["reason"], "audio_only_suppressed_by_fresh_visual")
+        self.assertIsNone(dropped["target_id"])
 
     def test_vad_speech_does_not_acquire_silent_visual_when_visual_speaking_required(self) -> None:
         config = {
@@ -562,6 +598,75 @@ class AvAssociationSizingTests(unittest.TestCase):
         self.assertEqual(msg["evidence"]["reason"], "audio_rescue")
         self.assertEqual(len(msg["candidates"]), 1)
         self.assertEqual(msg["candidates"][0]["camera_id"], "cam1")
+
+    def test_av_association_suppresses_audio_fallback_after_recent_faces_clear(self) -> None:
+        bus = Bus()
+        stop_event = threading.Event()
+        q_candidates = bus.subscribe("fusion.candidates")
+        thread = start_av_association(
+            bus,
+            {
+                "video": {
+                    "cameras": [
+                        {"id": "cam0", "yaw_offset_deg": 0.0, "hfov_deg": 160.0},
+                        {"id": "cam1", "yaw_offset_deg": 120.0, "hfov_deg": 160.0},
+                    ]
+                },
+                "fusion": {
+                    "visual_freshness_ms": 1200,
+                    "audio_fallback": {
+                        "enabled": True,
+                        "min_doa_confidence": 0.35,
+                        "min_peak_score": 0.22,
+                        "score_mode": "max",
+                    },
+                    "audio_rescue_min": 0.0,
+                },
+            },
+            _NoopLogger(),
+            stop_event,
+        )
+        try:
+            bus.publish(
+                "vision.face_tracks",
+                [
+                    {
+                        "seq": 1,
+                        "track_id": "cam0-1",
+                        "camera_id": "cam0",
+                        "bearing_deg": 0.0,
+                        "mouth_activity": 0.0,
+                        "visual_speaking_prob": 0.0,
+                        "confidence": 1.0,
+                        "speaking": False,
+                    }
+                ],
+            )
+            first = q_candidates.get(timeout=1.0)
+            self.assertEqual(first["evidence"]["reason"], "faces_only")
+
+            bus.publish("vision.face_tracks", [])
+            time.sleep(0.02)
+            bus.publish("audio.doa_heatmap", {"seq": 2, "confidence": 0.8, "peaks": [{"angle_deg": 118.0, "score": 0.9}]})
+
+            msg = None
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                candidate_msg = q_candidates.get(timeout=max(0.01, deadline - time.monotonic()))
+                if candidate_msg["evidence"]["reason"] == "recent_faces_unassociated":
+                    msg = candidate_msg
+                    break
+            if msg is None:
+                self.fail("expected recent_faces_unassociated candidate envelope")
+        except queue.Empty as exc:
+            self.fail(f"expected candidate envelope: {exc}")
+        finally:
+            stop_event.set()
+            thread.join(timeout=1.0)
+
+        self.assertEqual(msg["candidates"], [])
+        self.assertTrue(bool(msg["evidence"]["faces_present"]))
+        self.assertTrue(bool(msg["evidence"]["faces_fresh"]))
 
     def test_visual_first_scoring_prefers_strong_visual_face_over_audio_aligned_weak_face(self) -> None:
         weights = {

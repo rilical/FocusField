@@ -243,6 +243,14 @@ class LockStateMachine:
                         reason = "acquire_wait"
         else:
             if not best:
+                fresh_visual_present = bool(evidence.get("faces_fresh", False)) and (
+                    bool(evidence.get("faces_present", False)) or bool(candidate_list)
+                )
+                if self._target_mode == "AUDIO_ONLY" and fresh_visual_present:
+                    self._clear()
+                    reason = "audio_only_suppressed_by_fresh_visual"
+                    self._seq += 1
+                    return self._build_output(t_ns, reason, evidence)
                 if self._within_hold(t_ns):
                     self._state = "HOLD"
                     reason = "visual_stale_hold" if bool(evidence.get("visual_stale", False)) else "hold_no_candidates"

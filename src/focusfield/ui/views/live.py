@@ -1159,16 +1159,18 @@ function drawOverlay(canvas, img, faces, targetId, lockState) {
     const isTarget   = targetId && face.track_id === targetId;
     const isSpeaking = face.speaking;
     const showTarget = isTarget && lockState === 'LOCKED';
-    if (!showTarget && !isSpeaking) continue;
+    const isIdle = !showTarget && !isSpeaking;
 
     let color;
     if (showTarget)      color = '#3fb950';
     else if (isSpeaking) color = '#f0883e';
-    else                 color = 'rgba(255,255,255,0.65)';
+    else                 color = 'rgba(180,196,216,0.55)';
 
     ctx.strokeStyle = color;
-    ctx.lineWidth   = showTarget ? 2.5 : 1.5;
+    ctx.lineWidth   = showTarget ? 2.5 : (isSpeaking ? 1.8 : 1.1);
+    ctx.setLineDash(isIdle ? [5, 4] : []);
     ctx.strokeRect(bbox.x, bbox.y, bbox.w, bbox.h);
+    ctx.setLineDash([]);
 
     // Label
     const mouthStr = face.mouth_activity != null ? face.mouth_activity.toFixed(2) : '';

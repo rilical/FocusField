@@ -95,13 +95,14 @@ def start_av_association(
 
     last_faces: Optional[List[Dict[str, Any]]] = None
     last_faces_update_ns: int = 0
+    last_nonempty_faces_update_ns: int = 0
     last_doa: Optional[Dict[str, Any]] = None
     last_doa_update_ns: int = 0
     last_vad: Optional[Dict[str, Any]] = None
     last_mic_health: Optional[Dict[str, Any]] = None
 
     def _run() -> None:
-        nonlocal last_doa, last_doa_update_ns, last_faces, last_faces_update_ns, last_vad, last_mic_health
+        nonlocal last_doa, last_doa_update_ns, last_faces, last_faces_update_ns, last_nonempty_faces_update_ns, last_vad, last_mic_health
 
         def _drain_latest(q: queue.Queue) -> Optional[Any]:
             item = None
@@ -128,6 +129,8 @@ def start_av_association(
             if faces is not None:
                 last_faces = faces
                 last_faces_update_ns = now_ns()
+                if isinstance(faces, list) and len(faces) > 0:
+                    last_nonempty_faces_update_ns = last_faces_update_ns
                 if trigger is None:
                     trigger = "faces"
 
@@ -145,6 +148,9 @@ def start_av_association(
             now_t_ns = now_ns()
             faces_fresh = bool(last_faces_update_ns) and (now_t_ns - last_faces_update_ns) <= int(visual_freshness_ms * 1_000_000)
             faces_present = bool(last_faces) and len(last_faces) > 0
+            recent_faces_present = bool(last_nonempty_faces_update_ns) and (
+                now_t_ns - last_nonempty_faces_update_ns
+            ) <= int(visual_freshness_ms * 1_000_000)
 
             doa_fresh = bool(last_doa_update_ns) and (now_t_ns - last_doa_update_ns) <= int(500.0 * 1_000_000)
             vad_fresh = False
@@ -183,6 +189,28 @@ def start_av_association(
 
             # If DOA is healthy, only publish on DOA updates to keep cadence stable.
             if trigger != "doa":
+                continue
+
+            if recent_faces_present and not faces_present and faces_fresh:
+                candidates = []
+                logger.emit(
+                    "debug",
+                    "fusion.av_association",
+                    "no_candidates",
+                    {"reason": "recent_faces_unassociated", "faces_fresh": True},
+                )
+                bus.publish("fusion.candidates", _candidate_message(
+                    candidates,
+                    _candidate_evidence(
+                        reason="recent_faces_unassociated",
+                        faces_present=True,
+                        faces_fresh=True,
+                        doa_fresh=doa_fresh,
+                        vad_fresh=vad_fresh,
+                        vad_speech=bool((last_vad or {}).get("speech", False)),
+                        candidates=candidates,
+                    ),
+                ))
                 continue
 
             if faces_present and faces_fresh:

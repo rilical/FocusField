@@ -6,7 +6,7 @@ from focusfield.audio.devices import AudioDeviceInfo
 from focusfield.core.config import load_config, validate_config
 from focusfield.main.run import _validate_runtime_requirements
 from focusfield.platform import hardware_probe
-from focusfield.vision.cameras import _camera_loop, _resolve_runtime_camera_sources
+from focusfield.vision.cameras import _camera_candidates, _camera_loop, _resolve_runtime_camera_sources
 
 
 class _DummyLogger:
@@ -240,6 +240,18 @@ class PiContractTests(unittest.TestCase):
             hardware_probe.source_to_open_target("/dev/video0"),
             "/dev/video0",
         )
+
+    def test_camera_candidates_try_current_resolved_index_before_stale_config_index(self) -> None:
+        with patch("focusfield.platform.hardware_probe.os.path.realpath", return_value="/dev/video9"):
+            with patch("focusfield.platform.hardware_probe.is_capture_node", return_value=True):
+                with patch("focusfield.vision.cameras.is_capture_node", return_value=True):
+                    candidates = _camera_candidates(
+                        "/dev/v4l/by-path/usb-0:1.1.3:1.0-video-index0",
+                        4,
+                        strict_capture=True,
+                    )
+
+        self.assertEqual(candidates, ["/dev/video9", 9, 4])
 
     def test_runtime_camera_sources_rebind_stale_video_nodes_to_usb_by_path(self) -> None:
         cameras = [

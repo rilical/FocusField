@@ -254,7 +254,16 @@ def _to_mono(frame: np.ndarray) -> np.ndarray:
     if frame.ndim == 1:
         return frame.astype(np.float32, copy=False)
     if frame.ndim == 2:
-        return np.mean(frame, axis=1).astype(np.float32)
+        data = frame.astype(np.float32, copy=False)
+        if data.shape[1] == 0:
+            return np.zeros((data.shape[0],), dtype=np.float32)
+        rms = np.sqrt(np.mean(data * data, axis=0))
+        if not np.any(np.isfinite(rms)):
+            return np.mean(data, axis=1).astype(np.float32)
+        best_channel = int(np.nanargmax(rms))
+        if float(rms[best_channel]) <= 1e-9:
+            return np.mean(data, axis=1).astype(np.float32)
+        return data[:, best_channel].astype(np.float32, copy=False)
     return frame.reshape(-1).astype(np.float32)
 
 

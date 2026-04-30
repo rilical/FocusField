@@ -51,6 +51,11 @@ class LiveViewOperatorTruthContractTests(unittest.TestCase):
         self.assertIn("tile.classList.toggle('camera-stale', isStale)", self.html)
         self.assertIn("NO SIGNAL", self.html)
 
+    def test_live_page_draws_idle_face_boxes_for_calibration_visibility(self) -> None:
+        self.assertIn("const isIdle = !showTarget && !isSpeaking", self.html)
+        self.assertIn("ctx.setLineDash(isIdle ? [5, 4] : [])", self.html)
+        self.assertNotIn("if (!showTarget && !isSpeaking) continue;", self.html)
+
     def test_live_page_has_responsive_operator_dashboard_breakpoints(self) -> None:
         self.assertIn("@media (max-width: 900px)", self.html)
         self.assertIn("@media (max-width: 700px)", self.html)

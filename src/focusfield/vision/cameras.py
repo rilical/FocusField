@@ -642,6 +642,12 @@ def _camera_candidates(
         )
         if not candidates:
             candidates.append(device_path.strip())
+        for candidate in list(candidates):
+            if not isinstance(candidate, str):
+                continue
+            resolved_index = video_index_for_source(candidate)
+            if resolved_index is not None and resolved_index not in candidates:
+                candidates.append(resolved_index)
 
     try:
         index_candidate = int(device_index)

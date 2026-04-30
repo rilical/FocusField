@@ -20,7 +20,7 @@ import focusfield.main.runtime_support as runtime_support
 from focusfield.main.runtime_multiprocess import _decode_payload, _encode_payload  # noqa: PLC2701
 from focusfield.main.runtime_support import apply_runtime_os_tuning
 from focusfield.vision.mouth.mouth_activity import TFLiteMouthEstimator, _ensure_task_model_path, _ensure_tflite_model_path  # noqa: PLC2701
-from focusfield.vision.tracking.face_track import CameraTracker, _ensure_yunet_model, _visual_state_from_features  # noqa: PLC2701
+from focusfield.vision.tracking.face_track import CameraTracker, _ensure_yunet_model, _speaking_activity_from_visual, _visual_state_from_features  # noqa: PLC2701
 from focusfield.vision.tracking.track_smoothing import TrackSmoother
 
 
@@ -113,6 +113,19 @@ class RuntimeExtensionsTests(unittest.TestCase):
         )
         self.assertGreater(float(speechy["visual_speaking_prob"]), float(weak["visual_speaking_prob"]))
         self.assertGreater(float(speechy["visual_quality"]), float(weak["visual_quality"]))
+
+    def test_speaking_hysteresis_uses_raw_mouth_activity_not_quality_baseline(self) -> None:
+        visual = _visual_state_from_features(
+            mouth_activity=0.0,
+            motion_activity=0.0,
+            landmark_presence=0.0,
+            edge_quality=1.0,
+            motion_weight=1.0,
+            quality_floor=0.2,
+            backend="diff",
+        )
+        self.assertGreater(float(visual["visual_speaking_prob"]), 0.0)
+        self.assertEqual(_speaking_activity_from_visual(visual), 0.0)
 
     def test_tflite_is_attempted_even_when_facemesh_is_disabled(self) -> None:
         tracker = CameraTracker.__new__(CameraTracker)

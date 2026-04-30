@@ -179,7 +179,7 @@ class CameraTracker:
                     min_off_frames=self._speak_off_frames,
                 )
                 self._speaking[track.track_id] = speaking_tracker
-            speaking = speaking_tracker.update(float(visual.get("visual_speaking_prob", 0.0)))
+            speaking = speaking_tracker.update(_speaking_activity_from_visual(visual))
             bearing = bearing_from_bbox(
                 bbox=bbox,
                 frame_width=width,
@@ -640,6 +640,14 @@ def _visual_state_from_features(
         "visual_speaking_prob": visual_prob,
         "backend": backend,
     }
+
+
+def _speaking_activity_from_visual(visual: Dict[str, Any]) -> float:
+    raw = visual.get("mouth_activity", visual.get("motion_activity", 0.0))
+    try:
+        return float(np.clip(float(raw or 0.0), 0.0, 1.0))
+    except Exception:
+        return 0.0
 
 
 def _runtime_downloads_allowed() -> bool:

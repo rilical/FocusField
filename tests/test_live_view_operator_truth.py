@@ -42,3 +42,20 @@ class LiveViewOperatorTruthContractTests(unittest.TestCase):
     def test_live_page_does_not_report_target_camera_when_state_is_no_lock(self) -> None:
         self.assertIn("if (state === 'NO_LOCK')", self.html)
         self.assertIn("return '—';", self.html)
+
+    def test_live_page_marks_stale_camera_frames_from_health_topics(self) -> None:
+        self.assertIn('id="cam1-status"', self.html)
+        self.assertIn("const CAMERA_STALE_MS = 1500;", self.html)
+        self.assertIn("cameraFrameHealth(data, camId)", self.html)
+        self.assertIn("topics['vision.frames.' + camId]", self.html)
+        self.assertIn("tile.classList.toggle('camera-stale', isStale)", self.html)
+        self.assertIn("NO SIGNAL", self.html)
+
+    def test_live_page_has_responsive_operator_dashboard_breakpoints(self) -> None:
+        self.assertIn("@media (max-width: 900px)", self.html)
+        self.assertIn("@media (max-width: 700px)", self.html)
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", self.html)
+        self.assertIn("#audio-direction-row", self.html)
+        self.assertIn("width: min(100%, 276px)", self.html)
+        self.assertIn("grid-row: auto !important", self.html)
+        self.assertIn("grid-column: 1 / 3", self.html)

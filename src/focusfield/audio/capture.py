@@ -56,6 +56,12 @@ from focusfield.core.clock import now_ns
 from focusfield.audio.devices import resolve_input_device_index
 
 
+def _stream_stalled(last_callback_s: float, now_s: float, timeout_s: float) -> bool:
+    if timeout_s <= 0:
+        return False
+    return now_s - last_callback_s > timeout_s
+
+
 def start_audio_capture(
     bus: Any,
     config: Dict[str, Any],
@@ -87,6 +93,8 @@ def start_audio_capture(
     status_log_interval_s = float(capture_cfg.get("status_log_interval_s", 1.0))
     status_log_interval_s = max(0.25, min(5.0, status_log_interval_s))
     reconnect_delay_ms = max(100, int(capture_cfg.get("reconnect_delay_ms", 1000) or 1000))
+    stream_stall_timeout_s = float(capture_cfg.get("stream_stall_timeout_s", max(2.0, reconnect_delay_ms / 1000.0 * 3.0)) or 0.0)
+    stream_stall_timeout_s = max(0.0, stream_stall_timeout_s)
     stream_latency = str(capture_cfg.get("latency", "high") or "high").strip().lower()
     if stream_latency not in {"low", "high"}:
         stream_latency = "high"
@@ -102,6 +110,7 @@ def start_audio_capture(
     }
 
     status_counts = {"input_overflow": 0}
+    last_callback_s = [time.monotonic()]
 
     def _run() -> None:
         next_stats_emit = time.time() + stats_period_s
@@ -127,6 +136,7 @@ def start_audio_capture(
                 continue
             try:
                 with stream:
+                    last_callback_s[0] = time.monotonic()
                     logger.emit(
                         "info",
                         "audio.capture",
@@ -158,6 +168,20 @@ def start_audio_capture(
                         except queue.Empty:
                             pass
                         now_s = time.time()
+                        now_monotonic_s = time.monotonic()
+                        if _stream_stalled(last_callback_s[0], now_monotonic_s, stream_stall_timeout_s):
+                            last_callback_age_ms = round((now_monotonic_s - last_callback_s[0]) * 1000.0, 3)
+                            logger.emit(
+                                "warning",
+                                "audio.capture",
+                                "stale_stream",
+                                {
+                                    "device_index": resolved_device_index,
+                                    "last_callback_age_ms": last_callback_age_ms,
+                                    "retry_in_ms": reconnect_delay_ms,
+                                },
+                            )
+                            break
                         if now_s >= next_stats_emit:
                             with stats_lock:
                                 snapshot = dict(stats)
@@ -213,6 +237,7 @@ def start_audio_capture(
                     status_counts["input_overflow"] = 0
         frame = np.array(indata, copy=True)
         t_ns = now_ns()
+        last_callback_s[0] = time.monotonic()
         if frame_queue.full():
             try:
                 frame_queue.get_nowait()

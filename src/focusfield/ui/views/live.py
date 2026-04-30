@@ -135,7 +135,7 @@ def live_page() -> str:
       flex: 1;
       display: grid;
       grid-template-rows: auto auto auto auto auto auto;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: var(--gap);
       padding: var(--gap);
     }
@@ -151,6 +151,10 @@ def live_page() -> str:
       transition: border-color 0.25s;
     }
     .cam-tile.active-cam { border-color: var(--green); box-shadow: 0 0 0 1px var(--green); }
+    .cam-tile.camera-stale {
+      border-color: rgba(248,81,73,0.75);
+      box-shadow: 0 0 0 1px rgba(248,81,73,0.35);
+    }
 
     .cam-tile-inner {
       position: relative;
@@ -163,6 +167,7 @@ def live_page() -> str:
       position: absolute; inset: 0; width: 100%; height: 100%;
       object-fit: cover; display: block;
     }
+    .cam-tile.camera-stale img { filter: grayscale(1) brightness(0.55); }
     .cam-tile-inner canvas {
       position: absolute; inset: 0; width: 100%; height: 100%;
       pointer-events: none;
@@ -177,6 +182,24 @@ def live_page() -> str:
       width: 6px; height: 6px; border-radius: 50%; background: var(--red); flex-shrink: 0;
     }
     .cam-name { font-size: 11px; font-weight: 600; color: var(--text); }
+    .cam-status {
+      position: absolute; left: 8px; bottom: 8px;
+      display: none;
+      max-width: calc(100% - 16px);
+      padding: 4px 7px;
+      border-radius: 3px;
+      background: rgba(13,17,23,0.86);
+      border: 1px solid rgba(248,81,73,0.45);
+      color: var(--red);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      z-index: 3;
+    }
+    .cam-tile.camera-stale .cam-status { display: block; }
     .cam-lock-badge {
       margin-left: auto;
       font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
@@ -207,6 +230,7 @@ def live_page() -> str:
       border: 1px solid var(--border);
       border-radius: var(--panel-r);
       padding: 10px 12px;
+      min-width: 0;
       overflow: hidden;
     }
     .panel-title {
@@ -224,7 +248,12 @@ def live_page() -> str:
     #compass-wrap {
       display: flex; flex-direction: column; align-items: center;
     }
-    #heatmapCanvas { display: block; }
+    #heatmapCanvas {
+      display: block;
+      width: min(100%, 276px);
+      height: auto;
+      aspect-ratio: 1 / 1;
+    }
 
     /* Mic health bars */
     #mic-bars-wrap {
@@ -291,6 +320,7 @@ def live_page() -> str:
       font-size: 11px;
       font-variant-numeric: tabular-nums;
       color: var(--text);
+      overflow-wrap: anywhere;
     }
     #vad-row {
       display: flex; align-items: center; gap: 8px; margin-top: 4px; padding-top: 6px;
@@ -402,6 +432,72 @@ def live_page() -> str:
       font-weight: 700; font-size: 12px; cursor: pointer;
     }
     #calib-apply:hover { opacity: 0.85; }
+
+    @media (max-width: 900px) {
+      #main {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      }
+      #cam0-tile { grid-column: 1 !important; }
+      #cam1-tile { grid-column: 2 !important; }
+      #cam2-tile { grid-column: 1 / 3 !important; }
+      #cam0-tile,
+      #cam1-tile {
+        grid-row: 1 !important;
+      }
+      #cam2-tile {
+        grid-row: 2 !important;
+      }
+      #row2 {
+        grid-column: 1 / 3;
+        grid-row: auto;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      }
+      #compass-wrap {
+        grid-column: 1 / 3;
+      }
+      #audio-direction-row {
+        grid-template-columns: repeat(3, minmax(88px, 1fr));
+      }
+      #row3, #row4, #row5, #calib-panel {
+        grid-column: 1 / 3;
+      }
+    }
+
+    @media (max-width: 700px) {
+      #main {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      #cam0-tile,
+      #cam1-tile,
+      #cam2-tile,
+      #row2,
+      #row3,
+      #row4,
+      #row5,
+      #calib-panel {
+        grid-column: 1 / 2 !important;
+      }
+      #cam0-tile,
+      #cam1-tile,
+      #cam2-tile {
+        grid-row: auto !important;
+      }
+      #row2 {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      #compass-wrap {
+        grid-column: auto;
+      }
+      #audio-direction-row {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .truth-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      #mic-summary {
+        flex-wrap: wrap;
+      }
+    }
   </style>
 </head>
 <body>
@@ -428,6 +524,7 @@ def live_page() -> str:
     <div class="cam-tile-inner">
       <img id="cam0-img" src="" alt="" />
       <canvas id="cam0-canvas"></canvas>
+      <div class="cam-status" id="cam0-status">NO SIGNAL</div>
       <div class="cam-label-bar">
         <div class="cam-conn-dot" id="cam0-conn"></div>
         <div class="cam-name" id="cam0-name">cam0</div>
@@ -439,6 +536,7 @@ def live_page() -> str:
     <div class="cam-tile-inner">
       <img id="cam1-img" src="" alt="" />
       <canvas id="cam1-canvas"></canvas>
+      <div class="cam-status" id="cam1-status">NO SIGNAL</div>
       <div class="cam-label-bar">
         <div class="cam-conn-dot" id="cam1-conn"></div>
         <div class="cam-name" id="cam1-name">cam1</div>
@@ -450,6 +548,7 @@ def live_page() -> str:
     <div class="cam-tile-inner">
       <img id="cam2-img" src="" alt="" />
       <canvas id="cam2-canvas"></canvas>
+      <div class="cam-status" id="cam2-status">NO SIGNAL</div>
       <div class="cam-label-bar">
         <div class="cam-conn-dot" id="cam2-conn"></div>
         <div class="cam-name" id="cam2-name">cam2</div>
@@ -577,6 +676,7 @@ def live_page() -> str:
 /* ── Constants ── */
 const CAM_IDS        = ['cam0', 'cam1', 'cam2'];
 const FACE_HOLD_MS   = 700;
+const CAMERA_STALE_MS = 1500;
 const DB_MIN         = -60;
 const DB_MAX         = 0;
 const TIMELINE_SECS  = 60;
@@ -705,7 +805,7 @@ function updateAllPanels(data) {
 
   // Camera panels
   for (const camId of CAM_IDS) {
-    updateCameraPanel(camId, facesByCamera[camId] || [], lock);
+    updateCameraPanel(camId, facesByCamera[camId] || [], lock, cameraFrameHealth(data, camId));
   }
 
   // Compass
@@ -940,11 +1040,21 @@ function camInFov(camId, bearingDeg) {
   return Math.abs(diff) <= hfov / 2;
 }
 
-function updateCameraPanel(camId, freshFaces, lock) {
+function cameraFrameHealth(data, camId) {
+  const topics = (((data || {}).health_summary || {}).topics) || {};
+  const topic = topics['vision.frames.' + camId] || null;
+  if (!topic) return { known: false, stale: false, ageMs: null };
+  const ageMs = Number(topic.age_ms);
+  const stale = Number.isFinite(ageMs) && ageMs > CAMERA_STALE_MS;
+  return { known: true, stale, ageMs: Number.isFinite(ageMs) ? ageMs : null };
+}
+
+function updateCameraPanel(camId, freshFaces, lock, frameHealth) {
   const state    = lock.state || 'NO_LOCK';
   const targetId = lock.target_id || null;
   const bearingDeg = lock.target_bearing_deg;
   const nowMs    = Date.now();
+  const isStale  = !!(frameHealth && frameHealth.stale);
 
   // Determine faces with hold
   if (freshFaces.length > 0) {
@@ -960,7 +1070,10 @@ function updateCameraPanel(camId, freshFaces, lock) {
   // Tile highlight
   const tile  = document.getElementById(camId + '-tile');
   const inFov = camInFov(camId, bearingDeg);
-  if (tile) tile.classList.toggle('active-cam', inFov);
+  if (tile) {
+    tile.classList.toggle('active-cam', inFov && !isStale);
+    tile.classList.toggle('camera-stale', isStale);
+  }
 
   // Name badge
   const nameEl = document.getElementById(camId + '-name');
@@ -976,21 +1089,35 @@ function updateCameraPanel(camId, freshFaces, lock) {
     badge.className   = 'cam-lock-badge ' + state;
   }
 
+  const connDot = document.getElementById(camId + '-conn');
+  if (connDot && isStale) connDot.style.background = '#f85149';
+  const statusEl = document.getElementById(camId + '-status');
+  if (statusEl && isStale) {
+    const ageMs = frameHealth && Number.isFinite(frameHealth.ageMs) ? frameHealth.ageMs : null;
+    statusEl.textContent = ageMs != null ? 'NO SIGNAL ' + Math.round(ageMs / 1000) + 's' : 'NO SIGNAL';
+  }
+
   // Schedule frame draw
   if (!frameScheduled[camId]) {
     frameScheduled[camId] = true;
     requestAnimationFrame(() => {
       frameScheduled[camId] = false;
-      loadAndDrawFrame(camId, faces, targetId);
+      loadAndDrawFrame(camId, faces, targetId, frameHealth);
     });
   }
 }
 
-function loadAndDrawFrame(camId, faces, targetId) {
+function loadAndDrawFrame(camId, faces, targetId, frameHealth) {
   const imgEl    = document.getElementById(camId + '-img');
   const canvasEl = document.getElementById(camId + '-canvas');
   const connDot  = document.getElementById(camId + '-conn');
   if (!imgEl || !canvasEl) return;
+  if (frameHealth && frameHealth.stale) {
+    imgConnected[camId] = false;
+    if (connDot) connDot.style.background = '#f85149';
+    drawOverlay(canvasEl, imgEl, faces, targetId);
+    return;
+  }
 
   const now = Date.now();
   // Throttle to ~6fps (166ms)

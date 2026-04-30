@@ -182,12 +182,13 @@ def _save_camera_calibration(data: Dict[str, Any], config: Dict[str, Any]) -> Di
 class UIState:
     """Thread-safe store for telemetry and frames."""
 
-    def __init__(self) -> None:
+    def __init__(self, frame_stale_after_s: float = 0.0) -> None:
         self._lock = threading.Lock()
         self._telemetry: Dict[str, Any] = {}
         self._frames: Dict[str, Any] = {}
         self._frame_jpegs: Dict[str, bytes] = {}
         self._frame_encode_ns: Dict[str, int] = {}
+        self._frame_stale_after_ns = int(max(0.0, float(frame_stale_after_s)) * 1_000_000_000)
         self._ws_clients: Set[socket.socket] = set()
         self._ws_lock = threading.Lock()
 
@@ -218,6 +219,10 @@ class UIState:
 
     def get_frame_jpeg(self, camera_id: str) -> Optional[bytes]:
         with self._lock:
+            if self._frame_stale_after_ns > 0:
+                encoded_ns = int(self._frame_encode_ns.get(camera_id, 0) or 0)
+                if not encoded_ns or time.time_ns() - encoded_ns > self._frame_stale_after_ns:
+                    return None
             return self._frame_jpegs.get(camera_id)
 
     def add_ws_client(self, sock: socket.socket) -> None:
@@ -272,8 +277,10 @@ def start_ui_server(
     frame_max_hz = float(ui_cfg.get("frame_max_hz", 6.0) or 6.0)
     frame_max_hz = max(0.1, frame_max_hz)
     frame_min_period_s = 1.0 / frame_max_hz
+    default_frame_stale_after_s = max(3.0, frame_min_period_s * 3.0)
+    frame_stale_after_s = float(ui_cfg.get("frame_stale_after_s", default_frame_stale_after_s) or default_frame_stale_after_s)
     cameras = [cam.get("id", f"cam{idx}") for idx, cam in enumerate(config.get("video", {}).get("cameras", []))]
-    state = UIState()
+    state = UIState(frame_stale_after_s=frame_stale_after_s)
 
     q_telemetry = bus.subscribe("ui.telemetry")
     frame_queues = {cam_id: bus.subscribe(f"vision.frames.{cam_id}") for cam_id in cameras}

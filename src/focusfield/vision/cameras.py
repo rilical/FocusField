@@ -197,11 +197,12 @@ def _resolve_runtime_camera_sources(
         resolved_index = video_index_for_source(resolved)
         if resolved_index is None:
             resolved_index = video_index_for_source(source)
-        open_source = resolved if resolved.startswith("/dev/video") else source
         updated = dict(cam)
         old_path = updated.get("device_path")
         old_index = updated.get("device_index")
-        updated["device_path"] = open_source
+        # Keep the stable by-path/by-id symlink in runtime config so reconnects
+        # follow USB re-enumeration instead of retrying a stale /dev/videoN node.
+        updated["device_path"] = source
         if resolved_index is not None:
             updated["device_index"] = resolved_index
         rebound.append(updated)
@@ -211,7 +212,7 @@ def _resolve_runtime_camera_sources(
                 "old_device_path": old_path,
                 "old_device_index": old_index,
                 "discovered_path": source,
-                "device_path": open_source,
+                "device_path": updated.get("device_path"),
                 "resolved_path": resolved,
                 "device_index": updated.get("device_index"),
             }
